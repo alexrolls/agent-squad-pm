@@ -60,6 +60,9 @@ Apply regardless of tool.
 
 ```
 TEAM_MODE=false        # true enables the status-ownership model in reference/team-roles.md
-STRICT_STATUS=true     # true = refuse an action if the item is not in the expected status
+STRICT_STATUS=true     # true = before any write, verify the current status and that the
+                       #        intended move is in that status's transitions list
                        #        (the "andon cord" — see reference/lifecycle.md)
+STATUS_CONFIG=config/statuses.config.json   # the kanban board: statuses, transitions,
+                                            # owners, per-tool mappings (skill-relative path)
 ```

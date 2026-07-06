@@ -3,12 +3,13 @@
 # LLM-agnostic: which CLI runs each role comes from config/team.config.md.
 #
 # Usage:
-#   launch-team.sh team     <preset> <team> <featureId>          # launch a preset roster (teams/<preset>.md)
-#   launch-team.sh start    <team> <featureId> <role>...
-#   launch-team.sh relaunch <team> <featureId> <role> [preset]
-#   launch-team.sh worktree <team> <role> <taskId>
-#   launch-team.sh status   <team>
-#   launch-team.sh stop     <team>
+#   launch-team.sh team          <preset> <team> <featureId>     # launch a preset roster (teams/<preset>.md)
+#   launch-team.sh start         <team> <featureId> <role>...
+#   launch-team.sh relaunch      <team> <featureId> <role> [preset]
+#   launch-team.sh worktree      <team> <role> <taskId>
+#   launch-team.sh validate-board [config-path]                  # validate board config JSON
+#   launch-team.sh status        <team>
+#   launch-team.sh stop          <team>
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,6 +49,84 @@ roster_of() { # roster_of <preset> -> space-separated role names from teams/<pre
   local line; line="$(grep -m1 '^ROSTER=' "$f" || true)"
   [ -n "$line" ] || die "teams/$1.md has no ROSTER= line"
   printf '%s' "${line#ROSTER=}"
+}
+
+validate_board() { # validate_board [config-path] — structural checks on the board config
+  local cfg="${1:-$SKILL_DIR/config/statuses.config.json}"
+  [ -f "$cfg" ] || die "no board config: $cfg"
+  command -v python3 >/dev/null 2>&1 || die "validate-board requires python3"
+  python3 - "$cfg" "$SKILL_DIR" <<'PYEOF'
+import json, sys, os
+cfg_path, skill_dir = sys.argv[1], sys.argv[2]
+try:
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+except ValueError as e:
+    print("validate-board: invalid JSON: %s" % e, file=sys.stderr); sys.exit(1)
+
+ABSTRACT_ROLES = {"implementer", "reviewer", "coordinator", "finalizer"}
+errors = []
+
+def role_exists(name):
+    return (name in ABSTRACT_ROLES
+            or os.path.isfile(os.path.join(skill_dir, "roles", name + ".md"))
+            or os.path.isfile(os.path.join(skill_dir, "teams", "roles", name + ".md")))
+
+def team_exists(name):
+    return os.path.isfile(os.path.join(skill_dir, "teams", name + ".md"))
+
+for machine in ("features", "tasks"):
+    statuses = cfg.get(machine, {}).get("statuses")
+    if not isinstance(statuses, list) or not statuses:
+        errors.append("%s: missing or empty 'statuses' list" % machine); continue
+    names = [s.get("name") for s in statuses]
+    for d in sorted(set(n for n in names if names.count(n) > 1)):
+        errors.append("%s: duplicate status name '%s'" % (machine, d))
+    by_name = dict((s.get("name"), s) for s in statuses)
+    initials = [s for s in statuses if s.get("initial")]
+    if len(initials) != 1:
+        errors.append("%s: exactly one initial status required, found %d" % (machine, len(initials)))
+    if not any(s.get("terminal") for s in statuses):
+        errors.append("%s: at least one terminal status required" % machine)
+    for s in statuses:
+        name = s.get("name") or "<unnamed>"
+        trans = s.get("transitions")
+        if not isinstance(trans, list):
+            errors.append("%s/%s: 'transitions' must be a list" % (machine, name)); trans = []
+        for t in trans:
+            if t not in by_name:
+                errors.append("%s/%s: transition to undefined status '%s'" % (machine, name, t))
+        if s.get("terminal") and trans:
+            errors.append("%s/%s: terminal status must have empty transitions" % (machine, name))
+        if s.get("requiresCommit") and s.get("initial"):
+            errors.append("%s/%s: requiresCommit not allowed on the initial status" % (machine, name))
+        owner = s.get("owner")
+        if not isinstance(owner, dict) or len(owner) != 1 or list(owner)[0] not in ("role", "team"):
+            errors.append("%s/%s: owner must be exactly one of {\"role\": ...} or {\"team\": ...}" % (machine, name))
+        else:
+            kind, val = list(owner.items())[0]
+            if kind == "role" and not role_exists(val):
+                errors.append("%s/%s: unknown role '%s'" % (machine, name, val))
+            if kind == "team" and not team_exists(val):
+                errors.append("%s/%s: unknown team preset '%s'" % (machine, name, val))
+    if len(initials) == 1:
+        seen, stack = set(), [initials[0].get("name")]
+        while stack:
+            n = stack.pop()
+            if n in seen: continue
+            seen.add(n)
+            t = by_name.get(n, {}).get("transitions")
+            for nxt in (t if isinstance(t, list) else []):
+                if nxt in by_name: stack.append(nxt)
+        for n in by_name:
+            if n not in seen:
+                errors.append("%s: status '%s' unreachable from the initial status" % (machine, n))
+
+if errors:
+    for e in errors: print("validate-board: %s" % e, file=sys.stderr)
+    sys.exit(1)
+print("board config OK: %s" % cfg_path)
+PYEOF
 }
 
 teamroot() {
@@ -92,6 +171,12 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt
     echo
     echo "---"
     cat "$CONFIG"
+    if [ -f "$SKILL_DIR/config/statuses.config.json" ]; then
+      echo
+      echo "---"
+      echo "# Board config (config/statuses.config.json)"
+      cat "$SKILL_DIR/config/statuses.config.json"
+    fi
   } > "$out"
   printf '%s' "$out"
 }
@@ -134,6 +219,7 @@ case "${1:-}" in
     [ -f "$SKILL_DIR/teams/$preset.md" ] || die "unknown preset: $preset (no teams/$preset.md)"
     roster="$(roster_of "$preset")"                       # validate before the loop
     [ -n "$roster" ] || die "teams/$preset.md has an empty ROSTER"
+    validate_board >/dev/null
     for role in $roster; do
       if key_is_null "$(role_cmd_key "$role")"; then
         echo "skipping $role (disabled: $(role_cmd_key "$role")=null)"; continue
@@ -194,7 +280,11 @@ case "${1:-}" in
     done
     echo "stopped team $2"
     ;;
+  validate-board)
+    [ $# -le 2 ] || die "usage: validate-board [config-path]"
+    validate_board "${2:-}"
+    ;;
   *)
-    die "usage: launch-team.sh {team|start|relaunch|worktree|status|stop} ..."
+    die "usage: launch-team.sh {team|start|relaunch|worktree|validate-board|status|stop} ..."
     ;;
 esac

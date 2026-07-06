@@ -1,0 +1,42 @@
+{
+  "features": {
+    "statuses": [
+      { "name": "Planned", "initial": true,
+        "owner": { "role": "team-lead" },
+        "transitions": ["Active"],
+        "tool": { "Linear": "Planned", "Jira": "To Do", "GitHubIssues": "milestone open, no task started", "Markdown": "[Planned]" } },
+      { "name": "Active",
+        "owner": { "role": "team-lead" },
+        "transitions": ["Resolved"],
+        "tool": { "Linear": "In Progress", "Jira": "In Progress", "GitHubIssues": "milestone open, >=1 task active (derived)", "Markdown": "[Active]" } },
+      { "name": "Resolved", "terminal": true,
+        "owner": { "role": "team-lead" },
+        "transitions": [],
+        "tool": { "Linear": "Completed", "Jira": "Done", "GitHubIssues": "milestone closed", "Markdown": "[Resolved]" } }
+    ]
+  },
+  "tasks": {
+    "statuses": [
+      { "name": "Planned", "initial": true,
+        "owner": { "role": "team-lead" },
+        "transitions": ["Active"],
+        "tool": { "Linear": "Todo", "Jira": "To Do", "GitHubIssues": "open + label status:planned", "Markdown": "[Planned]" } },
+      { "name": "Active",
+        "owner": { "role": "implementer" },
+        "transitions": ["Review", "Blocked"],
+        "tool": { "Linear": "In Progress", "Jira": "In Progress", "GitHubIssues": "open + label status:active", "Markdown": "[Active]" } },
+      { "name": "Review",
+        "owner": { "role": "reviewer" },
+        "transitions": ["Active", "Ready to deploy", "Blocked"],
+        "tool": { "Linear": "In Review", "Jira": "In Review", "GitHubIssues": "open + label status:review", "Markdown": "[Review]" } },
+      { "name": "Blocked",
+        "owner": { "role": "team-lead" },
+        "transitions": ["Planned", "Active", "Review"],
+        "tool": { "Linear": "Blocked", "Jira": "Blocked", "GitHubIssues": "open + label status:blocked", "Markdown": "[Blocked]" } },
+      { "name": "Ready to deploy", "terminal": true, "requiresCommit": true,
+        "owner": { "role": "integrator" },
+        "transitions": [],
+        "tool": { "Linear": "Done", "Jira": "Done", "GitHubIssues": "closed", "Markdown": "[Ready to deploy]" } }
+    ]
+  }
+}

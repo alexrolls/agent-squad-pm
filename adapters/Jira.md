@@ -54,6 +54,10 @@ adf() { jq -cn --arg t "$1" '{"type":"doc","version":1,"content":[{"type":"parag
 
 (`jq` handles JSON escaping; if `jq` is unavailable, escape the text yourself before splicing it into the body.)
 
+> Make sure every status in `config/statuses.config.json` has a matching workflow state
+> or transition in your Jira project (e.g. add a "Blocked" status) — a missing state is
+> an andon stop.
+
 ## Terminology Mapping
 
 | Generic term | Jira |
@@ -62,25 +66,32 @@ adf() { jq -cn --arg t "$1" '{"type":"doc","version":1,"content":[{"type":"parag
 | `[Task]` | Story |
 | `[Subtask]` | Bullet point in the story description |
 
-## Feature Status Mapping
+## Status Mapping
 
-| Generic status | Jira (Epic) |
-|---|---|
-| `[Planned]` | To Do |
-| `[Active]` | In Progress |
-| `[Resolved]` | Done |
+Statuses come from `config/statuses.config.json` — each status's `tool` map holds this
+adapter's concrete value under the `"Jira"` key. This adapter's *mechanism* for setting a
+status is: workflow transition on the Story/Epic.
 
-## Task Status Mapping
+**Missing mapping = andon.** If a status has no `"Jira"` entry, or the Jira project
+lacks the mapped workflow transition, stop and report — never invent a fallback status.
 
-| Generic status | Jira (Story) |
+Shipped defaults (the default board):
+
+| Status | Jira |
 |---|---|
 | `[Planned]` | To Do |
 | `[Active]` | In Progress |
 | `[Review]` | In Review |
-| `[Completed]` | Done |
+| `[Blocked]` | Blocked |
+| `[Ready to deploy]` | Done |
+
+Feature statuses `[Planned]` / `[Active]` / `[Resolved]` map to To Do / In Progress /
+Done (Epic workflow states).
 
 > Jira workflows are per-project and often customized. If your board uses different status
-> names (e.g. "Code Review", "Selected for Development"), edit these two tables only.
+> names (e.g. "Code Review", "Selected for Development"), update the `"Jira"` values in
+> `config/statuses.config.json` — the generic status names never change, only the
+> tool-side values do.
 
 ## ID Mapping
 

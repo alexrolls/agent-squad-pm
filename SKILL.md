@@ -20,7 +20,7 @@ skill's directory):
 - `adapters/<Tool>.md` — how to perform each operation in the active tool
 
 > **Golden rule:** in everything you write — comments, commit messages, messages to the
-> user — use only the generic vocabulary — terms `[feature]`, `[task]`, `[subtask]` and statuses `[Planned]`/`[Active]`/`[Review]`/`[Completed]`. Never write "issue", "epic",
+> user — use only the generic vocabulary — terms `[feature]`, `[task]`, `[subtask]` and the statuses defined in `config/statuses.config.json` (default board: `[Planned]`/`[Active]`/`[Review]`/`[Blocked]`/`[Ready to deploy]`). Never write "issue", "epic",
 > "story", or "ticket" outside the adapter. See the banned-terms list in `vocabulary.md`.
 
 ## Mandatory Preparation (every invocation)
@@ -48,24 +48,29 @@ each generic operation through the adapter's *Operations* table:
 | Start / pick up / work on a task | 2 — Start a `[task]` |
 | Note a change from what a task said | 3 — Diverge |
 | Send a task for review | 4 — Request review |
-| Finish / close out a task | 5 — Complete a `[task]` |
+| Finish / close out a task | 5 — Finalize a `[task]` |
 | File a bug / follow-up found mid-work | 6 — File newly-discovered work |
-| (anything wrong / blocked / failed) | 7 — Andon cord: stop & report |
+| Work is stuck / blocked / cannot proceed | 7 — Block a `[task]` |
+| (anything wrong / blocked / failed) | 8 — Andon cord: stop & report |
 | Run an agent team on a feature ("launch the team") | Team: set `TEAM_MODE=true`, follow `reference/orchestration.md`; launch via `bin/launch-team.sh` |
-| Connect a new tool / switch tools | 8 — Connect / switch |
+| Connect a new tool / switch tools | 9 — Connect / switch |
 
 ## Non-negotiables (the fail-loud contract)
 
 - **Every status change is a real write** through the adapter's mechanism — then confirm
   it. Never claim a status you didn't set.
-- **If any operation fails, stop and report it** (Scenario 7). Never work around a failure
+- **If any operation fails, stop and report it** (Scenario 8). Never work around a failure
   or fabricate a result.
-- **Never skip a status transition.** Move in order:
-  `[Planned]` → `[Active]` → `[Review]` → `[Completed]` (rework: `[Review]` → `[Active]`).
-- **When `STRICT_STATUS=true`, verify the current status before writing.** If it's not what
-  the step expects, pull the andon cord instead of forcing the change.
-- **`[Completed]` means verified-done** — reviewed, tests/build green, and (if your project
-  couples them) committed. Never mark work complete that was skipped or is failing.
+- **Never skip a status transition.** Legal moves are the `transitions` graph in
+  `config/statuses.config.json` (default board:
+  `[Planned]` → `[Active]` → `[Review]` → `[Ready to deploy]`, rework `[Review]` → `[Active]`,
+  `[Blocked]` for stuck work).
+- **When `STRICT_STATUS=true`, verify the current status before writing** and that the
+  intended move is in its `transitions` list. If not, pull the andon cord instead of
+  forcing the change.
+- **`[Ready to deploy]` means verified-done** — reviewed, tests/build green, and committed
+  (the move and the commit are one atomic step). Never mark work done that was skipped
+  or is failing.
 
 ## Reporting back
 

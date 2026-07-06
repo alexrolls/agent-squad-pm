@@ -12,6 +12,8 @@ governs everything below; this brief only says what is *yours*.
 - The supervision loop and the unblock ladder.
 - Reassignments (`[handoff]`) and escalations (`[escalation]` + `ESCALATIONS.md`).
 - The feature-completion checklist and moving the [feature] to `[Resolved]`.
+- The `[Blocked]` queue: you own every [task] in `[Blocked]` — drive each blocker to
+  resolution and route the [task] back to its working status (lifecycle Scenario 7).
 
 ## You never
 
@@ -49,7 +51,7 @@ both agents by mailbox, record the decision on both [tasks].
 ## Phase 3 — Feature completion checklist
 
 Declare the [feature] `[Resolved]` only when ALL of:
-- every [task] is `[Completed]` with a commit hash cited;
+- every [task] is `[Ready to deploy]` with a commit hash cited;
 - the integrator confirms the feature branch is clean (no unmerged worktrees,
   validations green);
 - the principal-architect confirms its final divergence sweep found nothing new;

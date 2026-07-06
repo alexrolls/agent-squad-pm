@@ -78,7 +78,7 @@ account, no API key, no config changes — `Markdown` is the default.
    ```
    Start task 1.        → moves it to [Active], implements it
    Send task 1 to review.
-   Complete task 1.     → verified + [Completed]
+   Finalize task 1.     → verified, committed + [Ready to deploy]
    ```
 
 That's the whole loop — plan → start → review → complete — in generic vocabulary
@@ -198,6 +198,16 @@ Two files, each the "one file you edit per project" for its layer.
 
 > Set **`TEAM_MODE=true`** before running a team.
 
+### Configure your board
+
+`config/statuses.config.json` defines the kanban board: every status, its legal
+`transitions`, its `owner` (the team or single agent that works items in that status),
+and per-tracker `tool` mappings. Default board: `Planned → Active → Review → Ready to
+deploy`, with `Blocked` as the parking status for stuck work. Add, rename, or remove
+statuses by editing the JSON — then run `bin/launch-team.sh validate-board` to check it.
+Make sure your tracker has a matching state for every status (the Markdown tracker
+needs nothing).
+
 ### `config/team.config.md` — the team (only for multi-agent)
 
 | Section | Keys | Purpose |
@@ -220,7 +230,7 @@ Just talk to your agent in the generic vocabulary:
 
 - *"Plan a feature: …"* → creates a `[feature]` + `[tasks]`
 - *"Start task ENG-142"* → `[Active]`, then implements
-- *"Send it to review"* / *"Complete it"* → `[Review]` → `[Completed]`
+- *"Send it to review"* / *"Finalize it"* → `[Review]` → `[Ready to deploy]`
 - *"Switch the tracker to Linear"* → follows the adapter's setup
 
 ### A whole team
@@ -265,7 +275,7 @@ Just talk to your agent in the generic vocabulary:
 Product Manager, gates each `[task]`'s design before any code, reviews
 architecture) → specialists implement in isolated worktrees → the **Senior QA
 Engineer is the final review gate** → the integrator merges and marks
-`[Completed]` (commit and completion are one atomic step). The lead detects
+`[Ready to deploy]` (commit and the move are one atomic step). The lead detects
 stuck/conflicting/crashed agents and unblocks them — message → decide → reassign →
 relaunch — escalating to you only as a last resort.
 
@@ -298,7 +308,7 @@ adapter translates it to a concrete tracker.
    Your agents  ───▶│            THE PORT (stable)             │
    speak only this  │  vocabulary.md · lifecycle.md            │
                     │  [feature] [task] [subtask]              │
-                    │  [Planned] [Active] [Review] [Completed] │
+                    │  statuses from statuses.config.json      │
                     └───────────────────┬─────────────────────┘
                                         │  one config line selects the adapter
                       ┌─────────────────┼──────────────────┐

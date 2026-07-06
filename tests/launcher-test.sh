@@ -19,6 +19,7 @@ git checkout -q -b test-feature
 mkdir -p .claude/skills/pm
 cp -R "$SKILL_DIR/roles" "$SKILL_DIR/reference" "$SKILL_DIR/bin" "$SKILL_DIR/teams" .claude/skills/pm/
 mkdir -p .claude/skills/pm/config
+cp "$SKILL_DIR/config/statuses.config.json" .claude/skills/pm/config/
 cat > .claude/skills/pm/config/team.config.md <<'EOF'
 ```
 TEAM_LEAD_CMD=null
@@ -99,6 +100,36 @@ if TEAM_RUNNER=background "$LAUNCH" team nonesuch test-feature FEAT-2 2>/dev/nul
 else
   echo "ok: unknown preset refused"
 fi
+
+# -- validate-board: shipped config passes --------------------------------------
+check "validate-board accepts shipped config" "$LAUNCH" validate-board
+
+# -- validate-board: prompt composition includes the board ----------------------
+check "prompt contains board config" grep -q '"Ready to deploy"' .teamwork/test-feature/prompts/backend.md
+
+# -- validate-board: each broken config is refused with the right message -------
+bad() { # bad <desc> <needle> <json>
+  local desc="$1" needle="$2" json="$3" out
+  printf '%s' "$json" > "$TMP/bad.json"
+  if out="$("$LAUNCH" validate-board "$TMP/bad.json" 2>&1)"; then
+    echo "FAIL: $desc (accepted)"; FAILURES=$((FAILURES+1))
+  elif printf '%s' "$out" | grep -q "$needle"; then
+    echo "ok: $desc"
+  else
+    echo "FAIL: $desc (wrong message: $out)"; FAILURES=$((FAILURES+1))
+  fi
+}
+MINF='"features":{"statuses":[{"name":"P","initial":true,"owner":{"role":"team-lead"},"transitions":["R"]},{"name":"R","terminal":true,"owner":{"role":"team-lead"},"transitions":[]}]}'
+bad "invalid JSON refused"            "invalid JSON" '{nope'
+bad "two initials refused"            "exactly one initial" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"initial\":true,\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
+bad "unknown transition refused"      "undefined status" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Nope\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
+bad "unreachable status refused"      "unreachable" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]},{\"name\":\"Island\",\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]}]}}"
+bad "terminal with outbound refused"  "terminal status must have empty transitions" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"A\"]}]}}"
+bad "bad owner refused"               "unknown role" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"nobody-such\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
+bad "two-key owner refused"           "exactly one of" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\",\"team\":\"full-stack\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
+bad "requiresCommit on initial refused" "not allowed on the initial" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"requiresCommit\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
+bad "no terminal refused"             "at least one terminal" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"A\"]}]}}"
+bad "zero initials refused"           "exactly one initial"   "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
 
 # -- status + stop --------------------------------------------------------------
 # Capture first (grep -q closes the pipe early → SIGPIPE on the writer under pipefail).

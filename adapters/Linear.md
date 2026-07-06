@@ -40,6 +40,9 @@ lookup row). `jq -e` makes a GraphQL `errors` response a non-zero exit (andon co
 
 Relevant config: `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_PROJECT`, `LINEAR_ACCESS`.
 
+> Make sure every status in `config/statuses.config.json` has a matching workflow state
+> in your Linear team (e.g. create a "Blocked" state) — a missing state is an andon stop.
+
 ## Terminology Mapping
 
 | Generic term | Linear |
@@ -48,27 +51,32 @@ Relevant config: `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_PROJECT`, `LINEAR_ACCESS
 | `[Task]` | Issue |
 | `[Subtask]` | Bullet point in the issue description |
 
-## Feature Status Mapping
+## Status Mapping
 
-Linear Projects use states like Backlog / Planned / In Progress / Completed.
+Statuses come from `config/statuses.config.json` — each status's `tool` map holds this
+adapter's concrete value under the `"Linear"` key. This adapter's *mechanism* for setting
+a status is: issue workflow state (team-configurable names) for tasks; project state for
+features.
 
-| Generic status | Linear (Project state) |
-|---|---|
-| `[Planned]` | Planned |
-| `[Active]` | In Progress |
-| `[Resolved]` | Completed |
+**Missing mapping = andon.** If a status has no `"Linear"` entry, or the Linear team
+lacks the mapped workflow state, stop and report — never invent a fallback status.
 
-## Task Status Mapping
+Shipped defaults (the default board):
 
-| Generic status | Linear (Issue workflow state) |
+| Status | Linear |
 |---|---|
 | `[Planned]` | Todo |
 | `[Active]` | In Progress |
 | `[Review]` | In Review |
-| `[Completed]` | Done |
+| `[Blocked]` | Blocked |
+| `[Ready to deploy]` | Done |
+
+Feature statuses `[Planned]` / `[Active]` / `[Resolved]` map to Planned / In Progress /
+Completed (Linear project states).
 
 > Team workflow states are configurable in Linear. If a team renames "In Review", update
-> this table — the port never changes, only this mapping does.
+> the `"Linear"` values in `config/statuses.config.json` — the generic status names never
+> change, only the tool-side values do.
 
 ## ID Mapping
 
