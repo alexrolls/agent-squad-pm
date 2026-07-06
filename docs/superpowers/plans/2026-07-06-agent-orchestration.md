@@ -291,7 +291,7 @@ Detect:
 
 Unblock ladder — in order, one rung at a time:
 1. **Message** the agent (mailbox + tracker comment) with a concrete instruction.
-2. **Decide** — issue a binding process decision. Technical disputes are delegated
+2. **Decide** — make a binding process decision. Technical disputes are delegated
    to the principal-architect, whose ruling is final.
 3. **Reassign** — `[handoff]` comment summarizing state, move the [task] back to
    `[Planned]`, clear the assignee, relaunch a fresh agent for it.
