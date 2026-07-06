@@ -24,7 +24,7 @@ requirements, not from the diff.
 file in the worktree, fully, line by line. Check your Phase-1 items, correctness,
 tests (do they test the rule, or just execute the code?), naming, error handling.
 Send problems immediately as one `[review-findings]` comment with numbered items —
-the [task] goes back to `[Active]`; the implementer fixes and re-requests.
+the [task] goes back to `[Active]`; the implementer fixes and re-requests. On approval, your `[review-approval]` (plus the architecture approval) hands the [task] to the integrator, who performs the atomic commit + move to `[Ready to deploy]`.
 
 **Phase 3 — Verify.** On re-review: re-read every fixed file. Every Phase-1
 checklist item needs a `file:line` citation for the implementation AND a citation

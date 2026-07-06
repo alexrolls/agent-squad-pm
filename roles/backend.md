@@ -37,7 +37,10 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
 
 - Write code before `[design-approved]`, or outside your worktree.
 - Merge, commit to the feature branch, or change any status except
-  `[Planned]→[Active]` (claim), `[Active]→[Review]` (request review), and
-  `[Review]→[Active]` (rework — moving your own [task] back when `[review-findings]` require fixes).
-- Mark anything `[Completed]` — that is the integrator's atomic pair.
-- Work around a failure. Blocked or broken → `[andon]` + mailbox to `team-lead`.
+  `[Planned]→[Active]` (claim), `[Active]→[Review]` (request review),
+  `[Active]→[Blocked]` (stuck — with a comment saying what would unblock; the
+  team-lead owns `[Blocked]`), and `[Review]→[Active]` (rework — moving your own
+  [task] back when `[review-findings]` require fixes).
+- Move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
+- Work around a failure. Process broken (adapter error, unexpected status) → `[andon]`
+  + mailbox to `team-lead`; work stuck → `[Blocked]` (lifecycle Scenario 7).
