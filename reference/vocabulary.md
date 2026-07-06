@@ -34,35 +34,39 @@ These belong **only** inside `adapters/<Tool>.md`, where the mapping is defined 
 
 ## Status Model
 
-Two small state machines. Adapters map each generic status to a concrete tool status.
+Statuses are **configured, not fixed**. The single source of truth is
+`config/statuses.config.json`: for features and for tasks it defines the status list,
+each status's legal outbound `transitions`, its `owner` — the team or single agent that
+works items sitting in that status — and per-adapter `tool` mappings.
 
-### Feature statuses
+Rules that hold for every board:
 
-| Generic status | Meaning |
-|---|---|
-| `[Planned]` | Defined, not yet started. |
-| `[Active]` | At least one task is in progress. |
-| `[Resolved]` | All tasks complete; the feature is delivered. |
+- **Bracket notation.** Write any status exactly as `[Status Name]` — bracketed, exact
+  case, greppable (`[Planned]`, `[Ready to deploy]`).
+- **Exactly one `initial` status** per machine — where new items are created.
+- **At least one `terminal` status** — where work ends; it has no outbound transitions.
+- **`requiresCommit`** — entering such a status is atomically coupled to a successful
+  commit, performed by that status's owner.
+- **"Next status" means a status listed in the current status's `transitions`.** Any
+  other move is illegal — an **andon cord** condition (see `lifecycle.md`).
 
-### Task statuses
+### The default board (shipped)
 
-| Generic status | Meaning | Typical transition owner (single-agent = you) |
-|---|---|---|
-| `[Planned]` | Ready to be picked up. | — |
-| `[Active]` | Being implemented (or being fixed after review). | Implementer |
-| `[Review]` | Implementation done; awaiting review. | Reviewer |
-| `[Completed]` | Reviewed, verified, and committed. | Whoever finalizes/commits |
+Features: `[Planned]` → `[Active]` → `[Resolved]`.
 
-### Legal task transitions
+Tasks:
 
-```
-[Planned] ──▶ [Active] ──▶ [Review] ──▶ [Completed]
-                 ▲             │
-                 └─────────────┘        (review found problems → back to [Active])
-```
+| Status | Owner (default) | Transitions to | Notes |
+|---|---|---|---|
+| `[Planned]` | team-lead | Active | initial |
+| `[Active]` | implementer | Review, Blocked | |
+| `[Review]` | reviewer | Active, Ready to deploy, Blocked | rework returns to Active |
+| `[Blocked]` | team-lead | Planned, Active, Review | work is stuck; owner unblocks |
+| `[Ready to deploy]` | integrator | — | terminal; `requiresCommit` |
 
-Any other transition is a mistake. If an item is not in the status a step expects, that's
-an **andon cord** condition — see `lifecycle.md`.
+This table is an **example** — the JSON is authoritative. Projects add, rename, or
+remove statuses by editing the config; no other file changes as long as owners and
+tool mappings are set. Validate edits with `bin/launch-team.sh validate-board`.
 
 ---
 
@@ -84,6 +88,6 @@ workflow — only the adapter knows the shape.
    fabricate an update you didn't actually perform.
 2. **Fail loud.** If an operation fails, stop and report it. Never silently work around a
    failure or pretend a status changed.
-3. **Status is never skipped.** Move through the state machine in order.
+3. **Status moves follow the configured `transitions` graph.** Never skip, invent, or reverse a move the board does not define.
 4. **Reads are cheap, writes are deliberate.** Confirm the current status before a write
    when `STRICT_STATUS=true`.
