@@ -22,7 +22,7 @@ When running an actual agent team (`reference/orchestration.md`), the abstract r
 | **Coordinator** | Plans the [feature], creates [tasks], assigns them, decides what new work enters the current iteration. Never writes code. |
 | **Implementer** | Picks up a [task], writes the code, records divergences. |
 | **Reviewer** | Reviews an implementer's work, approves or sends it back. Never modifies code. |
-| **Finalizer** | Runs final validation, commits, and marks [tasks] `[Completed]`. The **single** role allowed to complete tasks and to couple completion with a commit. |
+| **Finalizer** | Runs final validation, commits, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move and to couple that move with a commit. |
 | **Principal Architect** | Technical authority: planning approval, per-[task] design gate, architecture half of every review, sole editor of upcoming [task] descriptions. Never writes code. |
 | **Team Lead** | Process authority: plans, launches, supervises, unblocks, reassigns, escalates. Never writes code, never overrides Finalizer/Integrator or Principal Architect. |
 
@@ -31,19 +31,36 @@ still holds — it's about which transition, not how many humans/agents exist.
 
 ---
 
-## Transition ownership
+## Status ownership — derived from the board config
 
-| Transition | Sole owner | Pre-check before acting |
+Ownership is no longer a hard-coded table. `config/statuses.config.json` assigns every
+status an `owner` — a single agent (`{"role": ...}`) or a team (`{"team": ...}`). One
+rule derives everything:
+
+> **The owner of status S is the only party allowed to work items sitting in S, and the
+> only one allowed to perform S's outbound transitions.**
+
+Two refinements:
+
+- **Entering a `requiresCommit` status** is performed by *that* status's owner, atomically
+  with the commit (on the default board: the integrator commits and moves `[Review]` →
+  `[Ready to deploy]` after both approvals exist).
+- **Routing:** when an item enters a status, the mover notifies the new owner's mailbox
+  (`reference/orchestration.md` → *Status routing*). A `{"team": ...}` owner is reached
+  via that team's lead, who dispatches internally.
+
+Worked example — the default board:
+
+| Status | Owner | May perform |
 |---|---|---|
-| create `[task]` `[Planned]` | Coordinator | planning approval from the Principal Architect exists (team mode — see `reference/orchestration.md`) |
-| `[feature]` `[Planned]` → `[Active]` | Implementer (on the feature's first claimed [task]) | only if the adapter tracks feature status explicitly |
-| `[Planned]` → `[Active]` | Implementer | verify `[task]` is `[Planned]` (not already claimed) |
-| `[Review]` → `[Active]` | Implementer | verify `[task]` is `[Review]` (rework requested) |
-| `[Review]` → `[Completed]` | Finalizer | verify `[task]` is `[Review]` **and** commit succeeded |
-| `[feature]` → `[Resolved]` | Coordinator (team-lead) — after the completion checklist | verify **all** `[tasks]` are `[Completed]` |
-| `[design-note]` → `[design-approved]`/`[design-pushback]` (comment gate, no status move) | Principal Architect | a `[design-note]` exists on the `[Active]` [task] |
-| `[Active]` → `[Review]` | Implementer (with `[review-request]`) | verify `[task]` is `[Active]` and `[design-approved]` exists (team mode) |
-| approve in `[Review]` (comment gate) | Reviewer (`[review-approval]`) **and** Principal Architect (`[architecture-approval]`) | both lists must match the diff |
+| `[Planned]` | team-lead (Coordinator) | create [tasks]; sanction claims (`Planned → Active`) |
+| `[Active]` | implementer | `Active → Review` (with `[review-request]`), `Active → Blocked` |
+| `[Review]` | reviewer | `Review → Active` (findings); approval hands off to the integrator for `Review → Ready to deploy` |
+| `[Blocked]` | team-lead | `Blocked → Planned / Active / Review` once cleared |
+| `[Ready to deploy]` | integrator | terminal — the atomic commit+move that enters it |
+
+Feature statuses: the team-lead owns all three (`Planned`, `Active`, `Resolved`) and
+moves `[feature]` → `[Resolved]` only after the completion checklist passes.
 
 If any role finds a [task] in an unexpected status, it **pulls the andon cord**: stop,
 don't guess, escalate to the Coordinator (concrete role: `team-lead`).
@@ -52,9 +69,7 @@ don't guess, escalate to the Coordinator (concrete role: `team-lead`).
 
 ## Coupling rules
 
-- **Completion is coupled to a commit.** The Finalizer never marks `[Completed]` without a
-  corresponding successful commit, and never commits a track without moving its [task] to
-  `[Completed]`. The two are one atomic step.
+- **Entering a `requiresCommit` status is coupled to a commit.** The Finalizer never moves a [task] to `[Ready to deploy]` without a corresponding successful commit, and never commits a track without the move. The two are one atomic step.
 - **Ad-hoc work has no [task].** If an agent is pulled off to fix something unrelated
   (e.g. a production incident), it does **not** touch task statuses for that work — it
   reports back and returns to its assigned [task]. File real follow-ups as new [tasks]
@@ -66,7 +81,7 @@ don't guess, escalate to the Coordinator (concrete role: `team-lead`).
 
 ## Why this maps cleanly onto adapters
 
-None of the above mentions a tool. "Move `[Review]` → `[Completed]`" is the same generic
+None of the above mentions a tool. "Move `[Review]` → `[Ready to deploy]`" is the same generic
 operation whether the Finalizer is closing a GitHub issue, dragging a Linear card, or
 editing a Markdown header. The role model is pure port; the adapter is pure translation.
 That separation is the whole point — you can restructure your team without touching a
