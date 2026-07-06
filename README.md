@@ -1,4 +1,6 @@
-# AI Project-Management & Team Orchestration Skill
+# Agent Squad PM
+
+**AI project-management & team orchestration for agentic LLMs.**
 
 Turn any agentic LLM into a disciplined engineering team that plans, builds,
 reviews, and ships work through **your** project tracker — Linear, Jira, GitHub
@@ -61,7 +63,7 @@ account, no API key, no config changes — `Markdown` is the default.
 
    ```bash
    mkdir -p .claude/skills
-   cp -R /path/to/this/bundle .claude/skills/project-management
+   cp -R /path/to/this/bundle .claude/skills/agent_squad_pm
    ```
 
 2. **Ask your agent, in plain language:**
@@ -95,7 +97,7 @@ anywhere and point the agent at `SKILL.md`.
 
 | Harness | Install location | How the agent picks it up |
 |---|---|---|
-| **Claude Code** | `.claude/skills/project-management/` | Auto-loaded by the skill's description; just ask in natural language |
+| **Claude Code** | `.claude/skills/agent_squad_pm/` | Auto-loaded by the skill's description; just ask in natural language |
 | **Codex CLI** | anywhere, e.g. `.codex/pm/` | `codex exec "Read .codex/pm/SKILL.md and plan a feature …"` |
 | **Aider** | anywhere | `aider --read pm/SKILL.md`, then instruct |
 | **Cursor / Windsurf / Cline** | the tool's rules dir | reference `SKILL.md` in chat |
@@ -246,7 +248,7 @@ Just talk to your agent in the generic vocabulary:
    ```
 
 > The launcher path is relative to where you installed the bundle — e.g.
-> `.claude/skills/project-management/bin/launch-team.sh`.
+> `.claude/skills/agent_squad_pm/bin/launch-team.sh`.
 
 **All launcher subcommands:**
 
