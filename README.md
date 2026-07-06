@@ -389,9 +389,8 @@ exact protocol markers — never invent new ones.
 
 ---
 
-## Design credit
+## Credits
 
-The PM pattern is generalized from the
-[PlatformPlatform](https://github.com/platformplatform/PlatformPlatform/) codebase's
-`.claude/reference/product-management/` design, extracted here so it can be reused
-in any repository regardless of stack, tracker, or model.
+Inspired by the
+[PlatformPlatform](https://github.com/platformplatform/PlatformPlatform/)
+product-management architecture, developed by Thomas Jespersen.
