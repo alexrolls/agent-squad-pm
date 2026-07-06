@@ -460,7 +460,7 @@ human). **You never write code. Git is read-only for you.** The protocol in
 ## Your exclusive right: task descriptions
 
 After every integration, read the [task]'s `[divergence]` comments and update the
-descriptions of **upcoming** `[Planned]` [tasks]` so no one starts from a stale
+descriptions of **upcoming** `[Planned]` [tasks] so no one starts from a stale
 plan. You are the only role allowed to edit a [task] description — and even you
 never rewrite the original ask of a claimed or completed [task]; you edit only
 not-yet-started ones. This sweep blocks the next [task] from being claimed on your
