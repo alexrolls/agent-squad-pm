@@ -31,12 +31,14 @@ adapter/tool decide" (e.g. prompt, or use the tool's default).
 ```
 LINEAR_DEFAULT_TEAM=null          # Team key or name new features/tasks are created under
 LINEAR_DEFAULT_PROJECT=null       # Optional default Project ([feature]) to file tasks into
+LINEAR_ACCESS=mcp                 # mcp = Linear MCP server; rest = GraphQL API with LINEAR_API_KEY env var
 ```
 
 ### Jira
 ```
 JIRA_PROJECT_KEY=null             # e.g. "ENG" — required to create Epics/Stories
 JIRA_DEFAULT_ASSIGNEE=null        # Optional accountId or email
+JIRA_ACCESS=mcp                   # mcp = Atlassian MCP server; rest = REST API with JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN env vars
 ```
 
 ### GitHubIssues

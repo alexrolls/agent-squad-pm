@@ -3,10 +3,16 @@
 ## Summary
 
 Jira is Atlassian's hosted issue tracker. The agent talks to it through the **Atlassian
-MCP server** — every read and write is an MCP tool call. Features map to Epics and tasks to
-Stories under a project key.
+MCP server** or the **Jira Cloud REST API with an API token** — `JIRA_ACCESS` selects
+the mechanism (see below). Features map to Epics and tasks to Stories under a project key.
 
-## MCP / CLI Setup
+## Access mechanisms
+
+Two peer mechanisms; `JIRA_ACCESS` in `../config/project-management.config.md`
+selects one. Use `rest` for harnesses without an MCP client (Codex, Aider, plain
+scripts).
+
+### mcp (default)
 
 Add the Atlassian MCP server and complete its OAuth flow on first use:
 
@@ -23,6 +29,28 @@ Add the Atlassian MCP server and complete its OAuth flow on first use:
 
 Relevant config from `../config/project-management.config.md`:
 `JIRA_PROJECT_KEY` (required to create items), `JIRA_DEFAULT_ASSIGNEE`.
+
+### rest — Jira Cloud REST API v3 with an API token
+
+Create an API token (id.atlassian.com → Security → API tokens) and export
+`JIRA_BASE_URL` (e.g. `https://yourorg.atlassian.net`), `JIRA_EMAIL`, and
+`JIRA_API_TOKEN`. Helper:
+
+```bash
+jira() { curl -sf -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+  -H "Content-Type: application/json" "$JIRA_BASE_URL$@"; }
+```
+
+Status changes in Jira are **transitions**: first `GET` the available transitions
+for the item, find the one whose target status matches the mapped name, then `POST`
+its id. Never guess transition ids. Non-2xx = failed operation → andon cord.
+
+Descriptions and comment bodies use Atlassian Document Format; include this helper
+next to `jira` so every body is a simple paragraph node:
+
+```bash
+adf() { printf '{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"%s"}]}]}' "$1"; }
+```
 
 ## Terminology Mapping
 
@@ -61,19 +89,21 @@ Relevant config from `../config/project-management.config.md`:
 
 ## Operations
 
-| Generic operation | Jira (Atlassian MCP) |
-|---|---|
-| Create `[feature]` | Create issue of type **Epic** in `JIRA_PROJECT_KEY` |
-| Create `[task]` under a feature | Create issue of type **Story**, parent/epic-link = `featureId` |
-| Read a `[task]` | Get issue by key |
-| List `[tasks]` in a feature | JQL search: `"Epic Link" = <featureId>` (or `parent = <featureId>`) |
-| Set `[task]` status | Transition the issue to the mapped status (use the transition, not a raw field write) |
-| Set `[feature]` status | Transition the Epic to the mapped status |
-| Add a comment to a `[task]` | Add comment to the issue |
+| Generic operation | mcp | rest (via `jira`) |
+|---|---|---|
+| Create `[feature]` | create an Epic in `JIRA_PROJECT_KEY` | `jira /rest/api/3/issue -X POST -d '{"fields":{"project":{"key":"<KEY>"},"issuetype":{"name":"Epic"},"summary":"<name>"}}'` |
+| Create `[task]` under a feature | create a Story linked to the Epic | `jira /rest/api/3/issue -X POST -d '{"fields":{"project":{"key":"<KEY>"},"issuetype":{"name":"Story"},"summary":"<title>","description":'"$(adf "<text>")"',"parent":{"key":"<featureId>"}}}'` |
+| Read a `[task]` | get the Story | `jira "/rest/api/3/issue/<taskId>?fields=summary,description,status,assignee,comment"` |
+| List `[tasks]` in a feature | search by Epic | `jira "/rest/api/3/search?jql=parent=<featureId>"` |
+| List available transitions | (implicit) | `jira "/rest/api/3/issue/<taskId>/transitions"` |
+| Set `[task]`/`[feature]` status | transition the item | `jira "/rest/api/3/issue/<taskId>/transitions" -X POST -d '{"transition":{"id":"<transitionId>"}}'` |
+| Set `[task]` assignee | update assignee | `jira "/rest/api/3/issue/<taskId>/assignee" -X PUT -d '{"accountId":"<accountId>"}'` |
+| Add a comment to a `[task]` | add comment | `jira "/rest/api/3/issue/<taskId>/comment" -X POST -d '{"body":'"$(adf "<text>")"'}'` |
 
 ## Rules
 
-- ALL operations MUST use MCP tools. If ANY call fails: **STOP** and report (andon cord).
+- ALL operations MUST use the active access mechanism (`JIRA_ACCESS`: MCP tools or the
+  REST API). If ANY call fails: **STOP** and report (andon cord).
   Never work around a failure.
 - NEVER skip status updates.
 - Status changes are **transitions**, not direct field edits — a status may be unreachable
@@ -83,5 +113,8 @@ Relevant config from `../config/project-management.config.md`:
 
 ## Initialization
 
-Call any read MCP tool (e.g. fetch the current user, or a 1-result JQL search) to confirm
-authentication. If unavailable or auth fails: stop and tell the user to fix the MCP setup.
+- **mcp**: Call any read MCP tool (e.g. fetch the current user, or a 1-result JQL search) to
+  confirm authentication. If unavailable or auth fails: stop and tell the user to fix the MCP
+  setup.
+- **rest**: Run `jira /rest/api/3/myself` — must return your account. If it fails: stop and
+  tell the user to check `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`.
