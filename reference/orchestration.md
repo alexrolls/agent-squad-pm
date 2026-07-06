@@ -82,6 +82,15 @@ invent new ones, never misspell them.
 | `[andon]` | any role | Stop-the-line report: what failed, exact error, what you did NOT do. |
 | `[escalation]` | team-lead | Needs the human: question + context + what was already tried. |
 
+## Status routing
+
+The board (`config/statuses.config.json`, composed into your startup prompt) assigns
+every status an owner. **Whenever you move an item into a status, notify the new
+owner's mailbox** (and, as always, the move itself lands as tracker state). If the
+owner is a `{"team": ...}`, send to that team's lead, who dispatches internally.
+The owner of a status is the only role that works items sitting in it and the only
+one that performs its outbound transitions.
+
 ## Claiming a [task]
 
 1. Read the [task] in full via the adapter (description, [subtasks], all comments).
@@ -106,12 +115,14 @@ claim → [design-note] → wait for [design-approved]      (no code before the 
       → findings? → back to [Active], fix, [review-request] again
       → [review-approval] + [architecture-approval] (both, with file lists)
       → integrator: verify lists == diff, stage explicitly, run VALIDATE_*,
-        merge to the feature branch, commit, move to [Completed]   (atomic pair)
+        merge to the feature branch, commit, move to [Ready to deploy] (atomic pair)
       → principal-architect divergence sweep updates upcoming [tasks]
 ```
 
-The port's state machine is untouched: gates live in comments, statuses move only
-`[Planned] → [Active] → [Review] → [Completed]` (rework: `[Review] → [Active]`).
+Gates live in comments; statuses move only along the `transitions` graph in
+`config/statuses.config.json`. Default board: `[Planned] → [Active] → [Review] →
+[Ready to deploy]`, rework `[Review] → [Active]`, and `[Blocked]` as the parking
+status for stuck work (owner: team-lead — see lifecycle Scenario 7).
 
 ## Dual review
 
@@ -134,7 +145,7 @@ always clean; anything broken on the branch is ours to fix or file (Scenario 6).
 ## Integration
 
 The `integrator` is the **only** role that merges to the feature branch, commits, or
-marks `[Completed]`. Pipeline (all-or-nothing, zero tolerance, no overrides — not
+marks `[Ready to deploy]`. Pipeline (all-or-nothing, zero tolerance, no overrides — not
 even from the team-lead):
 
 1. Verify both approval comments exist and their file lists are identical to
@@ -144,10 +155,10 @@ even from the team-lead):
 3. Run `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT` (skip `null` ones, record
    skips). Any failure → `[andon]`, task back to `[Active]`.
 4. Merge the task branch into the feature branch; remove the worktree.
-5. Commit, capture the hash, then immediately move the [task] to `[Completed]`,
+5. Commit, capture the hash, then immediately move the [task] to `[Ready to deploy]`,
    citing the hash. Commit and completion are one atomic pair — never one without
    the other.
-6. When every [task] is `[Completed]`, tell the team-lead and principal-architect; the [feature] moves to
+6. When every [task] is `[Ready to deploy]`, tell the team-lead and principal-architect; the [feature] moves to
    `[Resolved]` only after the Lead's completion checklist passes.
 
 ## Supervision — the team-lead loop
@@ -159,6 +170,7 @@ Detect:
   no new comment past the threshold; a `[design-note]`, question, or
   `[review-request]` that nobody answered (the principal-architect is on the hot
   path — monitor it like anyone else).
+- **Parked** — a [task] sitting in `[Blocked]` with no new comment past the threshold; the team-lead owns driving it out.
 - **Conflict** — two claimants on one [task]; contradictory `[divergence]` notes
   across [tasks]; a merge conflict reported by the integrator; a deadlock
   (A waits on B waits on A).
@@ -183,7 +195,7 @@ blocks the team on an interactive user prompt; escalation is the channel.
 ## Recovery
 
 Relaunched or restarted agents need no session state: read your role brief, query
-the tracker for [tasks] assigned to your role in `[Active]`/`[Review]`, read the
+the tracker for [tasks] assigned to your role in any non-terminal status, read the
 comment trail (design note, approvals, findings), check your worktree, resume at the
 pipeline stage the comments prove you reached. If the trail is ambiguous → `[andon]`.
 
