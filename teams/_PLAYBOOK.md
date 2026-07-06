@@ -19,7 +19,7 @@ protocol; it never contradicts it.
 2. **The Senior QA Engineer is the final review gate.** No [task] reaches the
    integrator until QA's `[review-approval]` exists, and QA approves only after
    every other required approval for that [task] is already on record. Work is
-   "done" only after QA's approval AND the integrator's merge + `[Completed]`.
+   "done" only after QA's approval AND the integrator's merge + `[Ready to deploy]`.
 
 ## Stages
 
@@ -50,8 +50,8 @@ protocol; it never contradicts it.
    always judges the final shape of the change.
 6. **Integration.** The standard `integrator` (`roles/integrator.md`) verifies
    the approvals and file lists, validates, merges, commits, and marks
-   `[Completed]` — the atomic pair. Every preset roster includes it.
-7. **Close.** When all [tasks] are `[Completed]`: the architect runs the feature
+   `[Ready to deploy]` — the atomic pair. Every preset roster includes it.
+7. **Close.** When all [tasks] are `[Ready to deploy]`: the architect runs the feature
    completion checklist, the TPM confirms the acceptance criteria hold at
    feature level, and only then does the [feature] move to `[Resolved]`.
 

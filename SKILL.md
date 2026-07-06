@@ -20,7 +20,7 @@ skill's directory):
 - `adapters/<Tool>.md` — how to perform each operation in the active tool
 
 > **Golden rule:** in everything you write — comments, commit messages, messages to the
-> user — use only the generic vocabulary — terms `[feature]`, `[task]`, `[subtask]` and statuses `[Planned]`/`[Active]`/`[Review]`/`[Completed]`. Never write "issue", "epic",
+> user — use only the generic vocabulary — terms `[feature]`, `[task]`, `[subtask]` and the statuses defined in `config/statuses.config.json` (default board: `[Planned]`/`[Active]`/`[Review]`/`[Blocked]`/`[Ready to deploy]`). Never write "issue", "epic",
 > "story", or "ticket" outside the adapter. See the banned-terms list in `vocabulary.md`.
 
 ## Mandatory Preparation (every invocation)
@@ -60,12 +60,16 @@ each generic operation through the adapter's *Operations* table:
   it. Never claim a status you didn't set.
 - **If any operation fails, stop and report it** (Scenario 7). Never work around a failure
   or fabricate a result.
-- **Never skip a status transition.** Move in order:
-  `[Planned]` → `[Active]` → `[Review]` → `[Completed]` (rework: `[Review]` → `[Active]`).
-- **When `STRICT_STATUS=true`, verify the current status before writing.** If it's not what
-  the step expects, pull the andon cord instead of forcing the change.
-- **`[Completed]` means verified-done** — reviewed, tests/build green, and (if your project
-  couples them) committed. Never mark work complete that was skipped or is failing.
+- **Never skip a status transition.** Legal moves are the `transitions` graph in
+  `config/statuses.config.json` (default board:
+  `[Planned]` → `[Active]` → `[Review]` → `[Ready to deploy]`, rework `[Review]` → `[Active]`,
+  `[Blocked]` for stuck work).
+- **When `STRICT_STATUS=true`, verify the current status before writing** and that the
+  intended move is in its `transitions` list. If not, pull the andon cord instead of
+  forcing the change.
+- **`[Ready to deploy]` means verified-done** — reviewed, tests/build green, and committed
+  (the move and the commit are one atomic step). Never mark work done that was skipped
+  or is failing.
 
 ## Reporting back
 
