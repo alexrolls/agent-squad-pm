@@ -1,5 +1,5 @@
 ---
-name: project-management
+name: agent_squad_pm
 description: Create, track, and update [features] and [tasks] in any project-management tool — Linear, Jira, GitHub Issues, or a Markdown fallback — through one tool-agnostic workflow. Use when the user wants to plan a feature, break work into tasks, start/review/complete a task, change a [task]'s status, or connect/switch the project-management tool, or run a multi-agent team on a feature (orchestration with a team lead, principal architect, and cross-functional implementers). Language- and framework-agnostic.
 allowed-tools: *
 ---
