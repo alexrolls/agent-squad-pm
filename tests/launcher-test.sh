@@ -47,7 +47,7 @@ check "prompt contains protocol"    grep -q "Orchestration — The Multi-Agent P
 check "prompt contains featureId"   grep -q "FEAT-1" .teamwork/test-feature/prompts/backend.md
 check "prompt contains team config" grep -q "POLL_INTERVAL_SECONDS" .teamwork/test-feature/prompts/backend.md
 check "pid file written"            test -f .teamwork/test-feature/pids/backend.pid
-sleep 1
+for i in $(seq 1 20); do [ -f backend-received.txt ] && break; sleep 0.1; done
 check "stub agent ran with prompt"  grep -q "Role: backend" backend-received.txt
 check "mailbox dir created"         test -d .teamwork/test-feature/mailbox/backend
 
@@ -64,6 +64,11 @@ check "worktree created"  test -d .teamwork/test-feature/worktrees/backend-T-42
 check "worktree branch"   git -C .teamwork/test-feature/worktrees/backend-T-42 rev-parse --abbrev-ref HEAD
 [ "$(git -C .teamwork/test-feature/worktrees/backend-T-42 rev-parse --abbrev-ref HEAD)" = "backend-T-42" ] \
   && echo "ok: branch name backend-T-42" || { echo "FAIL: branch name"; FAILURES=$((FAILURES+1)); }
+
+# -- worktree re-add: remove the worktree dir but keep the branch, re-add should succeed --
+git worktree remove .teamwork/test-feature/worktrees/backend-T-42
+"$LAUNCH" worktree test-feature backend T-42
+check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend-T-42
 
 # -- status + stop --------------------------------------------------------------
 "$LAUNCH" status test-feature | grep -q backend && echo "ok: status lists role" || { echo "FAIL: status"; FAILURES=$((FAILURES+1)); }

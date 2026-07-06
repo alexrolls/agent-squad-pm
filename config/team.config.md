@@ -13,7 +13,7 @@ The project-management tool itself is configured separately in
 ## Role → command map
 
 `{prompt_file}` is replaced by the launcher with the path to the composed startup
-prompt. Any agentic CLI works if it can read files, run shell commands, and use git.
+prompt. The examples inline the file's content with `$(cat {prompt_file})` because these CLIs take the prompt as a string argument; a CLI that reads a prompt from a file can use `{prompt_file}` directly. Any agentic CLI works if it can read files, run shell commands, and use git.
 Set a role to `null` to exclude it from launches (the team-lead composes the actual
 roster per [feature] — e.g. no frontend [tasks] → no frontend agent).
 
@@ -43,7 +43,7 @@ ESCALATE_AFTER_ATTEMPTS=2        # Failed unblock attempts before the Lead escal
 
 The Integrator runs these before every merge+commit. Set them to your project's real
 commands; `null` skips that check (allowed, but the Integrator records the skip in
-its `[review-request]` verification comment).
+its completion comment on the [task]).
 
 ```
 VALIDATE_BUILD=null              # e.g. "npm run build" / "dotnet build" / "cargo build"

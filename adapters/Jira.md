@@ -49,8 +49,10 @@ Descriptions and comment bodies use Atlassian Document Format; include this help
 next to `jira` so every body is a simple paragraph node:
 
 ```bash
-adf() { printf '{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"%s"}]}]}' "$1"; }
+adf() { jq -cn --arg t "$1" '{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":$t}]}]}'; }
 ```
+
+(`jq` handles JSON escaping; if `jq` is unavailable, escape the text yourself before splicing it into the body.)
 
 ## Terminology Mapping
 
@@ -86,6 +88,8 @@ adf() { printf '{"type":"doc","version":1,"content":[{"type":"paragraph","conten
 |---|---|---|
 | `featureId` | Epic key | `ENG-100` |
 | `taskId` | Story key | `ENG-142` |
+
+The `jira()` and `adf()` helpers above must be defined in your shell before running the rest-column commands.
 
 ## Operations
 

@@ -138,7 +138,7 @@ marks `[Completed]`. Pipeline (all-or-nothing, zero tolerance, no overrides — 
 even from the team-lead):
 
 1. Verify both approval comments exist and their file lists are identical to
-   `git diff --name-only <feature-branch>...<task-branch>` in the worktree.
+   `git diff --name-only <feature-branch>...HEAD` (run from inside the [task]'s worktree).
    Any mismatch → `[andon]`.
 2. Stage by explicit file list (never `add -A`), verify the staged set matches.
 3. Run `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT` (skip `null` ones, record

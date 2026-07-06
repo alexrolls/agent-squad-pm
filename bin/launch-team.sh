@@ -103,7 +103,11 @@ case "${1:-}" in
     wt="$(teamroot "$team")/worktrees/$role-$task"
     [ -d "$wt" ] && { echo "$wt"; exit 0; }
     mkdir -p "$(dirname "$wt")"
-    git -C "$REPO_ROOT" worktree add "$wt" -b "$role-$task" >/dev/null
+    if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$role-$task"; then
+      git -C "$REPO_ROOT" worktree add "$wt" "$role-$task" >/dev/null
+    else
+      git -C "$REPO_ROOT" worktree add "$wt" -b "$role-$task" >/dev/null
+    fi
     echo "$wt"
     ;;
   status)

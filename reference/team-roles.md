@@ -15,6 +15,8 @@ The scenarios in `lifecycle.md` don't change — only *who* performs each write 
 
 ## Roles
 
+When running an actual agent team (`reference/orchestration.md`), the abstract roles map to concrete role names: Coordinator = `team-lead`, Implementer = `backend` / `frontend` / `qa`, Reviewer = `reviewer`, Finalizer = `integrator`, plus `principal-architect` (technical authority). Actionable instructions (mailboxes, escalation) always use the concrete names.
+
 | Role | Owns |
 |---|---|
 | **Coordinator** | Plans the [feature], creates [tasks], assigns them, decides what new work enters the current iteration. Never writes code. |
@@ -33,17 +35,17 @@ still holds — it's about which transition, not how many humans/agents exist.
 
 | Transition | Sole owner | Pre-check before acting |
 |---|---|---|
-| create `[task]` `[Planned]` | Coordinator | — |
+| create `[task]` `[Planned]` | Coordinator | planning approval from the Principal Architect exists (team mode — see `reference/orchestration.md`) |
 | `[Planned]` → `[Active]` | Implementer | verify `[task]` is `[Planned]` (not already claimed) |
 | `[Review]` → `[Active]` | Implementer | verify `[task]` is `[Review]` (rework requested) |
 | `[Review]` → `[Completed]` | Finalizer | verify `[task]` is `[Review]` **and** commit succeeded |
-| `[feature]` → `[Resolved]` | Coordinator/Finalizer | verify **all** `[tasks]` are `[Completed]` |
+| `[feature]` → `[Resolved]` | Coordinator (team-lead) — after the completion checklist | verify **all** `[tasks]` are `[Completed]` |
 | `[design-note]` → `[design-approved]`/`[design-pushback]` (comment gate, no status move) | Principal Architect | a `[design-note]` exists on the `[Active]` [task] |
 | `[Active]` → `[Review]` | Implementer (with `[review-request]`) | verify `[task]` is `[Active]` and `[design-approved]` exists (team mode) |
 | approve in `[Review]` (comment gate) | Reviewer (`[review-approval]`) **and** Principal Architect (`[architecture-approval]`) | both lists must match the diff |
 
 If any role finds a [task] in an unexpected status, it **pulls the andon cord**: stop,
-don't guess, escalate to the Coordinator.
+don't guess, escalate to the Coordinator (concrete role: `team-lead`).
 
 ---
 

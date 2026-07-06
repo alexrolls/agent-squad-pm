@@ -20,8 +20,7 @@ skill's directory):
 - `adapters/<Tool>.md` — how to perform each operation in the active tool
 
 > **Golden rule:** in everything you write — comments, commit messages, messages to the
-> user — use only the generic terms: `[feature]`, `[task]`, `[subtask]` and the generic
-> statuses `[Planned]`/`[Active]`/`[Review]`/`[Completed]`. Never write "issue", "epic",
+> user — use only the generic vocabulary — terms `[feature]`, `[task]`, `[subtask]` and statuses `[Planned]`/`[Active]`/`[Review]`/`[Completed]`. Never write "issue", "epic",
 > "story", or "ticket" outside the adapter. See the banned-terms list in `vocabulary.md`.
 
 ## Mandatory Preparation (every invocation)
