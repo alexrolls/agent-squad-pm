@@ -5,7 +5,7 @@
 Uses native GitHub Issues, grouped by Milestone. Default access is the **`gh` CLI** (no MCP
 server required); set `GITHUB_USE_MCP=true` to use the GitHub MCP server instead. A
 `[feature]` is a Milestone, a `[task]` is an Issue, task status is carried by labels, and
-`[Completed]` closes the issue.
+`[Ready to deploy]` closes the issue.
 
 ## MCP / CLI Setup
 
@@ -17,14 +17,19 @@ gh auth status         # verify
 ```
 
 Repo comes from `GITHUB_REPO` in `../config/project-management.config.md`, or is inferred
-from the current git remote when that is `null`. Create the four status labels once:
+from the current git remote when that is `null`. Create the `status:*` labels for every
+non-terminal status in the board once:
 
 ```bash
 gh label create "status:planned" --color BFD4F2 2>/dev/null || true
 gh label create "status:active"  --color 0E8A16 2>/dev/null || true
 gh label create "status:review"  --color FBCA04 2>/dev/null || true
+gh label create "status:blocked" --color E4E669 2>/dev/null || true
 ```
-(`[Completed]` needs no label — it's the closed state.)
+(`[Ready to deploy]` needs no label — it's the closed state.)
+
+> Create `status:*` labels for every non-terminal status in `config/statuses.config.json`
+> before running the workflow — a missing label is an andon stop.
 
 **MCP (optional):** add the GitHub MCP server and set `GITHUB_USE_MCP=true`:
 
@@ -48,24 +53,28 @@ gh label create "status:review"  --color FBCA04 2>/dev/null || true
 | `[Task]` | Issue |
 | `[Subtask]` | Task-list checkbox (`- [ ] ...`) in the issue body |
 
-## Feature Status Mapping
+## Status Mapping
 
-Milestones only have open/closed, so most feature status is *derived from its tasks*.
+Statuses come from `config/statuses.config.json` — each status's `tool` map holds this
+adapter's concrete value under the `"GitHubIssues"` key. This adapter's *mechanism* for
+setting a status is: open/closed + one `status:*` label (setting a status removes the
+previous `status:*` label).
 
-| Generic status | GitHub (Milestone) |
+**Missing mapping = andon.** If a status has no `"GitHubIssues"` entry, or the repo
+lacks the required `status:*` label, stop and report — never invent a fallback status.
+
+Shipped defaults (the default board):
+
+| Status | GitHub (Issue) |
 |---|---|
-| `[Planned]` | Open, no task started |
-| `[Active]` | Open, ≥1 task in progress (derived) |
-| `[Resolved]` | Closed |
+| `[Planned]` | open + `status:planned` |
+| `[Active]` | open + `status:active` |
+| `[Review]` | open + `status:review` |
+| `[Blocked]` | open + `status:blocked` |
+| `[Ready to deploy]` | closed |
 
-## Task Status Mapping
-
-| Generic status | GitHub (Issue) |
-|---|---|
-| `[Planned]` | Open + label `status:planned` (or no status label) |
-| `[Active]` | Open + label `status:active` |
-| `[Review]` | Open + label `status:review` |
-| `[Completed]` | Closed |
+Feature statuses `[Planned]` / `[Active]` / `[Resolved]` map to milestone open (no task
+started) / milestone open (≥1 task active, derived) / milestone closed.
 
 > Setting a status label means **removing the previous** status label and adding the new
 > one — never leave two status labels on one issue.
@@ -88,7 +97,7 @@ CLI column assumes `-R <GITHUB_REPO>` is appended when `GITHUB_REPO` is set.
 | Read a `[task]` | `gh issue view <taskId> --comments` |
 | List `[tasks]` in a feature | `gh issue list --milestone "<featureId>" --state all` |
 | Set `[task]` status | `gh issue edit <taskId> --remove-label "status:planned" --add-label "status:active"` (remove the label matching the [task]'s current status — read it first; globs do not work with `--remove-label`) |
-| Set `[task]` → `[Completed]` | `gh issue close <taskId>` |
+| Set `[task]` → `[Ready to deploy]` | `gh issue close <taskId>` |
 | Reopen (rework) | `gh issue reopen <taskId> --add-label status:active` |
 | Set `[feature]` → `[Resolved]` | `gh api -X PATCH repos/:owner/:repo/milestones/<n> -f state=closed` |
 | Add a comment to a `[task]` | `gh issue comment <taskId> --body "<...>"` |
@@ -98,7 +107,7 @@ CLI column assumes `-R <GITHUB_REPO>` is appended when `GITHUB_REPO` is set.
 - Every write goes through `gh` (or the GitHub MCP tools when `GITHUB_USE_MCP=true`). On a
   non-zero exit / MCP error: **stop and report** (andon cord). Never fake success.
 - Exactly one `status:*` label at a time on an open issue.
-- `[Completed]` = closed; reopening for rework re-adds `status:active`.
+- `[Ready to deploy]` = closed; reopening for rework re-adds `status:active`.
 - `featureId` is a Milestone (title or number); `taskId` is an Issue number.
 
 ## Initialization

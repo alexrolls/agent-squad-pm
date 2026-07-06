@@ -33,22 +33,26 @@ For a CLI tool, the install/auth commands. For a file-based tool, "none".
 | `[Task]` | <e.g. Issue / Story / Ticket> |
 | `[Subtask]` | Bullet/checklist item in the [task] description |
 
-## Feature Status Mapping
+## Status Mapping
 
-| Generic status | <ToolName> |
-|---|---|
-| `[Planned]` | <...> |
-| `[Active]` | <...> |
-| `[Resolved]` | <...> |
+Statuses come from `config/statuses.config.json` — each status's `tool` map holds this
+adapter's concrete value under the `"<ToolName>"` key. This adapter's *mechanism* for
+setting a status is: <how a status is represented and changed in this tool>.
 
-## Task Status Mapping
+**Missing mapping = andon.** If a status has no `"<ToolName>"` entry, or the tool's
+workspace lacks the mapped state, stop and report — never invent a fallback status.
 
-| Generic status | <ToolName> |
+Shipped defaults (the default board):
+
+| Status | <ToolName> |
 |---|---|
 | `[Planned]` | <...> |
 | `[Active]` | <...> |
 | `[Review]` | <...> |
-| `[Completed]` | <...> |
+| `[Blocked]` | <...> |
+| `[Ready to deploy]` | <...> |
+
+Feature statuses `[Planned]` / `[Active]` / `[Resolved]` map to <...>.
 
 ## ID Mapping
 

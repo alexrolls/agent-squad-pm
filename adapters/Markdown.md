@@ -26,26 +26,14 @@ The root directory comes from `MARKDOWN_ROOT` in
 | `[Task]` | A numbered `##` section within the feature file |
 | `[Subtask]` | A `-` bullet under a task section |
 
-## Feature Status Mapping
+## Status Mapping
 
-Status is literal bracket text on the feature's title line.
+Status is literal bracket text (on the feature's title line; at the end of a task's
+`##` header). This adapter writes each status's `"Markdown"` value from
+`config/statuses.config.json` verbatim — custom boards work with no setup at all.
 
-| Generic status | Markdown |
-|---|---|
-| `[Planned]` | `[Planned]` |
-| `[Active]` | `[Active]` |
-| `[Resolved]` | `[Resolved]` |
-
-## Task Status Mapping
-
-Status is literal bracket text at the end of the task's `##` header.
-
-| Generic status | Markdown |
-|---|---|
-| `[Planned]` | `[Planned]` |
-| `[Active]` | `[Active]` |
-| `[Review]` | `[Review]` |
-| `[Completed]` | `[Completed]` |
+Shipped defaults: `[Planned]`, `[Active]`, `[Review]`, `[Blocked]`,
+`[Ready to deploy]` for tasks; `[Planned]`, `[Active]`, `[Resolved]` for features.
 
 ## ID Mapping
 
