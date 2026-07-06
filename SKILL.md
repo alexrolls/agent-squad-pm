@@ -48,17 +48,18 @@ each generic operation through the adapter's *Operations* table:
 | Start / pick up / work on a task | 2 — Start a `[task]` |
 | Note a change from what a task said | 3 — Diverge |
 | Send a task for review | 4 — Request review |
-| Finish / close out a task | 5 — Complete a `[task]` |
+| Finish / close out a task | 5 — Finalize a `[task]` |
 | File a bug / follow-up found mid-work | 6 — File newly-discovered work |
-| (anything wrong / blocked / failed) | 7 — Andon cord: stop & report |
+| Work is stuck / blocked / cannot proceed | 7 — Block a `[task]` |
+| (anything wrong / blocked / failed) | 8 — Andon cord: stop & report |
 | Run an agent team on a feature ("launch the team") | Team: set `TEAM_MODE=true`, follow `reference/orchestration.md`; launch via `bin/launch-team.sh` |
-| Connect a new tool / switch tools | 8 — Connect / switch |
+| Connect a new tool / switch tools | 9 — Connect / switch |
 
 ## Non-negotiables (the fail-loud contract)
 
 - **Every status change is a real write** through the adapter's mechanism — then confirm
   it. Never claim a status you didn't set.
-- **If any operation fails, stop and report it** (Scenario 7). Never work around a failure
+- **If any operation fails, stop and report it** (Scenario 8). Never work around a failure
   or fabricate a result.
 - **Never skip a status transition.** Legal moves are the `transitions` graph in
   `config/statuses.config.json` (default board:
