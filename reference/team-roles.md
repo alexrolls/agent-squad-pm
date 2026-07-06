@@ -21,6 +21,8 @@ The scenarios in `lifecycle.md` don't change — only *who* performs each write 
 | **Implementer** | Picks up a [task], writes the code, records divergences. |
 | **Reviewer** | Reviews an implementer's work, approves or sends it back. Never modifies code. |
 | **Finalizer** | Runs final validation, commits, and marks [tasks] `[Completed]`. The **single** role allowed to complete tasks and to couple completion with a commit. |
+| **Principal Architect** | Technical authority: planning approval, per-[task] design gate, architecture half of every review, sole editor of upcoming [task] descriptions. Never writes code. |
+| **Team Lead** | Process authority: plans, launches, supervises, unblocks, reassigns, escalates. Never writes code, never overrides Finalizer/Integrator or Principal Architect. |
 
 Small teams collapse roles (one agent can be Reviewer + Finalizer). The ownership *table*
 still holds — it's about which transition, not how many humans/agents exist.
@@ -33,10 +35,12 @@ still holds — it's about which transition, not how many humans/agents exist.
 |---|---|---|
 | create `[task]` `[Planned]` | Coordinator | — |
 | `[Planned]` → `[Active]` | Implementer | verify `[task]` is `[Planned]` (not already claimed) |
-| `[Active]` → `[Review]` | Reviewer | verify `[task]` is `[Active]` |
 | `[Review]` → `[Active]` | Implementer | verify `[task]` is `[Review]` (rework requested) |
 | `[Review]` → `[Completed]` | Finalizer | verify `[task]` is `[Review]` **and** commit succeeded |
 | `[feature]` → `[Resolved]` | Coordinator/Finalizer | verify **all** `[tasks]` are `[Completed]` |
+| `[design-note]` → `[design-approved]`/`[design-pushback]` (comment gate, no status move) | Principal Architect | a `[design-note]` exists on the `[Active]` [task] |
+| `[Active]` → `[Review]` | Implementer (with `[review-request]`) | verify `[task]` is `[Active]` and `[design-approved]` exists (team mode) |
+| approve in `[Review]` (comment gate) | Reviewer (`[review-approval]`) **and** Principal Architect (`[architecture-approval]`) | both lists must match the diff |
 
 If any role finds a [task] in an unexpected status, it **pulls the andon cord**: stop,
 don't guess, escalate to the Coordinator.
@@ -64,3 +68,13 @@ operation whether the Finalizer is closing a GitHub issue, dragging a Linear car
 editing a Markdown header. The role model is pure port; the adapter is pure translation.
 That separation is the whole point — you can restructure your team without touching a
 single adapter, and swap tools without touching a single role.
+
+---
+
+## Running an actual team
+
+This file defines *ownership*. The full multi-agent mechanics — mailboxes,
+heartbeats, claiming, the design gate, dual review, the unblock ladder, launching
+heterogeneous LLM agents — live in `reference/orchestration.md` with one brief per
+role in `roles/`. Configure the team in `config/team.config.md` and launch with
+`bin/launch-team.sh`.

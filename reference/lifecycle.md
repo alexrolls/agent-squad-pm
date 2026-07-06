@@ -42,7 +42,11 @@ Turn an idea into a tracked feature with a task breakdown.
 3. **Move the [task] to `[Active]`** via the adapter *before* writing any code.
 4. If this is the feature's first `[Active]` task, the [feature] moves `[Planned]` →
    `[Active]` (do this only if the adapter tracks feature status explicitly).
-5. Implement, keeping the [task] description's `[subtasks]` as your checklist.
+5. **Team mode only (`TEAM_MODE=true`): pass the design gate.** Post a `[design-note]`
+   comment (approach, contract/data-model changes, affected components) and wait for
+   the principal-architect's `[design-approved]` before writing any code — see
+   `reference/orchestration.md`. Single-agent mode skips this step.
+6. Implement, keeping the [task] description's `[subtasks]` as your checklist.
 
 ---
 
@@ -53,8 +57,11 @@ Reality rarely matches the plan. When you must deviate from what the [task] desc
 1. **Add a comment** on the [task] (via the adapter) explaining *what* changed and *why*.
 2. If the divergence affects **other** [tasks] in the [feature], note it on those too, or
    flag it to the user — don't let a silent change strand later tasks.
-3. Keep working. The comment is the audit trail; the task description can be updated if the
-   change is now permanent.
+3. Keep working. The comment is the audit trail. **Never edit the original [task]
+   description** — reviewers need the original ask. If the change is permanent and
+   affects upcoming [tasks], the description of *not-yet-started* [tasks] is updated
+   by the principal-architect in team mode, or by you with the user's confirmation
+   in single-agent mode.
 
 ---
 
