@@ -37,8 +37,9 @@ Turn an idea into a tracked feature with a task breakdown.
 
 1. **Read the [task]** in full via the adapter — description, `[subtasks]`, comments,
    linked `[feature]`.
-2. **Verify status is `[Planned]`.** If it isn't and `STRICT_STATUS=true`, pull the
-   **andon cord** (Scenario 7). Don't start work on something already `[Active]` elsewhere.
+2. **Verify the status is the board's initial status** (`[Planned]` on the default
+   board). If it isn't and `STRICT_STATUS=true`, pull the **andon cord** (Scenario 8).
+   Don't start work on something already `[Active]` elsewhere.
 3. **Move the [task] to `[Active]`** via the adapter *before* writing any code.
 4. If this is the feature's first `[Active]` task, the [feature] moves `[Planned]` →
    `[Active]` (do this only if the adapter tracks feature status explicitly).
@@ -74,24 +75,26 @@ Reality rarely matches the plan. When you must deviate from what the [task] desc
    reviewer (see `team-roles.md`).
 
 If review finds problems: **move the [task] back to `[Active]`**, fix, and return to
-`[Review]`. This is the only backward transition allowed.
+`[Review]`. Backward moves are legal exactly where `config/statuses.config.json` lists
+them (on the default board: `Review → Active`, plus the `Blocked` returns).
 
 ---
 
-## Scenario 5 — Complete a [task]
+## Scenario 5 — Finalize a [task]
 
 Only after the work is reviewed **and** verified (tests/build green, change actually does
 what the [task] asked):
 
 1. Confirm the [task] is in `[Review]`. If not, andon cord.
-2. Commit the work (if your project couples commits to completion — recommended).
-3. **Move the [task] to `[Completed]`** via the adapter, coupled with the successful commit
-   so the two never drift apart.
-4. If **all** [tasks] in the [feature] are now `[Completed]`, move the [feature] to
-   `[Resolved]`.
+2. The terminal status carries `requiresCommit: true` on the default board: **commit the
+   work and move the [task] to `[Ready to deploy]` as one atomic step** — never one
+   without the other. Cite the commit hash in the completion comment.
+3. If **all** [tasks] in the [feature] have reached the terminal status, move the
+   [feature] to `[Resolved]`.
 
-> **Never** mark `[Completed]` for work that was skipped, partially done, or has failing
-> tests. "Completed" is a claim of verified done — see the fail-loud invariant.
+`[Ready to deploy]` means: reviewed, verified, committed — awaiting deployment by humans.
+**Never** move work there that was skipped, partially done, or has failing tests — see
+the fail-loud invariant.
 
 ---
 
@@ -108,7 +111,21 @@ edge case, a follow-up):
 
 ---
 
-## Scenario 7 — Andon cord (stop-the-line)
+## Scenario 7 — Block a [task]
+
+When the *work* cannot proceed — missing dependency, unanswered question, broken
+external service — and it isn't a process failure (that's the andon cord, Scenario 8):
+
+1. **Add a comment** stating what is blocking, what was tried, and what would unblock.
+2. **Move the [task] to `[Blocked]`** via the adapter. The board's owner of `[Blocked]`
+   (default: team-lead) now owns resolving it.
+3. The `[Blocked]` owner works the blocker and, once cleared, **moves the [task] back**
+   to the appropriate working status (`Planned`, `Active`, or `Review` on the default
+   board) with a comment saying what changed.
+
+---
+
+## Scenario 8 — Andon cord (stop-the-line)
 
 Named after the Toyota cord any worker can pull to halt the line. Pull it when:
 
@@ -123,7 +140,7 @@ the failure mode this whole design exists to prevent.
 
 ---
 
-## Scenario 8 — Connect / switch tools
+## Scenario 9 — Connect / switch tools
 
 1. Ensure `adapters/<Tool>.md` exists (copy `adapters/_TEMPLATE.md` for a new tool).
 2. Set `PRODUCT_MANAGEMENT_TOOL=<Tool>` in `config/project-management.config.md`.
@@ -141,6 +158,7 @@ the failure mode this whole design exists to prevent.
 | 2 Start | `[task]` → `[Active]` (feature → `[Active]` on first) |
 | 3 Diverge | comment only |
 | 4 Review | `[task]` → `[Review]` (or back to `[Active]` on rework) |
-| 5 Complete | `[task]` → `[Completed]` (feature → `[Resolved]` when all done) |
+| 5 Finalize | commit + `[task]` → `[Ready to deploy]` (atomic); feature → `[Resolved]` when all done |
 | 6 New work | create `[task]` `[Planned]` |
-| 7 Andon | **no write** — stop and report |
+| 7 Block | comment + `[task]` → `[Blocked]`; owner routes it back when cleared |
+| 8 Andon | **no write** — stop and report |
