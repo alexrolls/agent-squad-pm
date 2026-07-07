@@ -6,6 +6,8 @@ Turn any agentic LLM into a disciplined engineering team that plans, builds,
 reviews, and ships work through **your** project tracker — Linear, Jira, GitHub
 Issues, or offline Markdown — without hard-coding a single tool or model.
 
+![Agent Squad PM demo](exports/execmatchai-issues-57s-70s.gif)
+
 It has three layers you can adopt one at a time:
 
 | Layer | What it gives you | Where |
