@@ -16,6 +16,7 @@ skill's directory):
 - `reference/lifecycle.md` — the numbered scenarios you execute
 - `reference/team-roles.md` — status ownership (only if `TEAM_MODE=true`)
 - `reference/orchestration.md` — multi-agent protocol (mailboxes, gates, unblocking)
+- `reference/dispatch.md` — who converts tracker/mailbox events into role launches (the loop lives outside the agent)
 - `roles/<role>.md` + `config/team.config.md` + `bin/launch-team.sh` — the agent team
 - `bin/tracker-ops.sh` — ergonomic CLI for recurring tracker operations (scriptable mechanisms)
 - `adapters/<Tool>.md` — how to perform each operation in the active tool
