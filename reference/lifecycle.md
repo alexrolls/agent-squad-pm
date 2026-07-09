@@ -157,6 +157,10 @@ When the plan should be settled before any code — the user asks for all plans
 up front, or the [tasks] share contracts that must not fork — run the gates as
 one batch instead:
 
+For preset teams this batch is the **default opener** (`teams/_PLAYBOOK.md`
+stage 3); per-[task] gates at claim time are the opt-out for genuinely
+emergent plans.
+
 1. **One `[design-note]` per [task]**, written against the real codebase (not the
    [task] text alone). Registering exports in the contract registry
    (`reference/orchestration.md` → *Contract registry*, team mode) is part of
@@ -178,7 +182,9 @@ one batch instead:
 5. **Everything lands as comments** on the [tasks], like any gate.
 6. At claim time the gate is already open: the implementer re-reads the approved
    note, its conditions, and any cross-cutting rulings, and proceeds — no second
-   approval needed unless a `[divergence]` or re-plan invalidated the note.
+   approval needed unless a `[divergence]` or re-plan invalidated the note
+   (under `EXECUTION=parallel` the sweep that flags this runs at `[Review]`
+   entry — see `reference/orchestration.md` → *Execution modes*).
 
 The per-[task] gate is unchanged — this scenario only moves *when* it runs.
 [Tasks] added later (Scenario 6) go through the normal per-[task] gate.

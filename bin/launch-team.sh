@@ -36,6 +36,18 @@ key_is_null() { # key_is_null KEY -> 0 if the config sets KEY explicitly to null
   grep -qE "^$1=null[[:space:]]*(#.*)?$" "$CONFIG"
 }
 
+validate_config() { # MAX_ACTIVE_IMPLEMENTERS is a parallel-only knob (spec: throughput levers)
+  local exec_mode max_active
+  exec_mode="$(read_key EXECUTION)"
+  max_active="$(read_key MAX_ACTIVE_IMPLEMENTERS)"
+  [ -z "$max_active" ] && return 0
+  [ "$exec_mode" = "parallel" ] || die "MAX_ACTIVE_IMPLEMENTERS is set but EXECUTION is '${exec_mode:-sequential}' — the knob only applies under EXECUTION=parallel"
+  case "$max_active" in
+    ''|*[!0-9]*) die "MAX_ACTIVE_IMPLEMENTERS must be a positive integer, got '$max_active'" ;;
+  esac
+  [ "$max_active" -ge 1 ] || die "MAX_ACTIVE_IMPLEMENTERS must be >= 1"
+}
+
 role_brief() { # role_brief <role> -> path to its brief, in roles/ or teams/roles/; empty if none
   if [ -f "$SKILL_DIR/roles/$1.md" ]; then
     printf '%s' "$SKILL_DIR/roles/$1.md"
@@ -212,6 +224,8 @@ launch_one() { # launch_one <team> <featureId> <role> [preset]
     echo "launched $role in background (pid $(cat "$dir/pids/$role.pid"))"
   fi
 }
+
+case "${1:-}" in validate-board|'') ;; *) validate_config ;; esac
 
 case "${1:-}" in
   team)
