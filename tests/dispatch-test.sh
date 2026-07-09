@@ -144,5 +144,20 @@ EOF
 out="$("$DISPATCH" feat-team feat/quiet.md --once --dry-run)"
 echo "$out" | grep -q "nothing actionable" && echo "ok: clean exit" || { echo "FAIL: clean exit"; FAILURES=$((FAILURES+1)); }
 
+# -- null-CMD: skips launch instead of dying, no mailbox written ---------------
+# Inject REVIEWER_CMD=null into the fixture config so the reviewer role is disabled.
+printf '\nREVIEWER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
+# Restore task 3 to [Review] in case earlier blocks altered it.
+sed -i '' 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
+# Clear reviewer pid and mailbox so this is a clean slate for the assertion.
+rm -rf .teamwork/feat-team/pids/reviewer.pid .teamwork/feat-team/mailbox/reviewer
+null_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --unblock=off)"
+echo "$null_out" | grep -q "skipped (REVIEWER_CMD=null" \
+  && echo "ok: null-CMD reviewer skipped" || { echo "FAIL: null-CMD reviewer not skipped"; FAILURES=$((FAILURES+1)); }
+check "null-CMD: reviewer.pid not created" test ! -f .teamwork/feat-team/pids/reviewer.pid
+check "null-CMD: reviewer mailbox not written" test ! -d .teamwork/feat-team/mailbox/reviewer
+# Remove the injected line to leave the config clean for any future assertions.
+sed -i '' '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
+
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }

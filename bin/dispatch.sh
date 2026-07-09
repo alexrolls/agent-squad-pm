@@ -13,6 +13,14 @@ PM_CONFIG="$SKILL_DIR/config/project-management.config.md"
 
 die() { echo "dispatch: $*" >&2; exit 1; }
 
+role_cmd_key() { # backend -> BACKEND_CMD ; principal-architect -> PRINCIPAL_ARCHITECT_CMD
+  printf '%s_CMD' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+}
+
+key_is_null() { # key_is_null KEY -> 0 if the config sets KEY explicitly to null
+  grep -qE "^$1=null[[:space:]]*(#.*)?$" "$CONFIG"
+}
+
 read_key() { # from team.config.md; quotes stripped; null -> empty
   local line; line="$(grep -m1 "^$1=" "$CONFIG" || true)"
   line="${line#*=}"; line="${line%\"}"; line="${line#\"}"
@@ -163,7 +171,10 @@ PYEOF
           *) die "unknown --unblock mode '$unblock'" ;;
         esac ;;
       launch)
-        if role_live "$team" "$arg"; then
+        local _ck; _ck="$(role_cmd_key "$arg")"
+        if key_is_null "$_ck"; then
+          echo "plan: launch $arg — skipped (${_ck}=null; the team-lead routes this queue)"
+        elif role_live "$team" "$arg"; then
           echo "plan: launch $arg — skipped (live instance)"
         else
           echo "plan: launch $arg ($detail)"

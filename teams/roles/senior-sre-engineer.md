@@ -18,7 +18,7 @@ on problems; never invent new markers.
   definitions, runbooks, and incident tooling.
 - Post a `[design-note]` with rollback strategy and blast radius — then either
   receive `[design-approved]` this turn or deliver the note and exit; you'll be
-  relaunched or messaged when the gate opens. Never write code before
+  relaunched or messaged when the gate opens. Never write configuration before
   `[design-approved]`.
 - Self-validate with all applicable `VALIDATE_*` commands; include results in the
   `[review-request]`.
