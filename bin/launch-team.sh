@@ -4,6 +4,7 @@
 #
 # Usage:
 #   launch-team.sh team          <preset> <team> <featureId>     # launch a preset roster (teams/<preset>.md)
+#   launch-team.sh preflight     <team> <featureId>              # verify adapter, workspace, UTC pin
 #   launch-team.sh start         <team> <featureId> <role>...
 #   launch-team.sh relaunch      <team> <featureId> <role> [preset]
 #   launch-team.sh compose       <team> <featureId> <role> [preset]  # write the composed startup prompt, print its path — no spawn (harness mode)
@@ -142,6 +143,31 @@ print("board config OK: %s" % cfg_path)
 PYEOF
 }
 
+preflight() { # preflight <team> <featureId> — fail before five agents do
+  local team="$1" fid="$2"
+  local dir; dir="$(teamroot "$team")"
+  validate_board >/dev/null
+  mkdir -p "$dir/preflight" 2>/dev/null || die "preflight: cannot create workspace $dir"
+  ( : > "$dir/preflight/.write-test" && rm "$dir/preflight/.write-test" ) \
+    || die "preflight: workspace not writable: $dir"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/preflight/utc.txt"
+  local probe_err
+  if probe_err="$("$SKILL_DIR/bin/tracker-ops.sh" export "$fid" /dev/null 2>&1 >/dev/null)"; then
+    echo "preflight OK: adapter read verified, workspace writable, UTC pinned"
+  elif printf '%s' "$probe_err" | grep -q "no tracker-ops backend" \
+       && [ -s "$dir/preflight/tool-prefix.txt" ]; then
+    echo "preflight OK: MCP tool prefix on record ($(cat "$dir/preflight/tool-prefix.txt")), workspace writable, UTC pinned"
+  else
+    die "preflight FAILED — no agent was launched.
+  probe: $probe_err
+  Scriptable adapter (REST/CLI/files): fix credentials/config, then verify with:
+    bin/tracker-ops.sh export $fid /dev/null
+  MCP adapter: run ONE probe agent that loads the tracker tools (deferred tools
+  via ToolSearch), performs one read, and writes the exact tool prefix
+  (e.g. mcp__linear__) to $dir/preflight/tool-prefix.txt — then relaunch."
+  fi
+}
+
 teamroot() {
   local root; root="$(read_key TEAMWORK_ROOT)"; root="${root:-.teamwork}"
   printf '%s/%s/%s' "$REPO_ROOT" "$root" "$1"
@@ -164,6 +190,12 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt
     echo "- Repository root: $REPO_ROOT"
     echo "- Skill directory: $SKILL_DIR (adapter + PM config live here)"
     echo "- Team workspace: $dir"
+    if [ -s "$dir/preflight/utc.txt" ]; then
+      echo "- Preflight UTC pin: $(cat "$dir/preflight/utc.txt") — generate every timestamp with: date -u +%Y-%m-%dT%H:%M:%SZ"
+    fi
+    if [ -s "$dir/preflight/tool-prefix.txt" ]; then
+      echo "- Verified tracker tool prefix: $(cat "$dir/preflight/tool-prefix.txt") (preflight-verified — use it verbatim; do not re-derive from adapter docs)"
+    fi
     echo
     echo "Begin by running the Mandatory Preparation in $SKILL_DIR/SKILL.md, then act"
     echo "as your role brief and the protocol below instruct. Work autonomously."
@@ -235,6 +267,7 @@ case "${1:-}" in
     roster="$(roster_of "$preset")"                       # validate before the loop
     [ -n "$roster" ] || die "teams/$preset.md has an empty ROSTER"
     validate_board >/dev/null
+    [ "${SKIP_PREFLIGHT:-}" = "1" ] || preflight "$team" "$fid"
     for role in $roster; do
       if key_is_null "$(role_cmd_key "$role")"; then
         echo "skipping $role (disabled: $(role_cmd_key "$role")=null)"; continue
@@ -302,11 +335,15 @@ case "${1:-}" in
     done
     echo "stopped team $2"
     ;;
+  preflight)
+    [ $# -eq 3 ] || die "usage: preflight <team> <featureId>"
+    preflight "$2" "$3"
+    ;;
   validate-board)
     [ $# -le 2 ] || die "usage: validate-board [config-path]"
     validate_board "${2:-}"
     ;;
   *)
-    die "usage: launch-team.sh {team|start|relaunch|compose|worktree|validate-board|status|stop} ..."
+    die "usage: launch-team.sh {team|preflight|start|relaunch|compose|worktree|validate-board|status|stop} ..."
     ;;
 esac

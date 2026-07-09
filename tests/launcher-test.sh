@@ -84,7 +84,7 @@ git worktree remove .teamwork/test-feature/worktrees/backend-T-42
 check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend-T-42
 
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
-TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
+SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
 check "preset composes fallback-role prompt" test -f .teamwork/test-feature/prompts/principal-software-architect.md
 check "preset brief resolved from teams/roles" grep -q "Role: principal-software-architect" .teamwork/test-feature/prompts/principal-software-architect.md
 check "preset prompt includes team file"     grep -q "Team: Full Stack" .teamwork/test-feature/prompts/principal-software-architect.md
@@ -113,7 +113,7 @@ else
 fi
 
 # -- team preset: unknown preset is refused ------------------------------------
-if TEAM_RUNNER=background "$LAUNCH" team nonesuch test-feature FEAT-2 2>/dev/null; then
+if SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team nonesuch test-feature FEAT-2 2>/dev/null; then
   echo "FAIL: unknown preset should be refused"; FAILURES=$((FAILURES+1))
 else
   echo "ok: unknown preset refused"
@@ -169,6 +169,54 @@ else
   echo "ok: non-integer knob refused"
 fi
 sed -i '' '/^EXECUTION=parallel$/d;/^MAX_ACTIVE_IMPLEMENTERS=zero$/d' "$CFG"
+
+# -- preflight: aborts before any launch when the adapter probe fails -----------
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Markdown
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+if out="$(TEAM_RUNNER=background "$LAUNCH" team full-stack pf-team missing/feature.md 2>&1)"; then
+  echo "FAIL: preflight should abort on a broken adapter read"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$out" | grep -q "preflight"; then
+  echo "ok: preflight aborts team launch on probe failure"
+else
+  echo "FAIL: wrong preflight abort message: $out"; FAILURES=$((FAILURES+1))
+fi
+check "preflight abort launched nothing" test ! -d .teamwork/pf-team/prompts
+
+# -- preflight: passes on a working adapter; prompts carry the UTC pin ----------
+mkdir -p pf && printf '# F [Planned]\n\n## 1 T [Planned]\n\n**Assignee:** —\n\nx.\n' > pf/feature.md
+TEAM_RUNNER=background "$LAUNCH" start pf-team pf/feature.md backend   # start skips preflight
+"$LAUNCH" preflight pf-team pf/feature.md
+check "preflight writes UTC pin" test -s .teamwork/pf-team/preflight/utc.txt
+out="$("$LAUNCH" compose pf-team pf/feature.md backend)"
+check "composed prompt carries UTC pin" grep -q "Preflight UTC pin" "$out"
+
+# -- preflight: MCP-style adapter needs the recorded tool prefix ----------------
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=SomeMcpTool
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+if "$LAUNCH" preflight pf-team pf/feature.md >/dev/null 2>&1; then
+  echo "FAIL: MCP adapter without tool-prefix.txt should fail preflight"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: MCP preflight demands a recorded tool prefix"
+fi
+printf 'mcp__sometool__' > .teamwork/pf-team/preflight/tool-prefix.txt
+check "MCP preflight passes with prefix on record" "$LAUNCH" preflight pf-team pf/feature.md
+out="$("$LAUNCH" compose pf-team pf/feature.md backend)"
+check "composed prompt carries verified prefix" grep -q "mcp__sometool__" "$out"
+
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Markdown
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
 
 # -- status + stop --------------------------------------------------------------
 # Capture first (grep -q closes the pipe early → SIGPIPE on the writer under pipefail).

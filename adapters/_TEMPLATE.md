@@ -92,3 +92,7 @@ MCP tool / CLI command / file edit.
 
 A cheap read that proves access works (e.g. list one item, `whoami`, check the file dir).
 If it fails: stop, tell the user to fix `MCP / CLI Setup`, do not proceed.
+
+> Executed **once by `launch-team.sh preflight`** (automatic before `team`), not
+> per-agent. Agents receive the verified access mechanism (and, for MCP tools, the
+> verified tool prefix) in their startup prompt and must not re-derive it.
