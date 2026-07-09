@@ -57,6 +57,13 @@ EXECUTION=sequential             # sequential = one [task] in flight at a time; 
                                  # parallel = worktree-per-[task] + task branches + integrator
                                  # merge; REQUIRED the moment >=2 implementers should work
                                  # concurrently (reference/orchestration.md → "Execution modes")
+MAX_ACTIVE_IMPLEMENTERS=null     # Only under EXECUTION=parallel. 1 = pipelined dispatch:
+                                 # full worktree isolation, but the team-lead dispatches
+                                 # the next [task] when the current one enters [Review]
+                                 # instead of after integration (reference/orchestration.md
+                                 # → "Execution modes"). >=2 = bounded full parallelism;
+                                 # null = unbounded parallel. Setting it under sequential
+                                 # is a config error — the launcher refuses to run.
 ```
 
 Review depth (`REVIEW_MODE=sequential|parallel|tiered`) is a **per-team** choice
