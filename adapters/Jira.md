@@ -115,6 +115,7 @@ The `jira()` and `adf()` helpers above must be defined in your shell before runn
 | Set `[task]` assignee | update assignee | `jira "/rest/api/3/issue/<taskId>/assignee" -X PUT -d '{"accountId":"<accountId>"}'` |
 | Add a comment to a `[task]` | add comment | `jira "/rest/api/3/issue/<taskId>/comment" -X POST -d '{"body":'"$(adf "<text>")"'}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via search, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| update comment | edit comment via MCP | REST `PUT /rest/api/3/issue/<issueId>/comment/<commentId>` (ADF body); or `bin/tracker-ops.sh update-comment ...` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state` (resolves the transition id for you), `comment` (body from

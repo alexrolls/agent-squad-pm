@@ -82,6 +82,31 @@ workflow — only the adapter knows the shape.
 
 ---
 
+## Comment markers
+
+Markers are the machine-readable protocol prefixes that begin every coordination comment. The full authorship rules and required content live in `reference/orchestration.md` → *Structured comments*. Vocabulary-level meanings:
+
+| Marker | One-line meaning |
+|---|---|
+| `[design-note]` | Implementer's proposed approach before any code. |
+| `[design-approved]` | Principal-architect gate open; carries architecture checklist. |
+| `[design-pushback]` | Principal-architect gate closed; lists required changes. |
+| `[api-ready]` | Backend contract available for frontend. |
+| `[divergence]` | What was done differently from the plan, and why. |
+| `[review-request]` | Implementation complete; ready for review. |
+| `[review-findings]` | Numbered problems to fix; task returns to `[Active]`. |
+| `[review-approval]` | Reviewer sign-off with explicit list of approved file paths. |
+| `[architecture-approval]` | Principal-architect sign-off. |
+| `[product-approval]` | Product owner scope/acceptance sign-off. |
+| `[product-pushback]` | Product owner scope gate closed. |
+| `[handoff]` | Team-lead reassignment summary for a fresh agent. |
+| `[progress]` | One per [task], edited in place: current stage, updated-at, ≤ 3 lines of state. |
+| `[digest]` | One per [feature], edited in place by the team-lead at milestones: one line per [task] — the human's whole view. |
+| `[andon]` | Stop-the-line report: what failed, exact error, what was not done. |
+| `[escalation]` | Needs the human: question, options, default-if-silent. |
+
+---
+
 ## Invariants every adapter must honour
 
 1. **All operations go through the tool's real interface** (MCP, CLI, or files) — never

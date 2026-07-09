@@ -32,6 +32,8 @@ Two principles rule everything:
 ├── BASELINE.md                  # known state of the branch at creation: test counts, known failures, validation commands (see "Baseline manifest")
 ├── review-ledger.md             # reviewers' one-line-per-ruling ledger of still-live conditions
 ├── tasks.json                   # read-only [task] export for credential-less roles (adapter "export" operation)
+├── artifacts/<taskId>/          # full logs, checklists, evidence files — cited by path from budgeted comments
+├── progress-ids/<taskId>        # comment id of the [task]'s editable [progress] comment
 └── ESCALATIONS.md               # the Lead's log of everything escalated to the human
 ```
 
@@ -224,6 +226,17 @@ authorized (its step 1.5). When a marker's only authorized role is the [task]'s
 own implementer, an **independent verifier** from the roster substitutes — no
 role ever approves its own work; none available → `[andon]`.
 
+**Budgets and supersession.** A gate-marker comment is ≤ **30 lines**: marker,
+`round: N`, `supersedes: <comment-id>` (round ≥ 2; Markdown adapter:
+`<marker>-<round>` stands in for the id), verdict, delta since the last round,
+file list, evidence/artifact paths, signature. Full checklists, logs, and long
+rationale live in `<TEAMWORK_ROOT>/<team>/artifacts/<taskId>/` and are cited by
+path — the integrator verifies cited paths exist. Reconstructing current state
+from a trail: per marker type, the comment with the highest `round:` not named
+by a later `supersedes:` is current; everything else is history (unnumbered
+pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
+[task] descriptions never enter the tracker — design notes are **delta-only**.
+
 | Marker | Written by | Meaning / required content |
 |---|---|---|
 | `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |
@@ -238,8 +251,10 @@ role ever approves its own work; none available → `[andon]`.
 | `[product-approval]` | product owner role (e.g. `senior-technical-product-manager`; the team-lead where no product role exists) | Scope/acceptance sign-off: scope ruling, acceptance-criteria verdict, any conditions. |
 | `[product-pushback]` | product owner role (same) | Scope gate closed: what must change in scope or acceptance criteria before work proceeds. |
 | `[handoff]` | team-lead | Reassignment: summary of state so a fresh agent can resume. |
+| `[progress]` | implementer (via lead in scribe mode) | **One per [task], edited in place** (`tracker-ops.sh update-comment`; Markdown adapter: append a superseding one). Content: stage (`claimed / design-approved / implementing / validating / review-round-N`), updated-at (UTC), ≤ 3 lines of state. Edit on stage boundaries only, ≥ 10 min apart. First post: capture the comment id in `<TEAMWORK_ROOT>/<team>/progress-ids/<taskId>`; a relaunched scribe re-reads the trail to find it. |
+| `[digest]` | team-lead | **One per [feature], on the [feature] itself, edited in place** at milestones only (a [task] hits terminal status, a gate rejects, an `[andon]`, feature done): one line per [task] (`<taskId> <title> — [Status] (<reason if blocked/rejected>)`) + `⚠ escalation open: <taskId>` lines. The human reads this one comment, never the trails. GitHubIssues: milestones take no comments — keep the digest in the milestone description (`gh api PATCH`). |
 | `[andon]` | any role | Stop-the-line report: what failed, exact error, what you did NOT do. |
-| `[escalation]` | team-lead | Needs the human: question + context + what was already tried. |
+| `[escalation]` | team-lead | Needs the human. Required shape: `question:` (one sentence), `context:` (≤ 4 lines), `options:` (≥ 2, each with a one-line consequence), `default-if-silent: <option> after <N hours>`. Also appended to `ESCALATIONS.md`. An `[escalation]` without options + default is a protocol error (`[andon]`). |
 
 ## Contract registry — parallel plans share names, not assumptions
 

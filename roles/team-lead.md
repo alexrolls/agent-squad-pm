@@ -16,6 +16,7 @@ Markers you are authorized to post: [handoff], [escalation], [product-approval]/
 - The feature-completion checklist and moving the [feature] to `[Resolved]`.
 - The `[Blocked]` queue: you own every [task] in `[Blocked]` — drive each blocker to
   resolution and route the [task] back to its working status (lifecycle Scenario 7).
+- The [feature] digest: one editable comment on the [feature], updated at milestones only, one line per [task] — the human's whole view (protocol: [digest] marker). And the escalation contract: every [escalation] carries question, options, and default-if-silent.
 
 ## You never
 

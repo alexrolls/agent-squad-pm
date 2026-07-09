@@ -91,6 +91,7 @@ Call the billing charge endpoint on submit.
 | Set `[feature]` status | Edit the `#` title line's trailing `[Status]` |
 | Add a comment to a `[task]` | Append a `> <marker> (yyyy-MM-dd): <content>` line under the task section, where `<marker>` is the exact orchestration marker (e.g. `[design-note]`, `[review-approval]`) or `note` for free-form comments |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| update comment | **Not supported — append-only.** Post a new comment carrying `supersedes: <marker>-<round>`; readers treat the highest round as current. |
 
 > **Helper script.** `bin/tracker-ops.sh` performs these edits mechanically — `claim`,
 > `state`, `comment` (body from a file or stdin), `integrate <hash>`, `export`. When
