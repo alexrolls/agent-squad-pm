@@ -53,6 +53,7 @@ Build the form.
 ## 2 Wire endpoint [Planned]
 
 **Assignee:** —
+**BlockedBy:** 1
 
 Call the endpoint.
 EOF
@@ -99,6 +100,8 @@ assert byid['$T#2']['status'] == 'Planned'
 assert byid['$T#1']['assignee'] == 'backend'
 assert byid['$T#2']['assignee'] is None
 assert any('design-note' in c['body'] for c in byid['$T#1']['comments'])
+assert byid['$T#2']['blockedBy'] == ['$T#1'], byid['$T#2'].get('blockedBy')
+assert byid['$T#1']['blockedBy'] == []
 "
 
 # -- fail-loud: every bad input is refused with a clear message -------------------

@@ -103,6 +103,7 @@ Call the billing charge endpoint on submit.
 - Task numbers are sequential within a file and never reused, even after completion.
 - Task headers always carry a number **and** a status: `## 3 Title [Active]`.
 - Every task section has exactly one `**Assignee:**` line (value: a role name or `—` for unclaimed).
+- `**BlockedBy:** <n>[, <n>...]` — optional; task numbers in the same feature file. Read by `tracker-ops.sh export` into `blockedBy` (used by `bin/dispatch.sh` for unblock *suggestions* — Markdown is never auto-unblocked).
 - `featureId` is a file path; `taskId` is a task number (`1`, `2`, `3`).
 - Change status only by editing the bracket text — keep exactly one status per header.
 - Comment markers must be exact (e.g. `[design-note]`, `[review-approval]`) — never paraphrase them.

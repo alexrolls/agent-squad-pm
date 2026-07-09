@@ -176,19 +176,23 @@ class Linear:
         return nodes[0]['id']
 
     def export(self, feature_id):
-        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } } } } }',
+        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } inverseRelations { nodes { type issue { identifier } } } } } } }',
                      {'id': self.project_id(feature_id)})
         if not d.get('project'):
             die("no Linear project '%s'" % feature_id)
         tasks = []
         for i in d['project']['issues']['nodes']:
             raw = i['state']['name']
+            blocked_by = [r['issue']['identifier']
+                          for r in (i.get('inverseRelations') or {}).get('nodes', [])
+                          if r.get('type') == 'blocks' and r.get('issue')]
             tasks.append({'taskId': i['identifier'], 'title': i['title'],
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (i.get('assignee') or {}).get('name'),
                           'description': i.get('description'),
                           'comments': [{'body': c['body'], 'createdAt': c['createdAt']}
-                                       for c in i['comments']['nodes']]})
+                                       for c in i['comments']['nodes']],
+                          'blockedBy': blocked_by})
         return tasks
 
 class Jira:
@@ -220,18 +224,21 @@ class Jira:
         self.api('/rest/api/3/issue/%s/comment' % task_id, {'body': self.adf(body)})
 
     def export(self, feature_id):
-        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment&maxResults=100'
+        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks&maxResults=100'
                        % urllib.request.quote('parent=%s' % feature_id))
         tasks = []
         for i in out.get('issues', []):
             f = i['fields']
             raw = f['status']['name']
+            blocked_by = [l['inwardIssue']['key'] for l in f.get('issuelinks', [])
+                          if l.get('type', {}).get('name') == 'Blocks' and l.get('inwardIssue')]
             tasks.append({'taskId': i['key'], 'title': f['summary'],
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (f.get('assignee') or {}).get('displayName'),
                           'description': f.get('description'),
                           'comments': [{'body': c.get('body'), 'createdAt': c.get('created')}
-                                       for c in (f.get('comment') or {}).get('comments', [])]})
+                                       for c in (f.get('comment') or {}).get('comments', [])],
+                          'blockedBy': blocked_by})
         return tasks
 
 class GitHubIssues:
@@ -296,7 +303,8 @@ class GitHubIssues:
                           'status': generic, 'statusRaw': raw_status,
                           'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
                           'description': i.get('body'),
-                          'comments': [{'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments]})
+                          'comments': [{'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments],
+                          'blockedBy': []})
         return tasks
 
 class Markdown:
@@ -376,12 +384,16 @@ class Markdown:
             nxt = re.search(r'^## ', rest, re.M)
             section = rest[:nxt.start()] if nxt else rest
             am = re.search(r'^\*\*Assignee:\*\* (.*)$', section, re.M)
+            bb = re.search(r'^\*\*BlockedBy:\*\* (.*)$', section, re.M)
+            blocked_by = ['%s#%s' % (feature_id, n.strip().lstrip('#'))
+                          for n in bb.group(1).split(',') if n.strip()] if bb else []
             comments = [{'body': c.strip(), 'createdAt': None}
                         for c in re.findall(r'^> (.*)$', section, re.M)]
             tasks.append({'taskId': '%s#%s' % (feature_id, num), 'title': title,
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (am.group(1).strip() if am and am.group(1).strip() != '—' else None),
-                          'description': section.strip(), 'comments': comments})
+                          'description': section.strip(), 'comments': comments,
+                          'blockedBy': blocked_by})
         return tasks
 
 BACKENDS = {'Linear': Linear, 'Jira': Jira, 'GitHubIssues': GitHubIssues, 'Markdown': Markdown}
