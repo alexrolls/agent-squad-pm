@@ -27,7 +27,7 @@ you between the architect's `[architecture-approval]` and QA's final gate.
   environment, tooling), and that every bypass attempt held. QA reads this
   before issuing the final gate.
 - For [tasks] that produce security test tooling: claim, post a `[design-note]`,
-  implement in your worktree, self-validate, and `[review-request]` — normal pipeline.
+  implement in your working copy, self-validate, and `[review-request]` — normal pipeline.
 
 ## Decision authority
 

@@ -44,13 +44,17 @@ is context, not a trigger.
    before approval.
 
    *Pre-flight variant (lifecycle Scenario 10):* when the plan should be settled
-   before any code, run all design gates as one batch — notes for every [task],
+   before any code, run all design gates as one batch — notes for every [task]
+   (each registering its exports in the contract registry **as it is written**),
    the architect's cross-[task] consistency review first (diffing the set against
-   the contract registry), then per-[task] verdicts and TPM scope sign-offs. At
-   claim time each gate is already open.
-4. **Implementation.** Own worktree per implementer, the [task]'s [subtasks] as
-   checklist, `[divergence]` comments for every deviation, self-validation with
-   the `VALIDATE_*` commands before requesting review.
+   the registry; unregistered exports or uncited imports block approval), then
+   per-[task] verdicts and TPM scope sign-offs. At claim time each gate is
+   already open.
+4. **Implementation.** Own working copy per implementer (a per-[task] worktree
+   under `EXECUTION=parallel`; the feature-branch checkout under `sequential`),
+   the [task]'s [subtasks] as checklist, `[divergence]` comments for every
+   deviation, self-validation with the `VALIDATE_*` commands before requesting
+   review.
 5. **Review — in this order:**
    1. **Architect** — architecture review → `[architecture-approval]`.
    2. **Team-specific specialist reviews** (listed in the team file, if any).
@@ -128,7 +132,8 @@ Report back: [review-request] with changed-file list, validation results, and
 
 ```
 Re: <taskId>  (mode: <sequential|parallel|tiered>)
-Diff: <files changed, one-line summary> (worktree: <path>)
+Diff: <files changed, one-line summary> (working copy: <worktree path, or
+        "feature-branch checkout" in sequential execution>)
 Rule on: <open [divergence]s awaiting a ruling, or "none">
 Check: approved [design-note] conditions <pointer>; review-ledger.md lines that
         apply; CONTRACTS.md exports this [task] registered or consumes

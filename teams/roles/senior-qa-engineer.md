@@ -17,7 +17,7 @@ you as ordinary [tasks].
   `file:line` citation AND a test citation. Run the applicable `VALIDATE_*`
   suites yourself — the implementer's report is a claim, not evidence.
 - Own test [tasks]: plan (a test-plan `[design-note]`), author, and maintain the
-  team's tests in your own worktree, through the normal pipeline.
+  team's tests in your own working copy, through the normal pipeline.
 - File defects as new [tasks] (Scenario 6) with reproduction steps, expected vs.
   actual, and severity — never patch product code.
 - Push back on untestable acceptance criteria the moment you see them — an

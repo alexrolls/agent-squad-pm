@@ -14,8 +14,14 @@ in the tracker are the only trigger that counts.
 
 ## Pipeline (run exactly, in order)
 
-1. In the [task]'s worktree (`<TEAMWORK_ROOT>/<team>/worktrees/<role>-<taskId>` (derive `<role>` from the [task]'s assignee)),
-   compute the full changed-file set: `git diff --name-only <feature-branch>...HEAD`
+Your working location follows `EXECUTION` (protocol: *Execution modes*):
+`parallel` — the [task]'s worktree
+(`<TEAMWORK_ROOT>/<team>/worktrees/<role>-<taskId>`, `<role>` from the [task]'s
+assignee); `sequential` — the feature-branch checkout, where step 6's merge and
+worktree removal don't exist (the staged work is already on the branch).
+
+1. In the working location, compute the full changed-file set:
+   `git diff --name-only <feature-branch>...HEAD`
    **plus** `git status --porcelain -uall` for anything uncommitted. Always `-uall`:
    plain porcelain collapses a new directory to one `dir/` line and hides every
    file inside it — naive list equality would then pass or fail wrongly.
@@ -41,11 +47,12 @@ in the tracker are the only trigger that counts.
    to `[Active]`; notify the implementer by mailbox.
 5. Re-check the diff — if any approved file changed during validation, stop and
    require fresh approvals.
-6. Merge the task branch into the feature branch; remove the worktree
-   (`git worktree remove`).
+6. Parallel execution only: merge the task branch into the feature branch;
+   remove the worktree (`git worktree remove`). Sequential: skip — nothing to
+   merge.
 7. Commit. Capture the hash (`git rev-parse HEAD`).
 8. **Immediately** move the [task] to `[Ready to deploy]` via the adapter, with a comment
-   citing the commit hash, the validations run (and skips), and the merged files.
+   citing the commit hash, the validations run (and skips), and the committed files.
    Commit + completion are one atomic pair — never leave one without the other; if
    the status write fails, `[andon]` loudly before doing anything else.
 9. Notify the team-lead and principal-architect by mailbox: taskId, hash, results, and `qa` if QA [tasks] exist.

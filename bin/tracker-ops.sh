@@ -162,9 +162,22 @@ class Linear:
         self.gql('mutation($id: String!, $body: String!) { commentCreate(input: {issueId: $id, body: $body}) { success } }',
                  {'id': issue['id'], 'body': body})
 
+    def project_id(self, feature_id):
+        # The adapter's ID mapping allows a project UUID or a project name.
+        if re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', feature_id.lower()):
+            return feature_id
+        d = self.gql('query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes { id name } } }',
+                     {'name': feature_id})
+        if not d.get('projects'):
+            die("Linear returned no projects data for the name lookup — check LINEAR_API_KEY scope")
+        nodes = d['projects']['nodes']
+        if len(nodes) != 1:
+            die("Linear project named '%s': %d matches — pass the project UUID instead" % (feature_id, len(nodes)))
+        return nodes[0]['id']
+
     def export(self, feature_id):
         d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } } } } }',
-                     {'id': feature_id})
+                     {'id': self.project_id(feature_id)})
         if not d.get('project'):
             die("no Linear project '%s'" % feature_id)
         tasks = []

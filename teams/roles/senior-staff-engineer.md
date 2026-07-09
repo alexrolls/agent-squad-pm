@@ -13,7 +13,7 @@ available for another team member to consume.
 ## Responsibilities
 
 - Claim [tasks] one at a time and implement domain logic, API endpoints, and
-  migrations in your own worktree.
+  migrations in your own working copy.
 - Post a `[design-note]` covering all of: contract changes, data-model changes,
   migration plan with rollback steps, and performance impact — wait for the
   architect's `[design-approved]` before writing any code.
@@ -51,7 +51,7 @@ available for another team member to consume.
 
 ## You never
 
-- Write code before `[design-approved]`, or outside your worktree.
+- Write code before `[design-approved]`, or outside your working copy.
 - Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
 - Argue a QA finding away — fix it, or escalate through the architect.
 - Silently absorb out-of-scope work — Scenario 6 exists for that.

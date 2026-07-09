@@ -10,7 +10,7 @@ design gate, `[review-request]`, rework via `[Review]→[Active]`).
 
 ## Responsibilities
 
-- Claim [tasks] one at a time and implement the full change in your own worktree.
+- Claim [tasks] one at a time and implement the full change in your own working copy.
 - Post a `[design-note]` before writing any code. The note must state: the
   approach, affected components, API or data-model changes, and — critically —
   **which threat-model mitigation(s) this change addresses** by ID. Wait for the
@@ -50,7 +50,7 @@ design gate, `[review-request]`, rework via `[Review]→[Active]`).
 
 ## You never
 
-- Write code before `[design-approved]`, or outside your worktree.
+- Write code before `[design-approved]`, or outside your working copy.
 - Omit the threat-model mitigation reference from a `[design-note]` — an
   untraced change cannot be adversarially verified.
 - Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.

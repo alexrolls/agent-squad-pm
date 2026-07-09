@@ -8,12 +8,17 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
 ## Loop
 
 1. **Claim** the next `[Planned]` backend [task] (protocol: *Claiming a [task]*).
-   Create your worktree: `bin/launch-team.sh worktree <team> backend <taskId>`.
+   `EXECUTION=sequential`: claim only the [task] the team-lead's assignment
+   message names — never self-claim — and only with the shared checkout free.
+   Set up your working copy per `EXECUTION` (protocol: *Execution modes*) —
+   `parallel`: create your worktree with
+   `bin/launch-team.sh worktree <team> backend <taskId>`; `sequential`: work in
+   the feature-branch checkout directly.
 2. **Design gate.** Post a `[design-note]`: approach, API/contract changes,
    data-model changes, affected components. Ping the principal-architect by
    mailbox. **Write no code until `[design-approved]`.** On `[design-pushback]`,
    revise and re-ping.
-3. **Implement** in your worktree only, following the approved note and its
+3. **Implement** in your working copy only, following the approved note and its
    conditions. The [task]'s [subtasks] are your checklist. Anything you must do
    differently → `[divergence]` comment at the moment you diverge (never edit the
    [task] description). New out-of-scope work you discover → Scenario 6: file it
@@ -29,14 +34,20 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
    list, validation results), move the [task] to `[Review]`, ping `reviewer` and
    `principal-architect` by mailbox.
 7. **Rework.** On `[review-findings]`, the [task] returns to `[Active]`; fix every
-   numbered item in your worktree, then `[review-request]` again. Only the
+   numbered item in your working copy, then `[review-request]` again. Only the
    integrator completes the [task].
 8. Update your heartbeat between steps; check your mailbox between steps. Then
-   claim the next [task].
+   claim the next [task] — in `sequential` execution, only after the integrator
+   has moved your current [task] to its terminal status **and** the lead has
+   sent the next assignment: your uncommitted diff owns the shared checkout
+   until it is committed, so claiming during `[Review]` would stack a second
+   [task]'s edits on top of it.
 
 ## You never
 
-- Write code before `[design-approved]`, or outside your worktree.
+- Write code before `[design-approved]`, or outside your working copy (your
+  [task]'s worktree in parallel execution; the feature-branch checkout in
+  sequential).
 - Merge, commit to the feature branch, or change any status except
   `[Planned]→[Active]` (claim), `[Active]→[Review]` (request review),
   `[Active]→[Blocked]` (stuck — with a comment saying what would unblock; the

@@ -46,8 +46,9 @@ CLI or IDE that can read files (Claude Code, Codex CLI, Gemini CLI, Aider,
 Cursor, Windsurf, Cline, …).
 
 **For multi-agent teams, additionally:** the launcher (`bin/launch-team.sh`) needs
-`bash` + `git` (it uses git worktrees to isolate agents). `tmux` is optional but
-recommended — without it, agents run as background processes.
+`bash` + `git` (with `EXECUTION=parallel` it uses git worktrees to isolate
+agents). `tmux` is optional but recommended — without it, agents run as
+background processes.
 
 **Tracker access is optional.** The default `Markdown` tracker stores everything
 in local files, so you can run the whole thing offline. Connect Linear/Jira/GitHub
@@ -105,8 +106,16 @@ anywhere and point the agent at `SKILL.md`.
 | **Cursor / Windsurf / Cline** | the tool's rules dir | reference `SKILL.md` in chat |
 | **Anything else** | anywhere | point the agent at `SKILL.md` |
 
-Multi-agent teams use **git worktrees**, so the bundle must live inside a git
-repository. `.teamwork/` and `.workspace/` are already git-ignored.
+Multi-agent teams work on a git branch (and, with `EXECUTION=parallel`, in **git
+worktrees**), so the bundle must live inside a git repository. `.teamwork/` and
+`.workspace/` are already git-ignored.
+
+Two execution modes (`config/team.config.md` → `EXECUTION`): **`sequential`**
+(default) runs one [task] at a time in the feature-branch checkout — the proven
+path for harness-run and single-implementer teams; **`parallel`** turns on
+worktree-per-[task] + task-branch isolation and is required the moment two
+implementers can work at once. See `reference/orchestration.md` → *Execution
+modes*, including the checklist to validate before you parallelize.
 
 ---
 
@@ -160,10 +169,10 @@ why the many specialized preset-team roles need no per-role keys — set
 `TEAM_DEFAULT_CMD` once and only override the roles you want on a different model.
 
 > ⚠️ **Safety:** those templates use auto-approve flags (`acceptEdits`,
-> `--full-auto`, `--yolo`) so agents can work unattended. Each implementer is
-> isolated in its own git worktree and only the integrator merges — but still run
-> teams on a branch you can throw away, and review the tracker before merging to
-> your main branch.
+> `--full-auto`, `--yolo`) so agents can work unattended. Only the integrator
+> commits, and with `EXECUTION=parallel` each implementer is additionally
+> isolated in its own git worktree — but still run teams on a branch you can
+> throw away, and review the tracker before merging to your main branch.
 
 ---
 
@@ -224,7 +233,7 @@ needs nothing).
 | Section | Keys | Purpose |
 |---|---|---|
 | Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
-| Coordination | `TEAMWORK_ROOT` (`.teamwork`), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`all`) | Timing of the lead's supervision loop; `TRACKER_WRITERS=lead` enables single-writer ("scribe") mode — only the lead holds tracker credentials and posts on the team's behalf |
+| Coordination | `TEAMWORK_ROOT` (`.teamwork`), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`all`), `EXECUTION` (`sequential`) | Timing of the lead's supervision loop; `TRACKER_WRITERS=lead` enables single-writer ("scribe") mode — only the lead holds tracker credentials and posts on the team's behalf; `EXECUTION=parallel` turns on worktree-per-[task] isolation, required for ≥2 concurrent implementers |
 | Validation | `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_SCRIPT` | Your stack's commands; the integrator runs them before every merge (`null` = skip). `VALIDATE_SCRIPT` replaces the three with one repo-owned script that receives the changed-file list |
 
 Point the `VALIDATE_*` commands at your real build/test/lint (e.g.
@@ -279,7 +288,7 @@ Just talk to your agent in the generic vocabulary:
 | `start <team> <featureId> <role>…` | Launch specific roles (custom teams) |
 | `relaunch <team> <featureId> <role> [preset]` | Restart one crashed/wedged agent |
 | `compose <team> <featureId> <role> [preset]` | Write a role's startup prompt **without spawning** — for running teammates as subagents inside your own harness (see `reference/orchestration.md` → *Harness mode*) |
-| `worktree <team> <role> <taskId>` | Create an implementer's isolated worktree |
+| `worktree <team> <role> <taskId>` | Create an implementer's isolated worktree (parallel execution) |
 | `status <team>` | Show each agent's state + last heartbeat |
 | `stop <team>` | Stop the whole team |
 
@@ -291,7 +300,8 @@ their native tools instead.
 
 **The flow every team follows:** the Principal Architect leads (plans with the
 Product Manager, gates each `[task]`'s design before any code, reviews
-architecture) → specialists implement in isolated worktrees → the **Senior QA
+architecture) → specialists implement in their working copies (isolated
+worktrees in parallel execution) → the **Senior QA
 Engineer is the final review gate** → the integrator merges and marks
 `[Ready to deploy]` (commit and the move are one atomic step). The lead detects
 stuck/conflicting/crashed agents and unblocks them — message → decide → reassign →
@@ -346,7 +356,8 @@ source of truth:
    claims = status transitions · coordination = structured comments
                        ▲ via the adapter port ▲
  architect (leads) ── product manager ── engineers ── QA (final gate) ── integrator (commits)
-                         └──── one git worktree per implementer ────┘
+                         └── one working copy per implementer ──┘
+                          (git worktree each in parallel execution)
                        ▼ optional low-latency transport ▼
         .teamwork/<team>/  mailboxes · heartbeats  (degrades to tracker polling)
 ```

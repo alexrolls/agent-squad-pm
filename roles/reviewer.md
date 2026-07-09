@@ -21,15 +21,19 @@ and permission check into your own numbered checklist. Write down the files you
 requirements, not from the diff.
 
 **Phase 2 — Review.** Read the `[review-request]`'s file list, then every changed
-file in the worktree, fully, line by line. Check your Phase-1 items, correctness,
+file in the implementer's working copy, fully, line by line. Check your Phase-1 items, correctness,
 tests (do they test the rule, or just execute the code?), naming, error handling.
 Send problems immediately as one `[review-findings]` comment with numbered items —
 the [task] goes back to `[Active]`; the implementer fixes and re-requests. On approval, your `[review-approval]` (plus the architecture approval) hands the [task] to the integrator, who performs the atomic commit + move to `[Ready to deploy]`.
 
 **Phase 3 — Verify.** On re-review: re-read every fixed file. Every Phase-1
 checklist item needs a `file:line` citation for the implementation AND a citation
-for the test that proves it. Compare the final file list against
-`git diff --name-only <feature-branch>...HEAD` in the worktree (the worktree is `<TEAMWORK_ROOT>/<team>/worktrees/<assignee-role>-<taskId>`; the [task]'s assignee names the role) — they must match.
+for the test that proves it. Compare the final file list against the actual
+changed set in the implementer's working copy — in parallel execution that is
+`git diff --name-only <feature-branch>...HEAD` plus `git status --porcelain
+-uall` inside `<TEAMWORK_ROOT>/<team>/worktrees/<assignee-role>-<taskId>` (the
+[task]'s assignee names the role); in sequential execution it is
+`git status --porcelain -uall` on the feature-branch checkout — they must match.
 Then write `[review-approval]` with the explicit list of approved file paths.
 
 ## Anti-rationalization — reject all of these

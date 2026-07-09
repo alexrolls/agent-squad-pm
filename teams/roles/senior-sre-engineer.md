@@ -57,7 +57,7 @@ on problems; never invent new markers.
 
 ## You never
 
-- Write configuration before `[design-approved]`, or outside your worktree.
+- Write configuration before `[design-approved]`, or outside your working copy.
 - Perform the operability review on a [task] you implemented.
 - Invent new structured markers — use only `[review-findings]` for problems; a
   plain comment for a clean pass.
