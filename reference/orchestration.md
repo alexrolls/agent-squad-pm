@@ -65,9 +65,11 @@ a run: signatures are grep keys.
   <one short, actionable message>
   ```
 
-- **Receive:** check your mailbox directory between work steps and at least every
-  `POLL_INTERVAL_SECONDS` when idle. Process messages in number order; delete each
-  after acting on it.
+- **Receive:** check your mailbox directory between work steps. Process messages in
+  number order; delete each after acting on it. **Never sit idle polling:** when your
+  turn's work is done, deliver your artifact and exit — you will not be alive later,
+  so never plan to "check back". The dispatcher owns time (`reference/dispatch.md`);
+  `POLL_INTERVAL_SECONDS` is *its* cadence, not yours.
 - **Heartbeat:** between work steps, rewrite your heartbeat file with
   `<ISO-8601 UTC> | <current taskId or -> | <one-line state>` (e.g.
   `2026-07-06T14:02:11Z | ENG-142 | implementing, subtask 3/5`).
@@ -401,7 +403,9 @@ even from the team-lead):
 
 ## Supervision — the team-lead loop
 
-Every `POLL_INTERVAL_SECONDS`: read all heartbeats, your mailbox, and the tracker.
+**On each invocation** — the dispatcher (`reference/dispatch.md`) or the harness
+loop decides when that is — read all heartbeats, your mailbox, and the tracker,
+act on **every** pending event in one pass, then exit.
 
 Detect:
 - **Stuck** — heartbeat older than `STUCK_AFTER_MINUTES`; an `[Active]` [task] with
@@ -487,7 +491,7 @@ never fabricate a result, never claim a status you did not verify.
 | Shared filesystem with the team | mailbox/heartbeats | poll the tracker; say so once on your [task] |
 | Harness-native teammates (subagent spawn + messaging) | harness mode | launch CLI processes via `bin/launch-team.sh` (tmux / background) |
 | tmux | launcher niceness | background processes + pid files |
-| Long-running loop | team-lead, principal-architect, integrator | relaunch on a schedule; recovery makes restarts free |
+| Long-running loop | nobody — the loop lives outside agents (`reference/dispatch.md`) | one-shot turns are the primary path: `bin/dispatch.sh --watch` (CLI) or the harness orchestrator converts events into launches; recovery makes restarts free |
 
 A missing capability degrades **explicitly** — state what you could not do; never
 silently skip a protocol step.

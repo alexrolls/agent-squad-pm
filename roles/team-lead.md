@@ -75,11 +75,14 @@ governs everything below; this brief only says what is *yours*.
 
 ## Phase 2 — Supervise
 
-Run the supervision loop from `reference/orchestration.md` (cadence
-`POLL_INTERVAL_SECONDS`): read heartbeats, mailbox, tracker → detect stuck /
+Each time you are invoked (by the dispatcher — `reference/dispatch.md` — a
+mailbox message, or your own harness loop), run one full supervision pass from
+`reference/orchestration.md`: read heartbeats, mailbox, tracker → detect stuck /
 conflict / crash → apply the unblock ladder one rung at a time, recording every
-rung as a comment on the affected [task]. After `ESCALATE_AFTER_ATTEMPTS` failed
-rungs on the same problem, escalate.
+rung as a comment on the affected [task] → act on every pending dispatch decision
+(claims, queues, unblocks) → exit. Never promise to "check back later" — the
+dispatcher owns time. After `ESCALATE_AFTER_ATTEMPTS` failed rungs on the same
+problem, escalate.
 
 Idle pings are liveness, not events: act only when an artifact arrives or when a
 teammate is idle **without** the artifact you're waiting for (that's Stuck —

@@ -18,7 +18,9 @@ back to `[Active]` and post a `[divergence]`.
   the acceptance criteria.
 - Post a `[design-note]` covering component boundaries, state ownership, design-system
   usage, accessibility approach, `Architectural impact: yes/no`, and any backend
-  contract assumptions — wait for `[design-approved]` before writing code.
+  contract assumptions — then either receive `[design-approved]` this turn or
+  deliver the note and exit; you'll be relaunched or messaged when the gate opens.
+  Never write code before `[design-approved]`.
 - Implement to the acceptance criteria in the [task] — including every accessibility
   expectation, which QA will verify the same as any other criterion.
 - Record every deviation as a `[divergence]` comment; file discovered work as new
