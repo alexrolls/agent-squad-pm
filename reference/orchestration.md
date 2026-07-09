@@ -143,13 +143,55 @@ nothing else: markers, gates, reviews, and statuses are identical in both modes.
   dependency order, and same-file collisions are handed back to the implementer
   for rebase.
 
+- **Concurrency cap — `MAX_ACTIVE_IMPLEMENTERS` (parallel only).** Bounds how
+  many [tasks] may be in implementer hands at once; `null` leaves parallelism
+  unbounded. With the cap set (any value), claims are **lead-dispatched**
+  exactly as in sequential mode — the cap lives in the lead's single dispatch
+  point, never in self-claiming agents racing the tracker. Setting the key
+  under `EXECUTION=sequential` is a config error (the launcher refuses it).
+
+  `MAX_ACTIVE_IMPLEMENTERS=1` is **pipelined dispatch**: full parallel
+  isolation (worktree + task branch per [task], serial integrator merges), but
+  the lead sends assignment N+1 when [task] N **enters `[Review]`** rather
+  than after integration — N's review, rework, and integration overlap N+1's
+  implementation. Its rules:
+
+  - **Independence.** N+1 must consume no `CONTRACTS.md` export of any
+    un-integrated [task] and must not be expected to touch the same files.
+    No independent [task] ready → the lead waits; never stack a task branch
+    on un-integrated work.
+  - **Sweep gate.** N+1 is dispatched only after the principal-architect
+    confirms its divergence sweep of N (see *Sweep timing* below).
+  - **Freeze protocol — rework preempts.** If N gets `[review-findings]`
+    while N+1 is being implemented: the lead sends a supersession assignment
+    (park N+1 at a clean point — its WIP is safe in its own worktree — switch
+    to N's worktree, deliver the rework and a fresh `[review-request]` before
+    idling), moves N+1 `Active → Blocked` with the comment
+    `Parked (pipelined): preempted by rework on <N>. Resume on <N> re-entering [Review].`,
+    and when N re-enters `[Review]`, moves N+1 `Blocked → Active` with a
+    fresh resume assignment. Oldest [task] first, always; one implementer
+    never holds two [tasks] hot at once. A parked [task] reads as **Parked**
+    in the supervision loop, not Stuck.
+  - **Sweep timing.** Under `parallel` (any cap), the principal-architect's
+    divergence sweep for a [task] runs at **`[Review]` entry** instead of
+    post-integration — every `[divergence]` comment exists by then. Rework
+    that adds new `[divergence]` comments gets an incremental re-sweep at
+    `[Review]` re-entry. A sweep finding that invalidates an
+    already-dispatched [task] is a binding mailbox ruling to its implementer
+    (revised `[design-note]` if needed). Sequential mode keeps the
+    post-integration trigger.
+  - **When to enable.** Only after the pre-parallel validation checklist
+    below passes — including its pipelined rework-rate item.
+
 Deliberately **not** mode-dependent: `TRACKER_WRITERS=lead` stays the
 recommended write path under parallelism (more concurrent writers means more
 races, not fewer), and QA's last-in-time `[review-approval]` remains a
 serialized final gate no matter how many implementers run.
 
-**Before switching to `parallel`, validate the machinery once** — docs are not
-evidence, and a sequential run proves nothing about it:
+**Before setting `EXECUTION=parallel` — at any `MAX_ACTIVE_IMPLEMENTERS`,
+pipelined `1` included — validate the machinery once** — docs are not
+evidence, and a sequential run proves nothing about it. Record what ran and
+where (in `BASELINE.md` or on the [feature]):
 
 1. `bin/launch-team.sh worktree` creates a usable isolated tree in *your*
    environment (harness subagents included) and an implementer can build and
@@ -160,6 +202,12 @@ evidence, and a sequential run proves nothing about it:
 3. The contract registry is populated **during** planning (see *Contract
    registry*): worktrees isolate code-in-progress; only the registry prevents
    the plan-time contract forks that parallel planning actually produces.
+4. **Pipelined (`MAX_ACTIVE_IMPLEMENTERS=1`) additionally requires:** the
+   team's most recent comparable run shows a first-pass rework rate below
+   ~25%. Pipelined saves ≈ (review + integrate time) × (first-pass-approved
+   [task] count); rework cycles gain nothing from it — at a high rework rate,
+   fix review predictability first (mandatory design checklists,
+   `REVIEW_MODE` — see `teams/_PLAYBOOK.md` → *Review modes*).
 
 ## Structured comments — the coordination markers
 
@@ -170,7 +218,7 @@ invent new ones, never misspell them.
 | Marker | Written by | Meaning / required content |
 |---|---|---|
 | `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |
-| `[design-approved]` | principal-architect | Gate open. May carry conditions the implementation must honour. |
+| `[design-approved]` | principal-architect | Gate open. Carries a **numbered architecture checklist** — the items the architecture review will verify — plus any binding conditions. The lead delivers the checklist in the assignment; reviewer/QA Phase-1 checklists start from it (add items, never subtract). |
 | `[design-pushback]` | principal-architect | Gate closed. Lists required changes; implementer revises the `[design-note]` and re-pings. |
 | `[api-ready]` | backend | Contract available for frontend: endpoints, request/response shapes. Also sent by mailbox. |
 | `[divergence]` | implementer | What was done differently from the [task]/design note and why. Additive — **never edit the original [task] description.** |
@@ -253,7 +301,13 @@ one that performs its outbound transitions.
 ## Claiming a [task]
 
 1. Read the [task] in full via the adapter (description, [subtasks], all comments).
-2. Verify status is `[Planned]` and it belongs to your track. If not → `[andon]`. Also verify the previously integrated [task] on your track has no `[divergence]` comments still awaiting the principal-architect's sweep — if it does, wait or ask the PA by mailbox. Under `EXECUTION=sequential`, you claim only on the team-lead's assignment (never self-serve — see *Execution modes*), and before touching anything verify **the shared checkout is free**: no [task] anywhere is in flight (`[Active]` **or** `[Review]` — a [task] in review still owns the checkout until integrated), and `git status --porcelain -uall` on the feature-branch checkout is clean. Dirty checkout or an in-flight [task] → don't claim; tell the lead.
+2. Verify status is `[Planned]` and it belongs to your track. If not → `[andon]`. Also verify the sweep is not pending on your track: under `EXECUTION=sequential`,
+the previously integrated [task] has no `[divergence]` comments still awaiting
+the principal-architect's sweep; under `parallel`, the most recent [task] that
+entered `[Review]` on your track has the PA's sweep confirmation. If pending,
+wait or ask the PA by mailbox. Under `EXECUTION=sequential` — and under `parallel` whenever
+`MAX_ACTIVE_IMPLEMENTERS` is set — you claim only on the team-lead's
+assignment (never self-serve — see *Execution modes*), and before touching anything verify **the shared checkout is free**: no [task] anywhere is in flight (`[Active]` **or** `[Review]` — a [task] in review still owns the checkout until integrated), and `git status --porcelain -uall` on the feature-branch checkout is clean. Dirty checkout or an in-flight [task] → don't claim; tell the lead.
 3. Set assignee = your role name AND move `[Planned] → [Active]` (one adapter write
    where the tool allows, else assignee first).
 4. **Read back.** If the assignee is not you, another agent won — back off silently
