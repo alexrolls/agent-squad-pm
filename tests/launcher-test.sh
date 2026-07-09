@@ -149,6 +149,27 @@ bad "requiresCommit on initial refused" "not allowed on the initial" "{$MINF,\"t
 bad "no terminal refused"             "at least one terminal" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"A\"]}]}}"
 bad "zero initials refused"           "exactly one initial"   "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
 
+# -- config guard: MAX_ACTIVE_IMPLEMENTERS requires EXECUTION=parallel ---------
+CFG=.claude/skills/pm/config/team.config.md
+printf 'MAX_ACTIVE_IMPLEMENTERS=1\n' >> "$CFG"
+if out="$("$LAUNCH" compose test-feature FEAT-1 backend 2>&1)"; then
+  echo "FAIL: MAX_ACTIVE_IMPLEMENTERS under sequential should be refused"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$out" | grep -q "MAX_ACTIVE_IMPLEMENTERS"; then
+  echo "ok: knob refused under sequential"
+else
+  echo "FAIL: knob refusal has wrong message: $out"; FAILURES=$((FAILURES+1))
+fi
+printf 'EXECUTION=parallel\n' >> "$CFG"
+check "knob accepted under parallel" "$LAUNCH" compose test-feature FEAT-1 backend
+sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=1$/d;/^EXECUTION=parallel$/d' "$CFG"
+printf 'EXECUTION=parallel\nMAX_ACTIVE_IMPLEMENTERS=zero\n' >> "$CFG"
+if "$LAUNCH" compose test-feature FEAT-1 backend >/dev/null 2>&1; then
+  echo "FAIL: non-integer MAX_ACTIVE_IMPLEMENTERS should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: non-integer knob refused"
+fi
+sed -i '' '/^EXECUTION=parallel$/d;/^MAX_ACTIVE_IMPLEMENTERS=zero$/d' "$CFG"
+
 # -- status + stop --------------------------------------------------------------
 # Capture first (grep -q closes the pipe early → SIGPIPE on the writer under pipefail).
 status_out="$("$LAUNCH" status test-feature)"
