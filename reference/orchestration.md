@@ -343,6 +343,7 @@ claim → [design-note] → wait for [design-approved]      (no code before the 
         merge to the feature branch (parallel execution only), commit,
         move to [Ready to deploy] (atomic pair)
       → principal-architect divergence sweep updates upcoming [tasks]
+        (sequential: runs here; parallel: already ran at [Review] entry)
 ```
 
 Gates live in comments; statuses move only along the `transitions` graph in

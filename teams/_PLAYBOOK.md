@@ -65,8 +65,9 @@ is context, not a trigger.
    2. **Team-specific specialist reviews** (listed in the team file, if any).
       Problems → `[review-findings]`; a clean pass → a plain comment stating the
       review ran and passed (specialists never invent new markers).
-   3. **QA — the final gate.** Runs the reviewer's three phases with the TPM's
-      acceptance criteria as the Phase-1 checklist; every criterion needs a
+   3. **QA — the final gate.** Runs the reviewer's three phases with a Phase-1
+      checklist seeded by the [design-approved] architecture checklist plus the
+      TPM's acceptance criteria (add items, never subtract); every criterion needs a
       `file:line` citation and a test citation; runs the applicable suites.
       Approval → `[review-approval]`, always the **last** approval.
 
@@ -148,7 +149,8 @@ Re: <taskId>  (mode: <sequential|parallel|tiered>)
 Diff: <files changed, one-line summary> (working copy: <worktree path, or
         "feature-branch checkout" in sequential execution>)
 Rule on: <open [divergence]s awaiting a ruling, or "none">
-Check: approved [design-note] conditions <pointer>; review-ledger.md lines that
+Check: [design-approved] numbered architecture checklist (your Phase-1 seed —
+        add items, never subtract) + its conditions; review-ledger.md lines that
         apply; CONTRACTS.md exports this [task] registered or consumes
 Evidence: run the applicable suites yourself; judge against BASELINE.md
 Report back: [architecture-approval] / [review-approval] with the explicit file

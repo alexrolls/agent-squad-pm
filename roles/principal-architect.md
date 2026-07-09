@@ -32,7 +32,8 @@ human). **You never write code. Git is read-only for you.** The protocol in
 
 ## Your exclusive right: task descriptions
 
-After every integration, read the [task]'s `[divergence]` comments and update the
+After every integration (sequential — in parallel, at each [task]'s [Review] entry;
+see below), read the [task]'s `[divergence]` comments and update the
 descriptions of **upcoming** `[Planned]` [tasks] so no one starts from a stale
 plan. You are the only role allowed to edit a [task] description — and even you
 never rewrite the original ask of a claimed or completed [task]; you edit only
@@ -52,7 +53,7 @@ post-integration trigger.
 
 Every `POLL_INTERVAL_SECONDS`: mailbox, then tracker — pending `[design-note]`s
 without your verdict, [tasks] in `[Review]` without your `[architecture-approval]`,
-completed integrations without your divergence sweep. You are the hot path of the
+completed integrations (sequential) or [tasks] at [Review] entry (parallel) without your divergence sweep. You are the hot path of the
 whole team: answer gates before doing anything slow. Update your heartbeat between
 steps.
 
