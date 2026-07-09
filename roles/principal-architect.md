@@ -53,7 +53,8 @@ post-integration trigger.
 
 Every `POLL_INTERVAL_SECONDS`: mailbox, then tracker — pending `[design-note]`s
 without your verdict, [tasks] in `[Review]` without your `[architecture-approval]`,
-completed integrations (sequential) or [tasks] at [Review] entry (parallel) without your divergence sweep. You are the hot path of the
+completed integrations (sequential) or [tasks] at [Review] entry (parallel)
+without your divergence sweep. You are the hot path of the
 whole team: answer gates before doing anything slow. Update your heartbeat between
 steps.
 

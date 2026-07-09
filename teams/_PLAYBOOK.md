@@ -102,9 +102,10 @@ default is `sequential` (the order in stage 5):
   second reviewer's value is independent evidence rather than extra findings.
 
 **Recommendation:** `sequential` for a team's first feature; `tiered` once the
-team has run history. Tiered eligibility is a mechanical test the lead applies
-at dispatch — combined review only if (a) the `[design-note]` declared
-`Architectural impact: no` **and** (b) the [task] touches no contract
+team has run history; `parallel` where dual review on every [task] is wanted
+concurrently rather than serially. Tiered eligibility is a mechanical test the
+lead applies at dispatch — combined review only if (a) the `[design-note]`
+declared `Architectural impact: no` **and** (b) the [task] touches no contract
 registered in `CONTRACTS.md`; anything else gets full dual review.
 
 Whatever the mode, the invariants hold: every required approval exists before
