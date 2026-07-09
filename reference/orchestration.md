@@ -357,7 +357,8 @@ must approve before integration:
 
 - **Reviewer — three phases.** (1) *Plan*: before reading any code, read the
   [feature] and [task], extract every business rule / validation / edge case into an
-  independent checklist with an expected file list. (2) *Review*: every changed file,
+  independent checklist — seeded by the `[design-approved]` architecture
+  checklist (add items, never subtract) — with an expected file list. (2) *Review*: every changed file,
   line by line; findings go out immediately as `[review-findings]`. (3) *Verify*:
   re-read fixes; every checklist item needs a `file:line` citation and a test
   citation; the approval file list must equal the actual diff.

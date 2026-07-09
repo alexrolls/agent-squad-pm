@@ -8,8 +8,10 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
 ## Loop
 
 1. **Claim** the next `[Planned]` backend [task] (protocol: *Claiming a [task]*).
-   `EXECUTION=sequential`: claim only the [task] the team-lead's assignment
-   message names — never self-claim — and only with the shared checkout free.
+   `EXECUTION=sequential` — and `parallel` whenever `MAX_ACTIVE_IMPLEMENTERS`
+   is set — claim only the [task] the team-lead's assignment message names,
+   never self-claim; in sequential additionally only with the shared checkout
+   free.
    Set up your working copy per `EXECUTION` (protocol: *Execution modes*) —
    `parallel`: create your worktree with
    `bin/launch-team.sh worktree <team> backend <taskId>`; `sequential`: work in

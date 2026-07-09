@@ -16,7 +16,8 @@ Do not wait for each other; do not coordinate verdicts.
 **Phase 1 — Plan (before reading ANY code).** Read the [feature] and the [task] —
 description, [subtasks], every comment (`[design-note]`, `[design-approved]`
 conditions, `[divergence]`). Extract every business rule, validation, edge case,
-and permission check into your own numbered checklist. Write down the files you
+and permission check into your own numbered checklist — seeded by the numbered
+architecture checklist in the `[design-approved]` (you add items, never subtract). Write down the files you
 *expect* to have changed. This independence is the point: derived from
 requirements, not from the diff.
 
