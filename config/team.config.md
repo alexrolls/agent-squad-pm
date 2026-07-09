@@ -64,6 +64,11 @@ MAX_ACTIVE_IMPLEMENTERS=null     # Only under EXECUTION=parallel. 1 = pipelined 
                                  # → "Execution modes"). >=2 = bounded full parallelism;
                                  # null = unbounded parallel. Setting it under sequential
                                  # is a config error — the launcher refuses to run.
+WORKTREE_SETUP=null              # Run once inside every freshly created worktree, fail-loud
+                                 # (e.g. "pnpm install --frozen-lockfile && pnpm build").
+                                 # null = bare worktree. Provisioning is what makes
+                                 # implementer validation claims executable — an
+                                 # unprovisioned tree produced the false-green failure class.
 ```
 
 Review depth (`REVIEW_MODE=sequential|parallel|tiered`) is a **per-team** choice

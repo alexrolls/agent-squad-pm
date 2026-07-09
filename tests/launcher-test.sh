@@ -73,15 +73,39 @@ fi
 
 # -- worktree subcommand -------------------------------------------------------
 "$LAUNCH" worktree test-feature backend T-42
-check "worktree created"  test -d .teamwork/test-feature/worktrees/backend-T-42
-check "worktree branch"   git -C .teamwork/test-feature/worktrees/backend-T-42 rev-parse --abbrev-ref HEAD
-[ "$(git -C .teamwork/test-feature/worktrees/backend-T-42 rev-parse --abbrev-ref HEAD)" = "backend-T-42" ] \
+check "worktree created"  test -d .teamwork/test-feature/worktrees/backend#1-T-42
+check "worktree branch"   git -C .teamwork/test-feature/worktrees/backend#1-T-42 rev-parse --abbrev-ref HEAD
+[ "$(git -C .teamwork/test-feature/worktrees/backend#1-T-42 rev-parse --abbrev-ref HEAD)" = "backend-T-42" ] \
   && echo "ok: branch name backend-T-42" || { echo "FAIL: branch name"; FAILURES=$((FAILURES+1)); }
 
 # -- worktree re-add: remove the worktree dir but keep the branch, re-add should succeed --
-git worktree remove .teamwork/test-feature/worktrees/backend-T-42
+git worktree remove .teamwork/test-feature/worktrees/backend#1-T-42
 "$LAUNCH" worktree test-feature backend T-42
-check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend-T-42
+check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend#1-T-42
+
+# -- worktree provisioning: WORKTREE_SETUP runs once, fail-loud -----------------
+CFG_WT=.claude/skills/pm/config/team.config.md
+printf 'WORKTREE_SETUP="touch provisioned.txt"\n' >> "$CFG_WT"
+"$LAUNCH" worktree test-feature backend T-77
+check "WORKTREE_SETUP provisioned the tree" test -f .teamwork/test-feature/worktrees/backend#1-T-77/provisioned.txt
+sed -i '' '/^WORKTREE_SETUP="touch provisioned.txt"$/d' "$CFG_WT"
+printf 'WORKTREE_SETUP="false"\n' >> "$CFG_WT"
+if "$LAUNCH" worktree test-feature backend T-78 >/dev/null 2>&1; then
+  echo "FAIL: failing WORKTREE_SETUP should die"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: failing WORKTREE_SETUP is fail-loud"
+fi
+check "failed provisioning removed the tree" test ! -d .teamwork/test-feature/worktrees/backend#1-T-78
+sed -i '' '/^WORKTREE_SETUP="false"$/d' "$CFG_WT"
+
+# -- attempt-bound relaunch isolation ------------------------------------------
+"$LAUNCH" worktree-remove test-feature backend T-77
+check "worktree-remove cleaned the dir" test ! -d .teamwork/test-feature/worktrees/backend#1-T-77
+git worktree list | grep -q 'backend#1-T-77' && { echo "FAIL: stale worktree registration"; FAILURES=$((FAILURES+1)); } || echo "ok: worktree pruned"
+"$LAUNCH" worktree test-feature backend T-77 2
+check "attempt 2 gets a fresh tree on the same branch" test -d .teamwork/test-feature/worktrees/backend#2-T-77
+[ "$(git -C .teamwork/test-feature/worktrees/backend#2-T-77 rev-parse --abbrev-ref HEAD)" = "backend-T-77" ] \
+  && echo "ok: attempt 2 reuses branch backend-T-77" || { echo "FAIL: attempt-2 branch"; FAILURES=$((FAILURES+1)); }
 
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
 SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2

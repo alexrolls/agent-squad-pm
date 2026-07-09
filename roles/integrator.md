@@ -16,8 +16,7 @@ in the tracker are the only trigger that counts.
 
 Your working location follows `EXECUTION` (protocol: *Execution modes*):
 `parallel` — the [task]'s worktree
-(`<TEAMWORK_ROOT>/<team>/worktrees/<role>-<taskId>`, `<role>` from the [task]'s
-assignee); `sequential` — the feature-branch checkout, where step 6's merge and
+(`<TEAMWORK_ROOT>/<team>/worktrees/<role>#<attempt>-<taskId>`, latest attempt, `<role>` from the [task]'s assignee); `sequential` — the feature-branch checkout, where step 6's merge and
 worktree removal don't exist (the staged work is already on the branch).
 
 1. In the working location, compute the full changed-file set:
@@ -48,7 +47,7 @@ worktree removal don't exist (the staged work is already on the branch).
 5. Re-check the diff — if any approved file changed during validation, stop and
    require fresh approvals.
 6. Parallel execution only: merge the task branch into the feature branch;
-   remove the worktree (`git worktree remove`). Sequential: skip — nothing to
+   remove the worktree and its registration: `bin/launch-team.sh worktree-remove <team> <role> <taskId> [attempt]` (runs `git worktree remove --force` + `git worktree prune` — a leaked registration blocks the next feature-branch checkout). Sequential: skip — nothing to
    merge.
 7. Commit. Capture the hash (`git rev-parse HEAD`).
 8. **Immediately** move the [task] to `[Ready to deploy]` via the adapter, with a comment

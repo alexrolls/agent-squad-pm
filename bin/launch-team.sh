@@ -8,7 +8,8 @@
 #   launch-team.sh start         <team> <featureId> <role>...
 #   launch-team.sh relaunch      <team> <featureId> <role> [preset]
 #   launch-team.sh compose       <team> <featureId> <role> [preset]  # write the composed startup prompt, print its path — no spawn (harness mode)
-#   launch-team.sh worktree      <team> <role> <taskId>
+#   launch-team.sh worktree      <team> <role> <taskId> [attempt]
+#   launch-team.sh worktree-remove <team> <role> <taskId> [attempt]
 #   launch-team.sh validate-board [config-path]                  # validate board config JSON
 #   launch-team.sh status        <team>
 #   launch-team.sh stop          <team>
@@ -292,9 +293,10 @@ case "${1:-}" in
     echo "$prompt"
     ;;
   worktree)
-    [ $# -eq 4 ] || die "usage: worktree <team> <role> <taskId>"
-    team="$2"; role="$3"; task="$4"
-    wt="$(teamroot "$team")/worktrees/$role-$task"
+    [ $# -ge 4 ] && [ $# -le 5 ] || die "usage: worktree <team> <role> <taskId> [attempt]"
+    team="$2"; role="$3"; task="$4"; attempt="${5:-1}"
+    case "$attempt" in ''|*[!0-9]*) die "attempt must be a positive integer" ;; esac
+    wt="$(teamroot "$team")/worktrees/$role#$attempt-$task"
     [ -d "$wt" ] && { echo "$wt"; exit 0; }
     mkdir -p "$(dirname "$wt")"
     if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$role-$task"; then
@@ -302,7 +304,22 @@ case "${1:-}" in
     else
       git -C "$REPO_ROOT" worktree add "$wt" -b "$role-$task" "$team" >/dev/null
     fi
+    setup="$(read_key WORKTREE_SETUP)"
+    if [ -n "$setup" ]; then
+      if ! ( cd "$wt" && eval "$setup" ) >/dev/null 2>&1; then
+        git -C "$REPO_ROOT" worktree remove --force "$wt" >/dev/null 2>&1 || true
+        git -C "$REPO_ROOT" worktree prune
+        die "WORKTREE_SETUP failed in $wt — worktree removed. Fix the command or the environment; never claim validations in an unprovisioned tree."
+      fi
+    fi
     echo "$wt"
+    ;;
+  worktree-remove)
+    [ $# -ge 4 ] && [ $# -le 5 ] || die "usage: worktree-remove <team> <role> <taskId> [attempt]"
+    wt="$(teamroot "$2")/worktrees/$3#${5:-1}-$4"
+    git -C "$REPO_ROOT" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$REPO_ROOT" worktree prune
+    echo "removed $wt (registration pruned)"
     ;;
   status)
     [ $# -eq 2 ] || die "usage: status <team>"
@@ -344,6 +361,6 @@ case "${1:-}" in
     validate_board "${2:-}"
     ;;
   *)
-    die "usage: launch-team.sh {team|preflight|start|relaunch|compose|worktree|validate-board|status|stop} ..."
+    die "usage: launch-team.sh {team|preflight|start|relaunch|compose|worktree|worktree-remove|validate-board|status|stop} ..."
     ;;
 esac

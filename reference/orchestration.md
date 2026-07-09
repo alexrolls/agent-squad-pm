@@ -27,7 +27,7 @@ Two principles rule everything:
 ├── mailbox/<role>/NNN-<from>.md # incoming messages for <role>, numbered, append-only
 ├── heartbeats/<role>            # one line: <ISO-8601 UTC> | <taskId or -> | <state>
 ├── pids/<role>.pid              # process id when launched in background mode
-├── worktrees/<role>-<taskId>/   # implementer working copies (parallel execution only)
+├── worktrees/<role>#<attempt>-<taskId>/ # per-instance working copies, provisioned via WORKTREE_SETUP (parallel execution only)
 ├── CONTRACTS.md                 # append-only registry of names plans export/consume (see "Contract registry")
 ├── BASELINE.md                  # known state of the branch at creation: test counts, known failures, validation commands (see "Baseline manifest")
 ├── review-ledger.md             # reviewers' one-line-per-ruling ledger of still-live conditions
@@ -323,6 +323,7 @@ one that performs its outbound transitions.
    and pick the next `[Planned]` [task] on your track.
 5. Set up your working copy (roles that write code only). `EXECUTION=parallel`:
    create your worktree — `bin/launch-team.sh worktree <team> <role> <taskId>`.
+   The worktree is your **instance's** scratch space (attempt-numbered); it arrives provisioned when `WORKTREE_SETUP` is set — validation claims may only cite commands actually executed inside it.
    `EXECUTION=sequential`: work in the feature-branch checkout directly; there
    is no worktree and no task branch (see *Execution modes*).
 
@@ -464,8 +465,7 @@ A killed or unresponsive instance may have left uncommitted
 writes in its working copy; a successor must never inherit them silently — orphan
 files reaching review as if they were deliberate is exactly how a relaunch
 contaminates a [task]. Before the replacement starts, the lead quarantines the
-residue: parallel execution — move the dead instance's worktree aside and let the
-successor recreate it; sequential — `git stash -u` on the feature-branch
+residue: parallel execution — discard the dead instance's worktree (`bin/launch-team.sh worktree-remove <team> <role> <taskId> [attempt]`; use `git worktree move` first if salvage is on the table) and let the successor create attempt N+1 on the same task branch; sequential — `git stash -u` on the feature-branch
 checkout (safe to attribute wholesale: the checkout-reservation rule means the
 only uncommitted work there is the dead instance's own [task]). The successor then rules **explicitly**, as a comment on the [task]:
 **salvage** (restore the quarantined changes and justify every kept file against
