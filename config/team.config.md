@@ -85,6 +85,10 @@ its completion comment on the [task]).
 VALIDATE_BUILD=null              # e.g. "npm run build" / "dotnet build" / "cargo build"
 VALIDATE_TEST=null               # e.g. "npm test" / "pytest" / "go test ./..."
 VALIDATE_LINT=null               # e.g. "npm run lint" / "ruff check ."
+VALIDATE_FORMAT=null             # e.g. "pnpm format:check" / "black --check ." — the CI
+                                 # formatting gate. Runs after VALIDATE_LINT; null skips
+                                 # (recorded). A formatter CI enforces but integration
+                                 # doesn't run is a post-merge CI failure waiting to happen.
 VALIDATE_SCRIPT=null             # alternative to the three above: a repo-relative script
                                  # that receives the changed-file list as arguments and
                                  # runs whatever applies (per-area suites, tools that only

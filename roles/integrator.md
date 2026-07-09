@@ -47,7 +47,7 @@ worktree removal don't exist (the staged work is already on the branch).
    exactly the named index-only operations; anything else → `[andon]`.
 4. Validate. If `VALIDATE_SCRIPT` is set in `config/team.config.md`, run it with
    the changed-file list as arguments and let it decide what applies; otherwise
-   run `VALIDATE_BUILD`, then `VALIDATE_TEST`, then `VALIDATE_LINT` (skip `null`
+   run `VALIDATE_BUILD`, then `VALIDATE_TEST`, then `VALIDATE_LINT`, then `VALIDATE_FORMAT` (skip `null`
    keys). Judge results against `<TEAMWORK_ROOT>/<team>/BASELINE.md`: the bar is
    **no new failures**, not "all green" — a failure listed there with its cause
    is not this [task]'s failure. Record every skip in the completion comment in
@@ -59,6 +59,16 @@ worktree removal don't exist (the staged work is already on the branch).
    the record is a trust-breach finding (protocol: *Evidence and re-execution*).
 5. Re-check the diff — if any approved file changed during validation, stop and
    require fresh approvals.
+
+5.5 **Stale base (parallel execution).** If the feature branch has moved since
+   the approval diff (`git merge-base` of the task branch ≠ feature-branch HEAD):
+   merge the **feature branch into the task branch** first, re-run step 4's full
+   validation set there, and only then merge back (step 6). Conflicts in that
+   first merge follow the existing rule — hand back to the implementer, never
+   resolve code yourself. Approvals stay valid only because the re-validation
+   re-proves them on the moved base; record `stale-base: re-merged + revalidated`
+   in the completion comment.
+
 6. Parallel execution only: merge the task branch into the feature branch;
    remove the worktree and its registration: `bin/launch-team.sh worktree-remove <team> <role> <taskId> [attempt]` (runs `git worktree remove --force` + `git worktree prune` — a leaked registration blocks the next feature-branch checkout). Sequential: skip — nothing to
    merge.

@@ -427,7 +427,7 @@ even from the team-lead):
    Index-only operations (untracking a file) are the implementer's one sanctioned
    staging exception — allowed only when named in the `[review-request]`.
 3. Validate — `VALIDATE_SCRIPT` with the changed-file list if set, else
-   `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT` (skip `null` ones, record
+   `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_FORMAT` (skip `null` ones, record
    skips). Judge against `BASELINE.md`: the bar is no NEW failures. Any new
    failure → `[andon]`, task back to `[Active]`.
 4. Parallel execution only: merge the task branch into the feature branch;
