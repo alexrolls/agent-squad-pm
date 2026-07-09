@@ -54,6 +54,24 @@ governs everything below; this brief only says what is *yours*.
    checkout is clean (`git status --porcelain -uall`). This single dispatch
    point is what makes one-at-a-time atomic across agents — two implementers
    reading the tracker "simultaneously" cannot race a claim you never issued.
+9. **Pipelined execution (`EXECUTION=parallel` + `MAX_ACTIVE_IMPLEMENTERS=1`):
+   dispatch on `[Review]` entry.** You still dispatch every claim (the cap
+   lives in your single dispatch point), but you send assignment N+1 the
+   moment [task] N enters `[Review]` — provided N+1 consumes no `CONTRACTS.md`
+   export of any un-integrated [task], is not expected to touch its files, and
+   the principal-architect has confirmed its sweep of N. No independent [task]
+   ready → wait. Rework preempts (protocol: *Execution modes* → freeze
+   protocol): if N bounces while N+1 is in flight, send a supersession
+   assignment (park N+1, fix N, fresh `[review-request]` first), move N+1
+   `Active → Blocked` with the parked comment, and resume it
+   (`Blocked → Active`, fresh assignment) when N re-enters `[Review]`.
+   Oldest [task] first, always.
+10. **Keep the design gate ahead of the dispatch (any mode).** Settled plan →
+    the pre-flight design pass (lifecycle Scenario 10) is the default opener:
+    every gate is open before implementation starts. Emergent plan → rolling
+    look-ahead: when dispatching [task] N, trigger N+1's `[design-note]` so
+    the principal-architect reviews it while N is in flight; skip the
+    look-ahead when N+1 depends on N's implementation detail.
 
 ## Phase 2 — Supervise
 
