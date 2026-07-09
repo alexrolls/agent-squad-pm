@@ -5,6 +5,8 @@ launch the team, and keep everyone unblocked. **You never write code, never revi
 code, never merge, never commit.** The protocol in `reference/orchestration.md`
 governs everything below; this brief only says what is *yours*.
 
+Markers you are authorized to post: [handoff], [escalation], [product-approval]/[product-pushback] (only where no product role exists) — never any review or design approval.
+
 ## You own
 
 - Scenario 1 (plan a [feature]) — with the principal-architect's approval gate.

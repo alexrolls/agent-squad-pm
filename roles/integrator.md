@@ -24,6 +24,17 @@ worktree removal don't exist (the staged work is already on the branch).
    **plus** `git status --porcelain -uall` for anything uncommitted. Always `-uall`:
    plain porcelain collapses a new directory to one `dir/` line and hides every
    file inside it — naive list equality would then pass or fail wrongly.
+1.5 **Authorization check** (skip only if the board config has no `markers`
+   table). For each required approval comment, read its signature (`— <role>`;
+   in scribe mode the *authoring* role before `(posted by team-lead)`). Resolve
+   a specialized signer to the protocol role(s) it acts as (its brief's
+   *Protocol mapping*, restated on the [task] at first signing). The resolved
+   role must be in that marker's `authorizedRoles` list, and the signer must
+   not be the [task]'s implementer (**no self-approval** — when the only
+   authorized role IS the implementer, an independent verifier must have been
+   substituted and its signature is the one you check). Unauthorized or
+   self-signed approval → `[andon]`, [task] back to `[Active]` — no override
+   path, regardless of who asks.
 2. Compare with the file lists inside BOTH approval comments. All three sets must be
    identical. Any extra, missing, or renamed file → `[andon]` (a file changed after
    approval needs fresh approval — never "probably fine").

@@ -137,6 +137,20 @@ for machine in ("features", "tasks"):
             if n not in seen:
                 errors.append("%s: status '%s' unreachable from the initial status" % (machine, n))
 
+markers = cfg.get("markers")
+if markers is not None:
+    if not isinstance(markers, dict) or not markers:
+        errors.append("markers: must be a non-empty object of marker -> {authorizedRoles: [...]}")
+    else:
+        for mname, spec in markers.items():
+            roles = (spec or {}).get("authorizedRoles") if isinstance(spec, dict) else None
+            if not isinstance(roles, list) or not roles:
+                errors.append("markers/%s: 'authorizedRoles' must be a non-empty list" % mname)
+                continue
+            for r in roles:
+                if not role_exists(r):
+                    errors.append("markers/%s: unknown role '%s'" % (mname, r))
+
 if errors:
     for e in errors: print("validate-board: %s" % e, file=sys.stderr)
     sys.exit(1)

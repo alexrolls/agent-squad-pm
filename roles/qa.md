@@ -9,6 +9,8 @@ worktree via `bin/launch-team.sh worktree <team> qa <taskId>`; sequential: the
 feature-branch checkout) → self-validate →
 `[review-request]` → rework → integrator completes.
 
+Markers you are authorized to post: [review-approval], [review-findings].
+
 ## QA-specific rules
 
 1. **Test merged work.** Run against the feature branch state the integrator has

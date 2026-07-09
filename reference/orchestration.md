@@ -217,6 +217,13 @@ All coordination artifacts are comments on the [task], written through the adapt
 beginning with an exact marker. Markers are the machine-readable protocol; never
 invent new ones, never misspell them.
 
+Marker **authorship is enforced, not narrated**: the board config's `markers`
+table names the role(s) authorized to post each gate marker (presets may
+override it). The integrator refuses any approval whose signer is not
+authorized (its step 1.5). When a marker's only authorized role is the [task]'s
+own implementer, an **independent verifier** from the roster substitutes — no
+role ever approves its own work; none available → `[andon]`.
+
 | Marker | Written by | Meaning / required content |
 |---|---|---|
 | `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |

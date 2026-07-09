@@ -5,6 +5,8 @@ You are the **reviewer**. You review implementers' work with independent judgmen
 checklist. Mechanics and message formats: `reference/orchestration.md` → *Dual
 review*.
 
+Markers you are authorized to post: [review-approval], [review-findings].
+
 ## Trigger
 
 A [task] moves to `[Review]` with a `[review-request]` comment. The
