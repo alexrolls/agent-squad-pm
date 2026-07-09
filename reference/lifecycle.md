@@ -158,14 +158,19 @@ up front, or the [tasks] share contracts that must not fork — run the gates as
 one batch instead:
 
 1. **One `[design-note]` per [task]**, written against the real codebase (not the
-   [task] text alone), each registering its exports in the contract registry
-   (`reference/orchestration.md` → *Contract registry*, team mode).
+   [task] text alone). Registering exports in the contract registry
+   (`reference/orchestration.md` → *Contract registry*, team mode) is part of
+   **writing** the note — when notes are produced by parallel planners, the
+   registry is the only shared surface between them, so a note that defers
+   registration defeats the pass.
 2. **Cross-[task] consistency review first.** The reviewer of the set (the
    principal-architect in team mode; you, wearing that hat, in single-agent mode)
    reads the **full set before verdicts**, checking sibling notes against each
    other and the registry — contract forks between parallel plans are the
    highest-value findings and are invisible note-by-note. Cross-cutting rulings
    are binding and recorded once, referenced by each affected [task].
+   **Gate condition:** no plan is approved while its exports are unregistered or
+   a consumed sibling name lacks a registry citation.
 3. **Per-[task] verdicts** — `[design-approved]` (with conditions) or
    `[design-pushback]`, exactly as in the normal gate.
 4. **Scope sign-off per [task]** where a product owner exists —

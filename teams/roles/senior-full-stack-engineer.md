@@ -10,7 +10,7 @@ demands; those briefs and `reference/orchestration.md` bind every status write
 
 ## Responsibilities
 
-- Claim [tasks] one at a time and implement the whole slice in your own worktree.
+- Claim [tasks] one at a time and implement the whole slice in your own working copy.
 - Post a `[design-note]` covering BOTH sides of the slice — contract, data-model
   change, UI approach, `Architectural impact: yes/no` — and wait for the
   architect's `[design-approved]` before writing code.
@@ -45,7 +45,7 @@ demands; those briefs and `reference/orchestration.md` bind every status write
 
 ## You never
 
-- Write code before `[design-approved]`, or outside your worktree.
+- Write code before `[design-approved]`, or outside your working copy.
 - Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
 - Argue a QA finding away — fix it, or escalate through the architect.
 - Silently absorb out-of-scope work — Scenario 6 exists for that.

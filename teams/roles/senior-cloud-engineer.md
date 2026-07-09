@@ -11,7 +11,7 @@ status write (claim, design gate, `[review-request]`, rework via
 
 ## Responsibilities
 
-- Claim [tasks] one at a time and implement the full change in your own worktree.
+- Claim [tasks] one at a time and implement the full change in your own working copy.
 - Post a `[design-note]` covering approach, IaC module and provider changes,
   pipeline impact, affected environments, `Architectural impact: yes/no`, and —
   **mandatory** — the **rollback strategy** and **blast radius**. The architect
@@ -53,7 +53,7 @@ status write (claim, design gate, `[review-request]`, rework via
 ## You never
 
 - Write IaC or pipeline configuration before `[design-approved]`, or outside your
-  worktree.
+  working copy.
 - Submit a `[review-request]` without a plan or preview output attached.
 - Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
 - Omit rollback strategy or blast radius from a `[design-note]`.

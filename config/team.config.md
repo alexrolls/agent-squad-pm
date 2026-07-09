@@ -49,6 +49,12 @@ TRACKER_WRITERS=all              # all = every role writes to the tracker itself
                                  # lead = single-writer mode: only the team-lead holds
                                  # credentials and posts on the team's behalf
                                  # (reference/orchestration.md → "Tracker write modes")
+EXECUTION=sequential             # sequential = one [task] [Active] at a time; implementers
+                                 # edit the feature-branch checkout directly, the integrator
+                                 # commits in place — no task branches, no worktrees.
+                                 # parallel = worktree-per-[task] + task branches + integrator
+                                 # merge; REQUIRED the moment >=2 implementers can be [Active]
+                                 # at once (reference/orchestration.md → "Execution modes")
 ```
 
 Review depth (`REVIEW_MODE=sequential|parallel|tiered`) is a **per-team** choice

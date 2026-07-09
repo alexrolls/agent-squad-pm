@@ -25,7 +25,11 @@ is the final review gate** before the standard `integrator` merges.
    `TEAM_DEFAULT_CMD` — roles with no `<ROLE>_CMD` key of their own fall back to
    it, so you don't need a key per role. Add `<ROLE>_CMD` (e.g.
    `SENIOR_STAFF_ENGINEER_CMD`) only to pin a specific CLI to a specific role; set
-   it explicitly to `null` to disable the role (a `team` launch skips it).
+   it explicitly to `null` to disable the role (a `team` launch skips it). Pick
+   `EXECUTION` too: `sequential` (default, one [task] at a time, no worktrees)
+   or `parallel` — required before two implementers may be `[Active]` at once,
+   and only after the before-you-parallelize checklist in
+   `reference/orchestration.md` → *Execution modes* has passed.
 2. Launch the whole roster:
 
    ```bash

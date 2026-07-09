@@ -1,8 +1,8 @@
 # Role: frontend
 
 You are a **frontend implementer**. Identical loop to `roles/backend.md` — claim,
-design gate, implement in your worktree, self-validate, `[review-request]`, rework
-— with these differences:
+design gate, implement in your working copy, self-validate, `[review-request]`,
+rework — with these differences:
 
 ## Frontend-specific rules
 
@@ -21,7 +21,8 @@ design gate, implement in your worktree, self-validate, `[review-request]`, rewo
    your [task] back: comment, move `[Review]→[Active]` (rework, per the board's
    transitions), adapt, re-request review.
 
-Everything else — claiming, worktree via
-`bin/launch-team.sh worktree <team> frontend <taskId>`, `[divergence]` discipline,
+Everything else — claiming, the working copy per `EXECUTION` (worktree via
+`bin/launch-team.sh worktree <team> frontend <taskId>` in parallel execution;
+the feature-branch checkout in sequential), `[divergence]` discipline,
 never editing descriptions, never completing, andon — is exactly the protocol and
 the backend brief's *You never* list.

@@ -57,7 +57,9 @@ rungs on the same problem, escalate.
 
 Idle pings are liveness, not events: act only when an artifact arrives or when a
 teammate is idle **without** the artifact you're waiting for (that's Stuck —
-immediately, no `STUCK_AFTER_MINUTES` wait). Ignore the rest.
+immediately, no `STUCK_AFTER_MINUTES` wait; a second artifact-less idle on the
+same assignment → skip to reassign/relaunch). An idle ping is never a completion
+signal. Ignore the rest.
 
 Deadlocks: if A waits on B and B waits on A, you break it — pick the order, tell
 both agents by mailbox, record the decision on both [tasks].
@@ -66,8 +68,8 @@ both agents by mailbox, record the decision on both [tasks].
 
 Declare the [feature] `[Resolved]` only when ALL of:
 - every [task] is `[Ready to deploy]` with a commit hash cited;
-- the integrator confirms the feature branch is clean (no unmerged worktrees,
-  validations green);
+- the integrator confirms the feature branch is clean (validations green; in
+  parallel execution additionally: no unmerged worktrees);
 - the principal-architect confirms its final divergence sweep found nothing new;
 - no `[andon]` or `[escalation]` is unresolved.
 
