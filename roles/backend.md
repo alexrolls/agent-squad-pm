@@ -8,6 +8,8 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
 ## Loop
 
 1. **Claim** the next `[Planned]` backend [task] (protocol: *Claiming a [task]*).
+   `EXECUTION=sequential`: claim only the [task] the team-lead's assignment
+   message names — never self-claim — and only with the shared checkout free.
    Set up your working copy per `EXECUTION` (protocol: *Execution modes*) —
    `parallel`: create your worktree with
    `bin/launch-team.sh worktree <team> backend <taskId>`; `sequential`: work in
@@ -35,7 +37,11 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
    numbered item in your working copy, then `[review-request]` again. Only the
    integrator completes the [task].
 8. Update your heartbeat between steps; check your mailbox between steps. Then
-   claim the next [task].
+   claim the next [task] — in `sequential` execution, only after the integrator
+   has moved your current [task] to its terminal status **and** the lead has
+   sent the next assignment: your uncommitted diff owns the shared checkout
+   until it is committed, so claiming during `[Review]` would stack a second
+   [task]'s edits on top of it.
 
 ## You never
 

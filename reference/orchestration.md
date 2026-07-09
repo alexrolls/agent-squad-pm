@@ -123,12 +123,20 @@ implementers, a CLI process for a long-lived reviewer.
 the team runs. It changes **where code is written and how integration commits** —
 nothing else: markers, gates, reviews, and statuses are identical in both modes.
 
-- **`sequential` (default).** Exactly one [task] is `[Active]` at a time.
-  Implementers edit the feature-branch checkout directly; the integrator
-  verifies, stages, validates, and commits **in place** — no task branches, no
-  worktrees, no merge step. One writer at a time needs no isolation; per-task
-  branches would be pure overhead. This is the proven path for harness-run,
-  single-implementer teams.
+- **`sequential` (default).** Exactly one [task] is **in flight** at a time,
+  and it **reserves the shared checkout from claim until its atomic
+  commit+move to the terminal status** — not merely while `[Active]`. A [task]
+  in `[Review]` (or bounced back for rework) still owns the checkout: its
+  uncommitted diff sits there until the integrator commits it. Implementers
+  edit the feature-branch checkout directly; the integrator verifies, stages,
+  validates, and commits **in place** — no task branches, no worktrees, no
+  merge step. Because agents checking tracker state before claiming is not
+  atomic across [tasks], sequential claiming is **lead-dispatched**: the
+  team-lead (owner of `[Planned]`) sends one assignment at a time and sends
+  the next only after the previous [task] integrated — implementers never
+  self-claim in this mode. One serialized writer needs no isolation; per-task
+  branches would be pure overhead. This is the proven path for harness-run
+  teams.
 - **`parallel`.** Required the moment two implementers can be `[Active]` at
   once. The full isolation machinery applies: one worktree + task branch per
   [task] (`bin/launch-team.sh worktree`), the integrator merges serially in
@@ -245,7 +253,7 @@ one that performs its outbound transitions.
 ## Claiming a [task]
 
 1. Read the [task] in full via the adapter (description, [subtasks], all comments).
-2. Verify status is `[Planned]` and it belongs to your track. If not → `[andon]`. Also verify the previously integrated [task] on your track has no `[divergence]` comments still awaiting the principal-architect's sweep — if it does, wait or ask the PA by mailbox. Under `EXECUTION=sequential`, additionally verify **no [task] is `[Active]` on any track** — one at a time is the mode's whole safety story; if one is `[Active]`, wait for it to integrate before claiming.
+2. Verify status is `[Planned]` and it belongs to your track. If not → `[andon]`. Also verify the previously integrated [task] on your track has no `[divergence]` comments still awaiting the principal-architect's sweep — if it does, wait or ask the PA by mailbox. Under `EXECUTION=sequential`, you claim only on the team-lead's assignment (never self-serve — see *Execution modes*), and before touching anything verify **the shared checkout is free**: no [task] anywhere is in flight (`[Active]` **or** `[Review]` — a [task] in review still owns the checkout until integrated), and `git status --porcelain -uall` on the feature-branch checkout is clean. Dirty checkout or an in-flight [task] → don't claim; tell the lead.
 3. Set assignee = your role name AND move `[Planned] → [Active]` (one adapter write
    where the tool allows, else assignee first).
 4. **Read back.** If the assignee is not you, another agent won — back off silently
@@ -391,7 +399,8 @@ files reaching review as if they were deliberate is exactly how a relaunch
 contaminates a [task]. Before the replacement starts, the lead quarantines the
 residue: parallel execution — move the dead instance's worktree aside and let the
 successor recreate it; sequential — `git stash -u` on the feature-branch
-checkout. The successor then rules **explicitly**, as a comment on the [task]:
+checkout (safe to attribute wholesale: the checkout-reservation rule means the
+only uncommitted work there is the dead instance's own [task]). The successor then rules **explicitly**, as a comment on the [task]:
 **salvage** (restore the quarantined changes and justify every kept file against
 the approved `[design-note]`) or **discard** (drop them and redo from the tracker
 trail). Since implementers don't commit, "start clean" always means giving up the
