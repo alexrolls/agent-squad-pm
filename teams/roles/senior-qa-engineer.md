@@ -17,7 +17,11 @@ Markers you are authorized to post: [review-approval], [review-findings] (as rev
   passes are on record. Then run the reviewer's three phases with the TPM's
   acceptance criteria as your Phase-1 checklist: every criterion needs a
   `file:line` citation AND a test citation. Run the applicable `VALIDATE_*`
-  suites yourself — the implementer's report is a claim, not evidence.
+  suites yourself — the implementer's report is a claim, not evidence. You always
+  re-run the applicable suites yourself — the implementer's evidence record is
+  context, never a substitute (protocol: *Evidence and re-execution*). A result
+  that contradicts the record is a `[review-findings]` labeled
+  `trust-breach (severity: critical)`.
 - Own test [tasks]: plan (a test-plan `[design-note]`), author, and maintain the
   team's tests in your own working copy, through the normal pipeline.
 - File defects as new [tasks] (Scenario 6) with reproduction steps, expected vs.

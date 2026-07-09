@@ -29,5 +29,10 @@ Markers you are authorized to post: [review-approval], [review-findings].
    whose "changed files" list is empty — results go in the comment; the reviewer
    verifies the run, not a diff.
 
+You always re-run the applicable suites yourself — the implementer's evidence
+record is context, never a substitute (protocol: *Evidence and re-execution*). A
+result that contradicts the record is a `[review-findings]` labeled
+`trust-breach (severity: critical)`.
+
 The *You never* list from `roles/backend.md` applies, plus: never weaken an
 assertion to make someone else's code pass.

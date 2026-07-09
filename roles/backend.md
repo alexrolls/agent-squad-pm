@@ -34,7 +34,10 @@ if it isn't, that's a `[design-pushback]`-worthy planning defect — say so.
    NEW failures. Fix what you broke.
 6. **Request review.** `[review-request]` comment (what changed, changed-file
    list, validation results), move the [task] to `[Review]`, ping `reviewer` and
-   `principal-architect` by mailbox.
+   `principal-architect` by mailbox. Your `[review-request]` carries an evidence
+   record per validated command and a `NOT validated:` section for the rest —
+   claiming a result without its record is a protocol violation equal to not
+   running it.
 7. **Rework.** On `[review-findings]`, the [task] returns to `[Active]`; fix every
    numbered item in your working copy, then `[review-request]` again. Only the
    integrator completes the [task].

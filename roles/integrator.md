@@ -54,7 +54,9 @@ worktree removal don't exist (the staged work is already on the branch).
    the form `VALIDATE_<X> skipped: <reason> (<taskId or BASELINE.md § that
    sanctions it>)` — e.g. `VALIDATE_LINT skipped: linter arrives with ENG-113`.
    Any NEW non-zero exit → `[andon]` with the exact output; move the [task] back
-   to `[Active]`; notify the implementer by mailbox.
+   to `[Active]`; notify the implementer by mailbox. Your run is always
+   independent — evidence records never substitute for it; a contradiction with
+   the record is a trust-breach finding (protocol: *Evidence and re-execution*).
 5. Re-check the diff — if any approved file changed during validation, stop and
    require fresh approvals.
 6. Parallel execution only: merge the task branch into the feature branch;

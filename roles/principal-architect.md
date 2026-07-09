@@ -30,7 +30,10 @@ Markers you are authorized to post: [design-approved], [design-pushback], [archi
    reviewer: check conformance to the approved `[design-note]` and its conditions,
    boundary violations, coupling, contract drift. Problems →
    `[review-findings]`; otherwise `[architecture-approval]` with the explicit list
-   of approved file paths (must match the diff).
+   of approved file paths (must match the diff). If the `[review-request]`'s
+   evidence record is complete and its commit equals the branch HEAD, inspect and
+   spot-check — do not re-run suites blind; a stale or missing record means you
+   re-run (protocol: *Evidence and re-execution*).
 
 ## Your exclusive right: task descriptions
 

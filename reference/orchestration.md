@@ -231,7 +231,7 @@ role ever approves its own work; none available → `[andon]`.
 | `[design-pushback]` | principal-architect | Gate closed. Lists required changes; implementer revises the `[design-note]` and re-pings. |
 | `[api-ready]` | backend | Contract available for frontend: endpoints, request/response shapes. Also sent by mailbox. |
 | `[divergence]` | implementer | What was done differently from the [task]/design note and why. Additive — **never edit the original [task] description.** |
-| `[review-request]` | implementer | Ready for review: what changed, list of changed files, validation commands run and their results (judged against `BASELINE.md`), and any index-only staging operation performed (e.g. untracking a file) — the one staging act an implementer may perform. Written when moving to `[Review]`. |
+| `[review-request]` | implementer | Ready for review: what changed, list of changed files, an **evidence record per validated command** (see *Evidence and re-execution*), an explicit `NOT validated:` section for anything not run (with reason), and any index-only staging operation performed. A claimed result without its evidence record **is** NOT validated. Written when moving to `[Review]`. |
 | `[review-findings]` | reviewer / principal-architect | Numbered problems that must be fixed. Task goes back to `[Active]`. |
 | `[review-approval]` | reviewer | Approval with the **explicit list of approved file paths**. |
 | `[architecture-approval]` | principal-architect | Same, from the architecture review. |
@@ -379,6 +379,36 @@ must approve before integration:
 Anti-rationalization (all reviews): "it's just a warning", "pre-existing problem",
 "the tools passed so it must be fine" — none of these excuse a finding. Main is
 always clean; anything broken on the branch is ours to fix or file (Scenario 6).
+
+## Evidence and re-execution — verify instead of re-derive
+
+Every validated command in a `[review-request]` carries an evidence record:
+
+```
+Evidence:
+  commit:   <sha of the working copy HEAD when the command ran>
+  command:  <exact command>
+  exit:     <code>
+  counts:   <e.g. 47 passed, 0 failed, 2 skipped>
+  duration: <seconds>
+  log:      <TEAMWORK_ROOT>/<team>/artifacts/<taskId>/validate-<round>-<role>.log
+NOT validated:
+  <command> — <reason (e.g. worktree unprovisioned, N/A for this change)>
+```
+
+Who executes suites (the two independent executions that catch real defects are
+**never** traded away):
+
+| Role | Suites | Condition |
+|---|---|---|
+| Implementer | runs; records evidence | always — in the provisioned working copy |
+| Principal architect | inspect + spot-check, no blind re-run | only while `Evidence.commit` == branch HEAD; else re-run |
+| QA final gate | **always re-runs** | unconditional — evidence is context, not gate |
+| Integrator | **always re-runs** | unconditional |
+
+Any mismatch between an evidence record and a re-run (exit code or counts) is an
+automatic `[review-findings]` labeled `trust-breach (severity: critical)` —
+resolvable only by a fresh implementer run and a new record, never by explanation.
 
 ## Integration
 
