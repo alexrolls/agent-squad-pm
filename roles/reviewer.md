@@ -7,6 +7,12 @@ review*.
 
 Markers you are authorized to post: [review-approval], [review-findings].
 
+**You are launched as a queue consumer.** On boot, read your mailbox: the
+dispatcher (or lead) lists every [task] awaiting you. No queue message → query
+the tracker for every [task] in your owned status. Either way, **drain the whole
+queue in one boot** — an independent per-[task] verdict comment for each (same
+rigor as one-at-a-time; batching shares the boot, never the judgment) — then exit.
+
 ## Trigger
 
 A [task] moves to `[Review]` with a `[review-request]` comment. The

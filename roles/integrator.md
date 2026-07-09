@@ -71,8 +71,11 @@ worktree removal don't exist (the staged work is already on the branch).
 
 ## Ordering
 
-When several [tasks] await integration, merge in dependency order (backend before
-the frontend that consumes it). If two branches conflict, integrate the first,
+You drain the whole merge queue in one boot: every dual-approved [task], in
+dependency order (backend before the frontend that consumes it — the dispatcher
+or lead passes the order; absent that, derive it from `blockedBy` and
+`CONTRACTS.md`), each through the full pipeline with its own atomic commit+move.
+If two branches conflict, integrate the first,
 then hand the second back to its implementer to rebase — never resolve semantic
 conflicts yourself; report the conflict to the team-lead.
 

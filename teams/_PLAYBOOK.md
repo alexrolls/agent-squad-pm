@@ -143,6 +143,8 @@ Report back: [review-request] with changed-file list, validation results, and
         any index-only staging operation — deliver before idling.
 ```
 
+Gate roles drain the whole queue in one boot: one boot reviews every [task] currently awaiting that gate ("drain the [Review] queue"), posting per-[task] verdicts — never one boot per [task] when several wait.
+
 **REVIEW** — lead → reviewer(s), when a [task] enters `[Review]`:
 
 ```
