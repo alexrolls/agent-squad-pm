@@ -43,13 +43,18 @@ is context, not a trigger.
    `[design-approved]` (possibly with conditions) or `[design-pushback]`. No code
    before approval.
 
-   *Pre-flight variant (lifecycle Scenario 10):* when the plan should be settled
-   before any code, run all design gates as one batch — notes for every [task]
+   *Pre-flight pass (lifecycle Scenario 10) — the **default opener**:* unless
+   the plan is genuinely emergent, run all design gates as one batch — notes
+   for every [task]
    (each registering its exports in the contract registry **as it is written**),
    the architect's cross-[task] consistency review first (diffing the set against
    the registry; unregistered exports or uncited imports block approval), then
    per-[task] verdicts and TPM scope sign-offs. At claim time each gate is
    already open.
+   For genuinely emergent plans, keep the gate ahead of the dispatch with a
+   rolling look-ahead instead: when [task] N is dispatched, N+1's
+   `[design-note]` is written and reviewed while N is in flight (skip when
+   N+1 depends on N's implementation detail).
 4. **Implementation.** Own working copy per implementer (a per-[task] worktree
    under `EXECUTION=parallel`; the feature-branch checkout under `sequential`),
    the [task]'s [subtasks] as checklist, `[divergence]` comments for every
@@ -95,6 +100,12 @@ default is `sequential` (the order in stage 5):
   [task] touching a contract registered in `CONTRACTS.md`. Cheaper where the
   second reviewer's value is independent evidence rather than extra findings.
 
+**Recommendation:** `sequential` for a team's first feature; `tiered` once the
+team has run history. Tiered eligibility is a mechanical test the lead applies
+at dispatch — combined review only if (a) the `[design-note]` declared
+`Architectural impact: no` **and** (b) the [task] touches no contract
+registered in `CONTRACTS.md`; anything else gets full dual review.
+
 Whatever the mode, the invariants hold: every required approval exists before
 integration, QA's approval is last, file lists must equal the diff.
 
@@ -122,6 +133,8 @@ Assignment: <one line — what this [task] delivers>
 Inputs: [task] description + all comments; approved [design-note] + conditions
         <link/pointer>; cross-cutting rulings <pointer, if any>; CONTRACTS.md
         lines you consume: <lines or "none">
+Checklist: numbered architecture checklist from [design-approved] — implement
+        to satisfy every item
 Baseline: BASELINE.md — bar is no new failures
 Validate: <VALIDATE_* / VALIDATE_SCRIPT expectations for this change>
 Report back: [review-request] with changed-file list, validation results, and
