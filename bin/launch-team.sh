@@ -306,7 +306,7 @@ case "${1:-}" in
     fi
     setup="$(read_key WORKTREE_SETUP)"
     if [ -n "$setup" ]; then
-      if ! ( cd "$wt" && eval "$setup" ) >/dev/null 2>&1; then
+      if ! ( cd "$wt" && eval "$setup" ) >/dev/null; then
         git -C "$REPO_ROOT" worktree remove --force "$wt" >/dev/null 2>&1 || true
         git -C "$REPO_ROOT" worktree prune
         die "WORKTREE_SETUP failed in $wt — worktree removed. Fix the command or the environment; never claim validations in an unprovisioned tree."
