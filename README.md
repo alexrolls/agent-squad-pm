@@ -282,21 +282,34 @@ Just talk to your agent in the generic vocabulary:
 
 **All launcher subcommands:**
 
+**`bin/launch-team.sh` subcommands:**
+
 | Command | Purpose |
 |---|---|
 | `team <preset> <team> <featureId>` | Launch a whole preset roster |
+| `preflight <team> <featureId>` | Verify adapter access, workspace writability, and UTC pin — run once before any CLI team launch |
 | `start <team> <featureId> <role>…` | Launch specific roles (custom teams) |
 | `relaunch <team> <featureId> <role> [preset]` | Restart one crashed/wedged agent |
 | `compose <team> <featureId> <role> [preset]` | Write a role's startup prompt **without spawning** — for running teammates as subagents inside your own harness (see `reference/orchestration.md` → *Harness mode*) |
-| `worktree <team> <role> <taskId>` | Create an implementer's isolated worktree (parallel execution) |
+| `worktree <team> <role> <taskId> [attempt]` | Create an implementer's isolated worktree (parallel execution) |
+| `worktree-remove <team> <role> <taskId> [attempt]` | Remove a worktree and prune its registration |
 | `status <team>` | Show each agent's state + last heartbeat |
 | `stop <team>` | Stop the whole team |
 
+**`bin/dispatch.sh` — the event loop:**
+
+| Command | Purpose |
+|---|---|
+| `dispatch.sh <team> <featureId> --once [--dry-run] [--unblock=auto\|suggest\|off]` | One deterministic read-and-act pass |
+| `dispatch.sh <team> <featureId> --watch [--unblock=…]` | Repeat every `POLL_INTERVAL_SECONDS` — run in a persistent shell (tmux/nohup); **you own this process** |
+
+> **CLI dispatch requires scriptable tracker access.** Linear and Jira default to MCP; set `LINEAR_ACCESS=rest` or `JIRA_ACCESS=rest` in `config/project-management.config.md` before running `dispatch.sh --watch`. Harness mode (`launch-team.sh compose`) supports MCP natively.
+
 There is also `bin/tracker-ops.sh` — an ergonomic wrapper for the recurring
 tracker operations (`claim`, `state`, `comment` with the body from a file/stdin,
-`integrate <hash>`, `export`) over the scriptable access mechanisms (Linear/Jira
-REST, `gh`, Markdown files). The adapter docs remain the spec; MCP sessions use
-their native tools instead.
+`update-comment <id> <file>`, `integrate <hash>`, `export`) over the scriptable
+access mechanisms (Linear/Jira REST, `gh`, Markdown files). The adapter docs
+remain the spec; MCP sessions use their native tools instead.
 
 **The flow every team follows:** the Principal Architect leads (plans with the
 Product Manager, gates each `[task]`'s design before any code, reviews

@@ -44,9 +44,10 @@ Turn an idea into a tracked feature with a task breakdown.
 4. If this is the feature's first `[Active]` task, the [feature] moves `[Planned]` →
    `[Active]` (do this only if the adapter tracks feature status explicitly).
 5. **Team mode only (`TEAM_MODE=true`): pass the design gate.** Post a `[design-note]`
-   comment (approach, contract/data-model changes, affected components) and wait for
-   the principal-architect's `[design-approved]` before writing any code — see
-   `reference/orchestration.md`. Single-agent mode skips this step.
+   comment (approach, contract/data-model changes, affected components) and exit;
+   the dispatcher/harness relaunches you when the principal-architect's
+   `[design-approved]` arrives — see `reference/orchestration.md`. Single-agent mode
+   skips this step.
 6. Implement, keeping the [task] description's `[subtasks]` as your checklist.
 
 ---
