@@ -16,8 +16,7 @@ in the tracker are the only trigger that counts.
 
 Your working location follows `EXECUTION` (protocol: *Execution modes*):
 `parallel` — the [task]'s worktree
-(`<TEAMWORK_ROOT>/<team>/worktrees/<role>-<taskId>`, `<role>` from the [task]'s
-assignee); `sequential` — the feature-branch checkout, where step 6's merge and
+(`<TEAMWORK_ROOT>/<team>/worktrees/<role>#<attempt>-<taskId>`, latest attempt, `<role>` from the [task]'s assignee); `sequential` — the feature-branch checkout, where step 6's merge and
 worktree removal don't exist (the staged work is already on the branch).
 
 1. In the working location, compute the full changed-file set:
@@ -25,6 +24,20 @@ worktree removal don't exist (the staged work is already on the branch).
    **plus** `git status --porcelain -uall` for anything uncommitted. Always `-uall`:
    plain porcelain collapses a new directory to one `dir/` line and hides every
    file inside it — naive list equality would then pass or fail wrongly.
+1.5 **Authorization check** (skip only if the board config has no `markers`
+   table). For each required approval comment, read its signature (`— <role>`;
+   in scribe mode the *authoring* role before `(posted by team-lead)`). Resolve
+   a specialized signer to the protocol role(s) it acts as (its brief's
+   *Protocol mapping*, restated on the [task] at first signing). The resolved
+   role must be in that marker's `authorizedRoles` list, and the signer must
+   not be the [task]'s implementer (**no self-approval** — when the only
+   authorized role IS the implementer, an independent verifier must have been
+   substituted and its signature is the one you check). Unauthorized or
+   self-signed approval → `[andon]`, [task] back to `[Active]` — no override
+   path, regardless of who asks. For preset teams, additionally verify that
+   the `[review-approval]` signer matches the `PROTOCOL_REVIEWER` entry in the
+   team workspace's `preset.env`; a generic `reviewer` signature does not
+   satisfy a preset's final QA gate.
 2. Compare with the file lists inside BOTH approval comments. All three sets must be
    identical. Any extra, missing, or renamed file → `[andon]` (a file changed after
    approval needs fresh approval — never "probably fine").
@@ -37,18 +50,30 @@ worktree removal don't exist (the staged work is already on the branch).
    exactly the named index-only operations; anything else → `[andon]`.
 4. Validate. If `VALIDATE_SCRIPT` is set in `config/team.config.md`, run it with
    the changed-file list as arguments and let it decide what applies; otherwise
-   run `VALIDATE_BUILD`, then `VALIDATE_TEST`, then `VALIDATE_LINT` (skip `null`
+   run `VALIDATE_BUILD`, then `VALIDATE_TEST`, then `VALIDATE_LINT`, then `VALIDATE_FORMAT` (skip `null`
    keys). Judge results against `<TEAMWORK_ROOT>/<team>/BASELINE.md`: the bar is
    **no new failures**, not "all green" — a failure listed there with its cause
    is not this [task]'s failure. Record every skip in the completion comment in
    the form `VALIDATE_<X> skipped: <reason> (<taskId or BASELINE.md § that
    sanctions it>)` — e.g. `VALIDATE_LINT skipped: linter arrives with ENG-113`.
    Any NEW non-zero exit → `[andon]` with the exact output; move the [task] back
-   to `[Active]`; notify the implementer by mailbox.
+   to `[Active]`; notify the implementer by mailbox. Your run is always
+   independent — evidence records never substitute for it; a contradiction with
+   the record is a trust-breach finding (protocol: *Evidence and re-execution*).
 5. Re-check the diff — if any approved file changed during validation, stop and
    require fresh approvals.
+
+5.5 **Stale base (parallel execution).** If the feature branch has moved since
+   the approval diff (`git merge-base` of the task branch ≠ feature-branch HEAD):
+   merge the **feature branch into the task branch** first, re-run step 4's full
+   validation set there, and only then merge back (step 6). Conflicts in that
+   first merge follow the existing rule — hand back to the implementer, never
+   resolve code yourself. Approvals stay valid only because the re-validation
+   re-proves them on the moved base; record `stale-base: re-merged + revalidated`
+   in the completion comment.
+
 6. Parallel execution only: merge the task branch into the feature branch;
-   remove the worktree (`git worktree remove`). Sequential: skip — nothing to
+   remove the worktree and its registration: `bin/launch-team.sh worktree-remove <team> <role> <taskId> [attempt]` (runs `git worktree remove --force` + `git worktree prune` — a leaked registration blocks the next feature-branch checkout). Sequential: skip — nothing to
    merge.
 7. Commit. Capture the hash (`git rev-parse HEAD`).
 8. **Immediately** move the [task] to `[Ready to deploy]` via the adapter, with a comment
@@ -59,8 +84,11 @@ worktree removal don't exist (the staged work is already on the branch).
 
 ## Ordering
 
-When several [tasks] await integration, merge in dependency order (backend before
-the frontend that consumes it). If two branches conflict, integrate the first,
+You drain the whole merge queue in one boot: every dual-approved [task], in
+dependency order (backend before the frontend that consumes it — the dispatcher
+or lead passes the order; absent that, derive it from `blockedBy` and
+`CONTRACTS.md`), each through the full pipeline with its own atomic commit+move.
+If two branches conflict, integrate the first,
 then hand the second back to its implementer to rebase — never resolve semantic
 conflicts yourself; report the conflict to the team-lead.
 

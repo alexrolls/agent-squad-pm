@@ -91,6 +91,7 @@ Call the billing charge endpoint on submit.
 | Set `[feature]` status | Edit the `#` title line's trailing `[Status]` |
 | Add a comment to a `[task]` | Append a `> <marker> (yyyy-MM-dd): <content>` line under the task section, where `<marker>` is the exact orchestration marker (e.g. `[design-note]`, `[review-approval]`) or `note` for free-form comments |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| update comment | **Not supported — append-only.** Post a new comment carrying `supersedes: <marker>-<round>`; readers treat the highest round as current. |
 
 > **Helper script.** `bin/tracker-ops.sh` performs these edits mechanically — `claim`,
 > `state`, `comment` (body from a file or stdin), `integrate <hash>`, `export`. When
@@ -103,6 +104,7 @@ Call the billing charge endpoint on submit.
 - Task numbers are sequential within a file and never reused, even after completion.
 - Task headers always carry a number **and** a status: `## 3 Title [Active]`.
 - Every task section has exactly one `**Assignee:**` line (value: a role name or `—` for unclaimed).
+- `**BlockedBy:** <n>[, <n>...]` — optional; task numbers in the same feature file. Read by `tracker-ops.sh export` into `blockedBy` (used by `bin/dispatch.sh` for unblock *suggestions* — Markdown is never auto-unblocked).
 - `featureId` is a file path; `taskId` is a task number (`1`, `2`, `3`).
 - Change status only by editing the bracket text — keep exactly one status per header.
 - Comment markers must be exact (e.g. `[design-note]`, `[review-approval]`) — never paraphrase them.

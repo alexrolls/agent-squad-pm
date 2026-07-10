@@ -53,6 +53,7 @@ Build the form.
 ## 2 Wire endpoint [Planned]
 
 **Assignee:** —
+**BlockedBy:** 1
 
 Call the endpoint.
 EOF
@@ -99,7 +100,16 @@ assert byid['$T#2']['status'] == 'Planned'
 assert byid['$T#1']['assignee'] == 'backend'
 assert byid['$T#2']['assignee'] is None
 assert any('design-note' in c['body'] for c in byid['$T#1']['comments'])
+assert byid['$T#2']['blockedBy'] == ['$T#1'], byid['$T#2'].get('blockedBy')
+assert byid['$T#1']['blockedBy'] == []
 "
+
+# -- comment size warning: >50 lines still posts but warns ----------------------
+long="$(python3 -c "print('\n'.join('line %d' % i for i in range(60)))")"
+out="$(printf '%s\n' "$long" | "$OPS" comment "$T#2" - 2>&1)"
+printf '%s' "$out" | grep -q "exceeds the 50-line budget" \
+  && echo "ok: oversize comment warns" || { echo "FAIL: no size warning"; FAILURES=$((FAILURES+1)); }
+check "oversize comment still posted" grep -q 'line 59' "$T"
 
 # -- fail-loud: every bad input is refused with a clear message -------------------
 refuse "unknown status refused"       "unknown \[task\] status" "$OPS" state "$T#2" Nonesuch
@@ -110,6 +120,8 @@ refuse "unknown op refused"           "usage:"                  "$OPS" frobnicat
 refuse "empty comment body refused"   "empty comment body"      bash -c "printf '' | '$OPS' comment '$T#2' -"
 refuse "missing feature file refused" "cannot read"             "$OPS" export nope/feature.md out.json
 refuse "unmapped adapter refused"     "no tracker-ops backend"  env TRACKER_ADAPTER=Nonesuch "$OPS" state "$T#2" Review
+refuse "Markdown update-comment refused"  "append-only"  bash -c "printf 'x\n' | '$OPS' update-comment '$T#2' some-id -"
+refuse "update-comment arg check"         "usage:"       "$OPS" update-comment onlyone
 
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }

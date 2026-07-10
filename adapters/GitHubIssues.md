@@ -45,6 +45,8 @@ gh label create "status:blocked" --color E4E669 2>/dev/null || true
 }
 ```
 
+`dispatch.sh --watch` (CLI mode) requires `GITHUB_USE_MCP=false` (the default `gh` CLI path). Set `GITHUB_USE_MCP=true` only for harness/agent mode.
+
 ## Terminology Mapping
 
 | Generic term | GitHub |
@@ -102,6 +104,7 @@ CLI column assumes `-R <GITHUB_REPO>` is appended when `GITHUB_REPO` is set.
 | Set `[feature]` → `[Resolved]` | `gh api -X PATCH repos/:owner/:repo/milestones/<n> -f state=closed` |
 | Add a comment to a `[task]` | `gh issue comment <taskId> --body-file <file>` (or `--body-file -` for stdin — prefer files over `--body` to avoid shell-quoting) |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` (wraps `gh issue list --milestone ... --json ...`) |
+| update comment | `gh api -X PATCH repos/<owner>/<repo>/issues/comments/<commentId> -f body=...`; or `bin/tracker-ops.sh update-comment ...`. Feature digest: milestones take no comments — edit the milestone description instead. |
 
 > **Helper script.** `bin/tracker-ops.sh` wraps the recurring operations over the `gh`
 > CLI — `claim`, `state` (does the label juggling and open/close for you), `comment`

@@ -16,8 +16,10 @@ on problems; never invent new markers.
 **As implementer (your own [tasks]):**
 - Claim reliability [tasks] one at a time: observability, alert rules, SLO
   definitions, runbooks, and incident tooling.
-- Post a `[design-note]` with rollback strategy and blast radius; wait for
-  `[design-approved]` before writing any configuration.
+- Post a `[design-note]` with rollback strategy and blast radius — then either
+  receive `[design-approved]` this turn or deliver the note and exit; you'll be
+  relaunched or messaged when the gate opens. Never write configuration before
+  `[design-approved]`.
 - Self-validate with all applicable `VALIDATE_*` commands; include results in the
   `[review-request]`.
 **As specialist reviewer (cloud engineer's [tasks], after the architect approves):**

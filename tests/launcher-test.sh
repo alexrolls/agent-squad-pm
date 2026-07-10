@@ -73,18 +73,42 @@ fi
 
 # -- worktree subcommand -------------------------------------------------------
 "$LAUNCH" worktree test-feature backend T-42
-check "worktree created"  test -d .teamwork/test-feature/worktrees/backend-T-42
-check "worktree branch"   git -C .teamwork/test-feature/worktrees/backend-T-42 rev-parse --abbrev-ref HEAD
-[ "$(git -C .teamwork/test-feature/worktrees/backend-T-42 rev-parse --abbrev-ref HEAD)" = "backend-T-42" ] \
+check "worktree created"  test -d .teamwork/test-feature/worktrees/backend#1-T-42
+check "worktree branch"   git -C .teamwork/test-feature/worktrees/backend#1-T-42 rev-parse --abbrev-ref HEAD
+[ "$(git -C .teamwork/test-feature/worktrees/backend#1-T-42 rev-parse --abbrev-ref HEAD)" = "backend-T-42" ] \
   && echo "ok: branch name backend-T-42" || { echo "FAIL: branch name"; FAILURES=$((FAILURES+1)); }
 
 # -- worktree re-add: remove the worktree dir but keep the branch, re-add should succeed --
-git worktree remove .teamwork/test-feature/worktrees/backend-T-42
+git worktree remove .teamwork/test-feature/worktrees/backend#1-T-42
 "$LAUNCH" worktree test-feature backend T-42
-check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend-T-42
+check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend#1-T-42
+
+# -- worktree provisioning: WORKTREE_SETUP runs once, fail-loud -----------------
+CFG_WT=.claude/skills/pm/config/team.config.md
+printf 'WORKTREE_SETUP="touch provisioned.txt"\n' >> "$CFG_WT"
+"$LAUNCH" worktree test-feature backend T-77
+check "WORKTREE_SETUP provisioned the tree" test -f .teamwork/test-feature/worktrees/backend#1-T-77/provisioned.txt
+sed -i '' '/^WORKTREE_SETUP="touch provisioned.txt"$/d' "$CFG_WT"
+printf 'WORKTREE_SETUP="false"\n' >> "$CFG_WT"
+if "$LAUNCH" worktree test-feature backend T-78 >/dev/null 2>&1; then
+  echo "FAIL: failing WORKTREE_SETUP should die"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: failing WORKTREE_SETUP is fail-loud"
+fi
+check "failed provisioning removed the tree" test ! -d .teamwork/test-feature/worktrees/backend#1-T-78
+sed -i '' '/^WORKTREE_SETUP="false"$/d' "$CFG_WT"
+
+# -- attempt-bound relaunch isolation ------------------------------------------
+"$LAUNCH" worktree-remove test-feature backend T-77
+check "worktree-remove cleaned the dir" test ! -d .teamwork/test-feature/worktrees/backend#1-T-77
+git worktree list | grep -q 'backend#1-T-77' && { echo "FAIL: stale worktree registration"; FAILURES=$((FAILURES+1)); } || echo "ok: worktree pruned"
+"$LAUNCH" worktree test-feature backend T-77 2
+check "attempt 2 gets a fresh tree on the same branch" test -d .teamwork/test-feature/worktrees/backend#2-T-77
+[ "$(git -C .teamwork/test-feature/worktrees/backend#2-T-77 rev-parse --abbrev-ref HEAD)" = "backend-T-77" ] \
+  && echo "ok: attempt 2 reuses branch backend-T-77" || { echo "FAIL: attempt-2 branch"; FAILURES=$((FAILURES+1)); }
 
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
-TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
+SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
 check "preset composes fallback-role prompt" test -f .teamwork/test-feature/prompts/principal-software-architect.md
 check "preset brief resolved from teams/roles" grep -q "Role: principal-software-architect" .teamwork/test-feature/prompts/principal-software-architect.md
 check "preset prompt includes team file"     grep -q "Team: Full Stack" .teamwork/test-feature/prompts/principal-software-architect.md
@@ -113,7 +137,7 @@ else
 fi
 
 # -- team preset: unknown preset is refused ------------------------------------
-if TEAM_RUNNER=background "$LAUNCH" team nonesuch test-feature FEAT-2 2>/dev/null; then
+if SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team nonesuch test-feature FEAT-2 2>/dev/null; then
   echo "FAIL: unknown preset should be refused"; FAILURES=$((FAILURES+1))
 else
   echo "ok: unknown preset refused"
@@ -148,6 +172,12 @@ bad "two-key owner refused"           "exactly one of" "{$MINF,\"tasks\":{\"stat
 bad "requiresCommit on initial refused" "not allowed on the initial" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"requiresCommit\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
 bad "no terminal refused"             "at least one terminal" "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"initial\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"A\"]}]}}"
 bad "zero initials refused"           "exactly one initial"   "{$MINF,\"tasks\":{\"statuses\":[{\"name\":\"A\",\"owner\":{\"role\":\"team-lead\"},\"transitions\":[\"Z\"]},{\"name\":\"Z\",\"terminal\":true,\"owner\":{\"role\":\"team-lead\"},\"transitions\":[]}]}}"
+GOODTASKS='"tasks":{"statuses":[{"name":"A","initial":true,"owner":{"role":"team-lead"},"transitions":["Z"]},{"name":"Z","terminal":true,"owner":{"role":"team-lead"},"transitions":[]}]}'
+bad "markers with unknown role refused"  "unknown role" "{$MINF,$GOODTASKS,\"markers\":{\"review-approval\":{\"authorizedRoles\":[\"nobody-such\"]}}}"
+bad "markers with empty list refused"    "non-empty list" "{$MINF,$GOODTASKS,\"markers\":{\"review-approval\":{\"authorizedRoles\":[]}}}"
+bad "markers non-object refused"         "must be a non-empty object" "{$MINF,$GOODTASKS,\"markers\":[]}"
+check "shipped config still passes with markers" "$LAUNCH" validate-board
+check "integrator prompt carries the markers table" grep -q '"authorizedRoles"' .teamwork/test-feature/prompts/integrator.md
 
 # -- config guard: MAX_ACTIVE_IMPLEMENTERS requires EXECUTION=parallel ---------
 CFG=.claude/skills/pm/config/team.config.md
@@ -169,6 +199,117 @@ else
   echo "ok: non-integer knob refused"
 fi
 sed -i '' '/^EXECUTION=parallel$/d;/^MAX_ACTIVE_IMPLEMENTERS=zero$/d' "$CFG"
+
+# -- preflight: aborts before any launch when the adapter probe fails -----------
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Markdown
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+if out="$(TEAM_RUNNER=background "$LAUNCH" team full-stack pf-team missing/feature.md 2>&1)"; then
+  echo "FAIL: preflight should abort on a broken adapter read"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$out" | grep -q "preflight"; then
+  echo "ok: preflight aborts team launch on probe failure"
+else
+  echo "FAIL: wrong preflight abort message: $out"; FAILURES=$((FAILURES+1))
+fi
+check "preflight abort launched nothing" test ! -d .teamwork/pf-team/prompts
+
+# -- preflight: passes on a working adapter; prompts carry the UTC pin ----------
+mkdir -p pf && printf '# F [Planned]\n\n## 1 T [Planned]\n\n**Assignee:** —\n\nx.\n' > pf/feature.md
+TEAM_RUNNER=background "$LAUNCH" start pf-team pf/feature.md backend   # start skips preflight
+"$LAUNCH" preflight pf-team pf/feature.md
+check "preflight writes UTC pin" test -s .teamwork/pf-team/preflight/utc.txt
+out="$("$LAUNCH" compose pf-team pf/feature.md backend)"
+check "composed prompt carries UTC pin" grep -q "Preflight UTC pin" "$out"
+
+# -- preflight: MCP-style adapter needs the recorded tool prefix ----------------
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=SomeMcpTool
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+if "$LAUNCH" preflight pf-team pf/feature.md >/dev/null 2>&1; then
+  echo "FAIL: MCP adapter without tool-prefix.txt should fail preflight"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: MCP preflight demands a recorded tool prefix"
+fi
+printf 'mcp__sometool__' > .teamwork/pf-team/preflight/tool-prefix.txt
+check "MCP preflight passes with prefix on record" "$LAUNCH" preflight pf-team pf/feature.md
+out="$("$LAUNCH" compose pf-team pf/feature.md backend)"
+check "composed prompt carries verified prefix" grep -q "mcp__sometool__" "$out"
+
+# -- preflight: Linear+MCP fails; tool-prefix.txt does NOT bypass the guard ----
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Linear
+LINEAR_ACCESS=mcp                 # mcp = Linear MCP server
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+mcp_pf_out="$("$LAUNCH" preflight pf-team pf/feature.md 2>&1 || true)"
+echo "$mcp_pf_out" | grep -q "CLI dispatcher requires scriptable tracker access for Linear" \
+  && echo "ok: Linear+MCP: preflight fails with scriptable-access message" \
+  || { echo "FAIL: Linear+MCP preflight wrong message: $mcp_pf_out"; FAILURES=$((FAILURES+1)); }
+printf 'mcp__linear__' > .teamwork/pf-team/preflight/tool-prefix.txt
+mcp_pf_out2="$("$LAUNCH" preflight pf-team pf/feature.md 2>&1 || true)"
+echo "$mcp_pf_out2" | grep -q "CLI dispatcher requires scriptable tracker access for Linear" \
+  && echo "ok: tool-prefix.txt does not bypass Linear+MCP guard" \
+  || { echo "FAIL: tool-prefix bypassed the MCP guard: $mcp_pf_out2"; FAILURES=$((FAILURES+1)); }
+
+# Negative guard: false MCP flag with shipped inline-comment format must NOT trip the MCP guard
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=GitHubIssues
+GITHUB_USE_MCP=false              # false = gh CLI
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+neg_pf_out="$("$LAUNCH" preflight pf-team pf/feature.md 2>&1 || true)"
+if echo "$neg_pf_out" | grep -q "CLI dispatcher requires scriptable tracker access"; then
+  echo "FAIL: GITHUB_USE_MCP=false incorrectly triggered MCP guard"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: GITHUB_USE_MCP=false (with inline comment) not treated as MCP-only"
+fi
+
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Markdown
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+
+# -- tmux liveness: pid file removed on agent exit; dead pane never blocks relaunch ----
+if command -v tmux >/dev/null 2>&1; then
+  TL_TEAM="tmux-liveness"
+  tmux kill-session -t "team-$TL_TEAM" 2>/dev/null || true
+  rm -rf ".teamwork/$TL_TEAM"
+  # Launch backend via tmux (no TEAM_RUNNER override → auto picks tmux when available)
+  "$LAUNCH" start "$TL_TEAM" FEAT-T backend
+  check "tmux: pid file written on launch" test -f ".teamwork/$TL_TEAM/pids/backend.pid"
+  # Poll up to 10 s for pid file removal (agent command exits → rm -f in pane → sleep)
+  _tl_done=no
+  for _tl_i in $(seq 1 50); do
+    [ ! -f ".teamwork/$TL_TEAM/pids/backend.pid" ] && _tl_done=yes && break
+    sleep 0.2
+  done
+  if [ "$_tl_done" = "yes" ]; then
+    echo "ok: tmux: pid file removed after agent exit"
+  else
+    echo "FAIL: tmux: pid file still present after 10 s — rm -f not running in pane"
+    FAILURES=$((FAILURES+1))
+  fi
+  # A re-start must succeed (role is not live — pid absent); new pid file written
+  relaunch_out="$("$LAUNCH" start "$TL_TEAM" FEAT-T backend 2>&1)"
+  echo "$relaunch_out" | grep -q "launched backend in tmux" \
+    && echo "ok: tmux: relaunch succeeds (not considered live)" \
+    || { echo "FAIL: tmux: relaunch did not say launched — output: $relaunch_out"; FAILURES=$((FAILURES+1)); }
+  tmux kill-session -t "team-$TL_TEAM" 2>/dev/null || true
+else
+  echo "skip: tmux tests (tmux unavailable)"
+fi
 
 # -- status + stop --------------------------------------------------------------
 # Capture first (grep -q closes the pipe early → SIGPIPE on the writer under pipefail).

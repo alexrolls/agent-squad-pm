@@ -143,6 +143,8 @@ Report back: [review-request] with changed-file list, validation results, and
         any index-only staging operation — deliver before idling.
 ```
 
+Gate roles drain the whole queue in one boot: one boot reviews every [task] currently awaiting that gate ("drain the [Review] queue"), posting per-[task] verdicts — never one boot per [task] when several wait.
+
 **REVIEW** — lead → reviewer(s), when a [task] enters `[Review]`:
 
 ```
@@ -153,7 +155,7 @@ Rule on: <open [divergence]s awaiting a ruling, or "none">
 Check: [design-approved] numbered architecture checklist (your Phase-1 seed —
         add items, never subtract) + its conditions; review-ledger.md lines that
         apply; CONTRACTS.md exports this [task] registered or consumes
-Evidence: run the applicable suites yourself; judge against BASELINE.md
+Evidence: the [review-request]'s evidence records (commit, command, exit, counts, log path) — spot-check per the protocol's *Evidence and re-execution* matrix; QA re-runs regardless.
 Report back: [architecture-approval] / [review-approval] with the explicit file
         list, or [review-findings] — deliver before idling.
 ```

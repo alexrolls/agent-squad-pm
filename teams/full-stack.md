@@ -5,6 +5,13 @@ to API to UI. The default preset when the work isn't deeply specialized.
 
 ```
 ROSTER=principal-software-architect senior-technical-product-manager senior-full-stack-engineer senior-qa-engineer integrator
+PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_QA=senior-qa-engineer
+PROTOCOL_INTEGRATOR=integrator
+PROTOCOL_BACKEND=senior-full-stack-engineer
+PROTOCOL_FRONTEND=senior-full-stack-engineer
 ```
 
 ## Roster

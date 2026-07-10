@@ -43,6 +43,8 @@ Relevant config: `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_PROJECT`, `LINEAR_ACCESS
 > Make sure every status in `config/statuses.config.json` has a matching workflow state
 > in your Linear team (e.g. create a "Blocked" state) — a missing state is an andon stop.
 
+`dispatch.sh --watch` (CLI mode) requires `rest` access. Set `LINEAR_ACCESS=rest` and export `LINEAR_API_KEY`. MCP access is valid for individual agents and harness mode (`launch-team.sh compose`).
+
 ## Terminology Mapping
 
 | Generic term | Linear |
@@ -99,6 +101,7 @@ Completed (Linear project states).
 | Set `[feature]` status | `update_project` | `lin '{"query":"mutation { projectUpdate(id: \"<featureId>\", input: {statusId: \"<statusId>\"}) { success } }"}'` |
 | Add a comment to a `[task]` | `create_comment` | `lin '{"query":"mutation { commentCreate(input: {issueId: \"<taskId>\", body: \"<md>\"}) { success } }"}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via `list_issues` + `get_issue`, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| update comment | `update_comment` MCP tool | GraphQL `commentUpdate(id: $commentId, input: {body: $body})`; or `bin/tracker-ops.sh update-comment <taskId> <commentId> <bodyfile>` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state`, `comment` (body from a file or stdin, so no shell-quoting

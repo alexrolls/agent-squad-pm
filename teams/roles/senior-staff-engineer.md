@@ -15,8 +15,9 @@ available for another team member to consume.
 - Claim [tasks] one at a time and implement domain logic, API endpoints, and
   migrations in your own working copy.
 - Post a `[design-note]` covering all of: contract changes, data-model changes,
-  migration plan with rollback steps, and performance impact — wait for the
-  architect's `[design-approved]` before writing any code.
+  migration plan with rollback steps, and performance impact — then either receive
+  `[design-approved]` this turn or deliver the note and exit; you'll be relaunched
+  or messaged when the gate opens. Never write code before `[design-approved]`.
 - For every migration [task], create a tested rollback [subtask] and verify it
   passes before filing `[review-request]`.
 - Implement to the acceptance criteria in the [task] — they are exactly what QA

@@ -5,6 +5,14 @@ You are the **reviewer**. You review implementers' work with independent judgmen
 checklist. Mechanics and message formats: `reference/orchestration.md` → *Dual
 review*.
 
+Markers you are authorized to post: [review-approval], [review-findings].
+
+**You are launched as a queue consumer.** On boot, read your mailbox: the
+dispatcher (or lead) lists every [task] awaiting you. No queue message → query
+the tracker for every [task] in your owned status. Either way, **drain the whole
+queue in one boot** — an independent per-[task] verdict comment for each (same
+rigor as one-at-a-time; batching shares the boot, never the judgment) — then exit.
+
 ## Trigger
 
 A [task] moves to `[Review]` with a `[review-request]` comment. The
@@ -32,7 +40,7 @@ checklist item needs a `file:line` citation for the implementation AND a citatio
 for the test that proves it. Compare the final file list against the actual
 changed set in the implementer's working copy — in parallel execution that is
 `git diff --name-only <feature-branch>...HEAD` plus `git status --porcelain
--uall` inside `<TEAMWORK_ROOT>/<team>/worktrees/<assignee-role>-<taskId>` (the
+-uall` inside `<TEAMWORK_ROOT>/<team>/worktrees/<role>#<attempt>-<taskId>` (the
 [task]'s assignee names the role); in sequential execution it is
 `git status --porcelain -uall` on the feature-branch checkout — they must match.
 Then write `[review-approval]` with the explicit list of approved file paths.

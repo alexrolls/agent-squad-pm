@@ -9,11 +9,12 @@
 # argument — that kills the quoting/escaping failure mode of hand-built API calls.
 #
 # Usage:
-#   tracker-ops.sh state     <taskId> <Status>               # set [task] status (generic name)
-#   tracker-ops.sh comment   <taskId> [bodyfile]             # add comment; body from file or stdin
-#   tracker-ops.sh claim     <taskId> <role> [--to <Status>] # claim: initial→working status + claim comment
-#   tracker-ops.sh integrate <taskId> <hash> [bodyfile]      # terminal move + completion comment citing <hash>
-#   tracker-ops.sh export    <featureId> <outfile>           # read-side: dump the [feature]'s [tasks] as JSON
+#   tracker-ops.sh state          <taskId> <Status>                         # set [task] status (generic name)
+#   tracker-ops.sh comment        <taskId> [bodyfile]                       # add comment; body from file or stdin
+#   tracker-ops.sh update-comment <taskId> <commentId> [bodyfile]           # edit an existing comment (Linear/Jira/GitHub; Markdown refuses)
+#   tracker-ops.sh claim          <taskId> <role> [--to <Status>]           # claim: initial→working status + claim comment
+#   tracker-ops.sh integrate      <taskId> <hash> [bodyfile]                # terminal move + completion comment citing <hash>
+#   tracker-ops.sh export         <featureId> <outfile>                     # read-side: dump the [feature]'s [tasks] as JSON
 #
 # Adapter comes from PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md
 # (override with TRACKER_ADAPTER=<Name>). Credentials come from the environment,
@@ -159,8 +160,13 @@ class Linear:
 
     def comment(self, task_id, body):
         issue = self.issue(task_id)
-        self.gql('mutation($id: String!, $body: String!) { commentCreate(input: {issueId: $id, body: $body}) { success } }',
-                 {'id': issue['id'], 'body': body})
+        d = self.gql('mutation($id: String!, $body: String!) { commentCreate(input: {issueId: $id, body: $body}) { success comment { id } } }',
+                     {'id': issue['id'], 'body': body})
+        return d['commentCreate']['comment']['id']
+
+    def update_comment(self, task_id, comment_id, body):
+        self.gql('mutation($cid: String!, $body: String!) { commentUpdate(id: $cid, input: {body: $body}) { success } }',
+                 {'cid': comment_id, 'body': body})
 
     def project_id(self, feature_id):
         # The adapter's ID mapping allows a project UUID or a project name.
@@ -176,19 +182,23 @@ class Linear:
         return nodes[0]['id']
 
     def export(self, feature_id):
-        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } } } } }',
+        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } inverseRelations { nodes { type issue { identifier } } } } } } }',
                      {'id': self.project_id(feature_id)})
         if not d.get('project'):
             die("no Linear project '%s'" % feature_id)
         tasks = []
         for i in d['project']['issues']['nodes']:
             raw = i['state']['name']
+            blocked_by = [r['issue']['identifier']
+                          for r in (i.get('inverseRelations') or {}).get('nodes', [])
+                          if r.get('type') == 'blocks' and r.get('issue')]
             tasks.append({'taskId': i['identifier'], 'title': i['title'],
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (i.get('assignee') or {}).get('name'),
                           'description': i.get('description'),
                           'comments': [{'body': c['body'], 'createdAt': c['createdAt']}
-                                       for c in i['comments']['nodes']]})
+                                       for c in i['comments']['nodes']],
+                          'blockedBy': blocked_by})
         return tasks
 
 class Jira:
@@ -217,21 +227,29 @@ class Jira:
             for para in text.split('\n\n')]}
 
     def comment(self, task_id, body):
-        self.api('/rest/api/3/issue/%s/comment' % task_id, {'body': self.adf(body)})
+        resp = self.api('/rest/api/3/issue/%s/comment' % task_id, {'body': self.adf(body)})
+        return resp.get('id')
+
+    def update_comment(self, task_id, comment_id, body):
+        self.api('/rest/api/3/issue/%s/comment/%s' % (task_id, comment_id),
+                 {'body': self.adf(body)}, method='PUT')
 
     def export(self, feature_id):
-        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment&maxResults=100'
+        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks&maxResults=100'
                        % urllib.request.quote('parent=%s' % feature_id))
         tasks = []
         for i in out.get('issues', []):
             f = i['fields']
             raw = f['status']['name']
+            blocked_by = [l['inwardIssue']['key'] for l in f.get('issuelinks', [])
+                          if l.get('type', {}).get('name') == 'Blocks' and l.get('inwardIssue')]
             tasks.append({'taskId': i['key'], 'title': f['summary'],
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (f.get('assignee') or {}).get('displayName'),
                           'description': f.get('description'),
                           'comments': [{'body': c.get('body'), 'createdAt': c.get('created')}
-                                       for c in (f.get('comment') or {}).get('comments', [])]})
+                                       for c in (f.get('comment') or {}).get('comments', [])],
+                          'blockedBy': blocked_by})
         return tasks
 
 class GitHubIssues:
@@ -277,7 +295,22 @@ class GitHubIssues:
         self.gh(*args)
 
     def comment(self, task_id, body):
-        self.gh('issue', 'comment', str(task_id), '--body-file', '-', stdin=body)
+        out = self.gh('issue', 'comment', str(task_id), '--body-file', '-', stdin=body)
+        m = re.search(r'#issuecomment-(\d+)', out)
+        return m.group(1) if m else None
+
+    def update_comment(self, task_id, comment_id, body):
+        repo = PM_CONFIG.get('GITHUB_REPO')
+        if not repo:
+            repo = json.loads(self.gh('repo', 'view', '--json', 'nameWithOwner'))['nameWithOwner']
+        cmd = ['gh', 'api', '-X', 'PATCH', 'repos/%s/issues/comments/%s' % (repo, comment_id),
+               '-f', 'body=%s' % body]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            die("gh CLI not found (see the GitHubIssues adapter's setup)")
+        if r.returncode != 0:
+            die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
 
     def export(self, feature_id):
         raw = self.gh('issue', 'list', '--milestone', str(feature_id), '--state', 'all',
@@ -296,7 +329,8 @@ class GitHubIssues:
                           'status': generic, 'statusRaw': raw_status,
                           'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
                           'description': i.get('body'),
-                          'comments': [{'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments]})
+                          'comments': [{'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments],
+                          'blockedBy': []})
         return tasks
 
 class Markdown:
@@ -367,6 +401,9 @@ class Markdown:
         block = text[:insert_at].rstrip('\n') + '\n\n' + quoted + '\n\n'
         self.save(path, block + text[insert_at:].lstrip('\n'))
 
+    def update_comment(self, task_id, comment_id, body):
+        die("Markdown adapter is append-only — no stable comment ids; post a new comment with 'supersedes: %s' instead" % comment_id)
+
     def export(self, feature_id):
         text = self.load(feature_id)
         tasks = []
@@ -376,12 +413,27 @@ class Markdown:
             nxt = re.search(r'^## ', rest, re.M)
             section = rest[:nxt.start()] if nxt else rest
             am = re.search(r'^\*\*Assignee:\*\* (.*)$', section, re.M)
-            comments = [{'body': c.strip(), 'createdAt': None}
-                        for c in re.findall(r'^> (.*)$', section, re.M)]
+            bb = re.search(r'^\*\*BlockedBy:\*\* (.*)$', section, re.M)
+            blocked_by = ['%s#%s' % (feature_id, n.strip().lstrip('#'))
+                          for n in bb.group(1).split(',') if n.strip()] if bb else []
+            _blocks, _cur = [], []
+            for _l in section.split('\n'):
+                _q = re.match(r'^> (.*)$', _l)
+                if _q:
+                    _cur.append(_q.group(1))
+                elif _cur:
+                    _b = '\n'.join(_cur).strip()
+                    if _b: _blocks.append(_b)
+                    _cur = []
+            if _cur:
+                _b = '\n'.join(_cur).strip()
+                if _b: _blocks.append(_b)
+            comments = [{'body': _b, 'createdAt': None} for _b in _blocks]
             tasks.append({'taskId': '%s#%s' % (feature_id, num), 'title': title,
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (am.group(1).strip() if am and am.group(1).strip() != '—' else None),
-                          'description': section.strip(), 'comments': comments})
+                          'description': section.strip(), 'comments': comments,
+                          'blockedBy': blocked_by})
         return tasks
 
 BACKENDS = {'Linear': Linear, 'Jira': Jira, 'GitHubIssues': GitHubIssues, 'Markdown': Markdown}
@@ -399,8 +451,21 @@ def op_state(args):
 def op_comment(args):
     if len(args) not in (1, 2):
         die("usage: comment <taskId> [bodyfile]  (no file / '-' = stdin)")
-    backend.comment(args[0], read_body(args[1] if len(args) == 2 else None))
-    print("comment added to %s" % args[0])
+    body = read_body(args[1] if len(args) == 2 else None)
+    if body.count('\n') + 1 > 50:
+        print("tracker-ops: warning — comment body exceeds the 50-line budget "
+              "(protocol: move detail to <TEAMWORK_ROOT>/<team>/artifacts/ and cite the path)",
+              file=sys.stderr)
+    cid = backend.comment(args[0], body)
+    print("comment added to %s%s" % (args[0], " (id: %s)" % cid if cid else ""))
+
+def op_update_comment(args):
+    if len(args) not in (2, 3):
+        die("usage: update-comment <taskId> <commentId> [bodyfile]  (no file / '-' = stdin)")
+    if not hasattr(backend, 'update_comment'):
+        die("adapter '%s' does not support update-comment" % ADAPTER)
+    backend.update_comment(args[0], args[1], read_body(args[2] if len(args) == 3 else None))
+    print("comment %s updated on %s" % (args[1], args[0]))
 
 def op_claim(args):
     to = None
@@ -455,9 +520,9 @@ def op_export(args):
         f.write('\n')
     print("exported %d [tasks] of %s to %s" % (len(tasks), feature_id, outfile))
 
-OPS = {'state': op_state, 'comment': op_comment, 'claim': op_claim,
-       'integrate': op_integrate, 'export': op_export}
+OPS = {'state': op_state, 'comment': op_comment, 'update-comment': op_update_comment,
+       'claim': op_claim, 'integrate': op_integrate, 'export': op_export}
 if not ARGS or ARGS[0] not in OPS:
-    die("usage: tracker-ops.sh {state|comment|claim|integrate|export} ...")
+    die("usage: tracker-ops.sh {state|comment|update-comment|claim|integrate|export} ...")
 OPS[ARGS[0]](ARGS[1:])
 PYEOF

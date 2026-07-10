@@ -27,11 +27,13 @@ Two principles rule everything:
 ├── mailbox/<role>/NNN-<from>.md # incoming messages for <role>, numbered, append-only
 ├── heartbeats/<role>            # one line: <ISO-8601 UTC> | <taskId or -> | <state>
 ├── pids/<role>.pid              # process id when launched in background mode
-├── worktrees/<role>-<taskId>/   # implementer working copies (parallel execution only)
+├── worktrees/<role>#<attempt>-<taskId>/ # per-instance working copies, provisioned via WORKTREE_SETUP (parallel execution only)
 ├── CONTRACTS.md                 # append-only registry of names plans export/consume (see "Contract registry")
 ├── BASELINE.md                  # known state of the branch at creation: test counts, known failures, validation commands (see "Baseline manifest")
 ├── review-ledger.md             # reviewers' one-line-per-ruling ledger of still-live conditions
 ├── tasks.json                   # read-only [task] export for credential-less roles (adapter "export" operation)
+├── artifacts/<taskId>/          # full logs, checklists, evidence files — cited by path from budgeted comments
+├── progress-ids/<taskId>        # comment id of the [task]'s editable [progress] comment
 └── ESCALATIONS.md               # the Lead's log of everything escalated to the human
 ```
 
@@ -65,9 +67,11 @@ a run: signatures are grep keys.
   <one short, actionable message>
   ```
 
-- **Receive:** check your mailbox directory between work steps and at least every
-  `POLL_INTERVAL_SECONDS` when idle. Process messages in number order; delete each
-  after acting on it.
+- **Receive:** check your mailbox directory between work steps. Process messages in
+  number order; delete each after acting on it. **Never sit idle polling:** when your
+  turn's work is done, deliver your artifact and exit — you will not be alive later,
+  so never plan to "check back". The dispatcher owns time (`reference/dispatch.md`);
+  `POLL_INTERVAL_SECONDS` is *its* cadence, not yours.
 - **Heartbeat:** between work steps, rewrite your heartbeat file with
   `<ISO-8601 UTC> | <current taskId or -> | <one-line state>` (e.g.
   `2026-07-06T14:02:11Z | ENG-142 | implementing, subtask 3/5`).
@@ -167,7 +171,10 @@ nothing else: markers, gates, reviews, and statuses are identical in both modes.
     (park N+1 at a clean point — its WIP is safe in its own worktree — switch
     to N's worktree, deliver the rework and a fresh `[review-request]` before
     idling), moves N+1 `Active → Blocked` with the comment
-    `Parked (pipelined): preempted by rework on <N>. Resume on <N> re-entering [Review].`,
+    `Parked (pipelined): preempted by rework on <N>. Resume on <N> re-entering [Review].`
+    (this parked comment deliberately carries **no** `resume-status:` — the lead
+    owns the resume assignment and performs the `Blocked → Active` move directly
+    when N re-enters `[Review]`; the dispatcher must not auto-resume a parked task),
     and when N re-enters `[Review]`, moves N+1 `Blocked → Active` with a
     fresh resume assignment. Oldest [task] first, always; one implementer
     never holds two [tasks] hot at once. A parked [task] reads as **Parked**
@@ -215,6 +222,24 @@ All coordination artifacts are comments on the [task], written through the adapt
 beginning with an exact marker. Markers are the machine-readable protocol; never
 invent new ones, never misspell them.
 
+Marker **authorship is enforced, not narrated**: the board config's `markers`
+table names the role(s) authorized to post each gate marker (presets may
+override it). The integrator refuses any approval whose signer is not
+authorized (its step 1.5). When a marker's only authorized role is the [task]'s
+own implementer, an **independent verifier** from the roster substitutes — no
+role ever approves its own work; none available → `[andon]`.
+
+**Budgets and supersession.** A gate-marker comment is ≤ **30 lines**: marker,
+`round: N`, `supersedes: <comment-id>` (round ≥ 2; Markdown adapter:
+`<marker>-<round>` stands in for the id), verdict, delta since the last round,
+file list, evidence/artifact paths, signature. Full checklists, logs, and long
+rationale live in `<TEAMWORK_ROOT>/<team>/artifacts/<taskId>/` and are cited by
+path — the integrator verifies cited paths exist. Reconstructing current state
+from a trail: per marker type, the comment with the highest `round:` not named
+by a later `supersedes:` is current; everything else is history (unnumbered
+pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
+[task] descriptions never enter the tracker — design notes are **delta-only**.
+
 | Marker | Written by | Meaning / required content |
 |---|---|---|
 | `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |
@@ -222,15 +247,17 @@ invent new ones, never misspell them.
 | `[design-pushback]` | principal-architect | Gate closed. Lists required changes; implementer revises the `[design-note]` and re-pings. |
 | `[api-ready]` | backend | Contract available for frontend: endpoints, request/response shapes. Also sent by mailbox. |
 | `[divergence]` | implementer | What was done differently from the [task]/design note and why. Additive — **never edit the original [task] description.** |
-| `[review-request]` | implementer | Ready for review: what changed, list of changed files, validation commands run and their results (judged against `BASELINE.md`), and any index-only staging operation performed (e.g. untracking a file) — the one staging act an implementer may perform. Written when moving to `[Review]`. |
-| `[review-findings]` | reviewer / principal-architect | Numbered problems that must be fixed. Task goes back to `[Active]`. |
-| `[review-approval]` | reviewer | Approval with the **explicit list of approved file paths**. |
+| `[review-request]` | implementer | Ready for review: what changed, list of changed files, an **evidence record per validated command** (see *Evidence and re-execution*), an explicit `NOT validated:` section for anything not run (with reason), and any index-only staging operation performed. A claimed result without its evidence record **is** NOT validated. Written when moving to `[Review]`. |
+| `[review-findings]` | reviewer / qa / principal-architect | Numbered problems that must be fixed. Task goes back to `[Active]`. |
+| `[review-approval]` | reviewer / qa | Approval with the **explicit list of approved file paths**. |
 | `[architecture-approval]` | principal-architect | Same, from the architecture review. |
 | `[product-approval]` | product owner role (e.g. `senior-technical-product-manager`; the team-lead where no product role exists) | Scope/acceptance sign-off: scope ruling, acceptance-criteria verdict, any conditions. |
 | `[product-pushback]` | product owner role (same) | Scope gate closed: what must change in scope or acceptance criteria before work proceeds. |
 | `[handoff]` | team-lead | Reassignment: summary of state so a fresh agent can resume. |
+| `[progress]` | implementer (via lead in scribe mode) | **One per [task], edited in place** (`tracker-ops.sh update-comment`; Markdown adapter: append a superseding one). Content: stage (`claimed / design-approved / implementing / validating / review-round-N`), updated-at (UTC), ≤ 3 lines of state. Edit on stage boundaries only, ≥ 10 min apart. First post: capture the comment id in `<TEAMWORK_ROOT>/<team>/progress-ids/<taskId>`; a relaunched scribe re-reads the trail to find it. |
+| `[digest]` | team-lead | **One per [feature], on the [feature] itself, edited in place** at milestones only (a [task] hits terminal status, a gate rejects, an `[andon]`, feature done): one line per [task] (`<taskId> <title> — [Status] (<reason if blocked/rejected>)`) + `⚠ escalation open: <taskId>` lines. The human reads this one comment, never the trails. GitHubIssues: milestones take no comments — keep the digest in the milestone description (`gh api PATCH`). |
 | `[andon]` | any role | Stop-the-line report: what failed, exact error, what you did NOT do. |
-| `[escalation]` | team-lead | Needs the human: question + context + what was already tried. |
+| `[escalation]` | team-lead | Needs the human. Required shape: `question:` (one sentence), `context:` (≤ 4 lines), `options:` (≥ 2, each with a one-line consequence), `default-if-silent: <option> after <N hours>`. Also appended to `ESCALATIONS.md`. An `[escalation]` without options + default is a protocol error (`[andon]`). |
 
 ## Contract registry — parallel plans share names, not assumptions
 
@@ -321,6 +348,7 @@ one that performs its outbound transitions.
    and pick the next `[Planned]` [task] on your track.
 5. Set up your working copy (roles that write code only). `EXECUTION=parallel`:
    create your worktree — `bin/launch-team.sh worktree <team> <role> <taskId>`.
+   The worktree is your **instance's** scratch space (attempt-numbered); it arrives provisioned when `WORKTREE_SETUP` is set — validation claims may only cite commands actually executed inside it.
    `EXECUTION=sequential`: work in the feature-branch checkout directly; there
    is no worktree and no task branch (see *Execution modes*).
 
@@ -370,6 +398,36 @@ Anti-rationalization (all reviews): "it's just a warning", "pre-existing problem
 "the tools passed so it must be fine" — none of these excuse a finding. Main is
 always clean; anything broken on the branch is ours to fix or file (Scenario 6).
 
+## Evidence and re-execution — verify instead of re-derive
+
+Every validated command in a `[review-request]` carries an evidence record:
+
+```
+Evidence:
+  commit:   <sha of the working copy HEAD when the command ran>
+  command:  <exact command>
+  exit:     <code>
+  counts:   <e.g. 47 passed, 0 failed, 2 skipped>
+  duration: <seconds>
+  log:      <TEAMWORK_ROOT>/<team>/artifacts/<taskId>/validate-<round>-<role>.log
+NOT validated:
+  <command> — <reason (e.g. worktree unprovisioned, N/A for this change)>
+```
+
+Who executes suites (the two independent executions that catch real defects are
+**never** traded away):
+
+| Role | Suites | Condition |
+|---|---|---|
+| Implementer | runs; records evidence | always — in the provisioned working copy |
+| Principal architect | inspect + spot-check, no blind re-run | only while `Evidence.commit` == branch HEAD; else re-run |
+| QA final gate | **always re-runs** | unconditional — evidence is context, not gate |
+| Integrator | **always re-runs** | unconditional |
+
+Any mismatch between an evidence record and a re-run (exit code or counts) is an
+automatic `[review-findings]` labeled `trust-breach (severity: critical)` —
+resolvable only by a fresh implementer run and a new record, never by explanation.
+
 ## Integration
 
 The `integrator` is the **only** role that merges to the feature branch, commits, or
@@ -387,7 +445,7 @@ even from the team-lead):
    Index-only operations (untracking a file) are the implementer's one sanctioned
    staging exception — allowed only when named in the `[review-request]`.
 3. Validate — `VALIDATE_SCRIPT` with the changed-file list if set, else
-   `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT` (skip `null` ones, record
+   `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_FORMAT` (skip `null` ones, record
    skips). Judge against `BASELINE.md`: the bar is no NEW failures. Any new
    failure → `[andon]`, task back to `[Active]`.
 4. Parallel execution only: merge the task branch into the feature branch;
@@ -401,7 +459,9 @@ even from the team-lead):
 
 ## Supervision — the team-lead loop
 
-Every `POLL_INTERVAL_SECONDS`: read all heartbeats, your mailbox, and the tracker.
+**On each invocation** — the dispatcher (`reference/dispatch.md`) or the harness
+loop decides when that is — read all heartbeats, your mailbox, and the tracker,
+act on **every** pending event in one pass, then exit.
 
 Detect:
 - **Stuck** — heartbeat older than `STUCK_AFTER_MINUTES`; an `[Active]` [task] with
@@ -460,8 +520,7 @@ A killed or unresponsive instance may have left uncommitted
 writes in its working copy; a successor must never inherit them silently — orphan
 files reaching review as if they were deliberate is exactly how a relaunch
 contaminates a [task]. Before the replacement starts, the lead quarantines the
-residue: parallel execution — move the dead instance's worktree aside and let the
-successor recreate it; sequential — `git stash -u` on the feature-branch
+residue: parallel execution — discard the dead instance's worktree (`bin/launch-team.sh worktree-remove <team> <role> <taskId> [attempt]`; use `git worktree move` first if salvage is on the table) and let the successor create attempt N+1 on the same task branch; sequential — `git stash -u` on the feature-branch
 checkout (safe to attribute wholesale: the checkout-reservation rule means the
 only uncommitted work there is the dead instance's own [task]). The successor then rules **explicitly**, as a comment on the [task]:
 **salvage** (restore the quarantined changes and justify every kept file against
@@ -487,7 +546,7 @@ never fabricate a result, never claim a status you did not verify.
 | Shared filesystem with the team | mailbox/heartbeats | poll the tracker; say so once on your [task] |
 | Harness-native teammates (subagent spawn + messaging) | harness mode | launch CLI processes via `bin/launch-team.sh` (tmux / background) |
 | tmux | launcher niceness | background processes + pid files |
-| Long-running loop | team-lead, principal-architect, integrator | relaunch on a schedule; recovery makes restarts free |
+| Long-running loop | nobody — the loop lives outside agents (`reference/dispatch.md`) | one-shot turns are the primary path: `bin/dispatch.sh --watch` (CLI) or the harness orchestrator converts events into launches; recovery makes restarts free |
 
 A missing capability degrades **explicitly** — state what you could not do; never
 silently skip a protocol step.

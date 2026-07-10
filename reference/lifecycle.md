@@ -44,9 +44,10 @@ Turn an idea into a tracked feature with a task breakdown.
 4. If this is the feature's first `[Active]` task, the [feature] moves `[Planned]` →
    `[Active]` (do this only if the adapter tracks feature status explicitly).
 5. **Team mode only (`TEAM_MODE=true`): pass the design gate.** Post a `[design-note]`
-   comment (approach, contract/data-model changes, affected components) and wait for
-   the principal-architect's `[design-approved]` before writing any code — see
-   `reference/orchestration.md`. Single-agent mode skips this step.
+   comment (approach, contract/data-model changes, affected components) and exit;
+   the dispatcher/harness relaunches you when the principal-architect's
+   `[design-approved]` arrives — see `reference/orchestration.md`. Single-agent mode
+   skips this step.
 6. Implement, keeping the [task] description's `[subtasks]` as your checklist.
 
 ---
@@ -116,7 +117,18 @@ edge case, a follow-up):
 When the *work* cannot proceed — missing dependency, unanswered question, broken
 external service — and it isn't a process failure (that's the andon cord, Scenario 8):
 
-1. **Add a comment** stating what is blocking, what was tried, and what would unblock.
+1. **Add a comment** with the block metadata in this shape:
+   ```
+   blocked-by: <taskId> [<taskId2> ...]
+   resume-status: <Status>
+   reason: <what is blocking, what was tried, what would unblock>
+   ```
+   `blocked-by:` is required for the dispatcher to identify this as the current
+   block event. `resume-status:` (a legal `[Blocked]` → `[Status]` transition) is
+   required for the dispatcher to auto-unblock without team-lead confirmation;
+   without it the dispatcher routes to the team-lead. **Only the most recent
+   `blocked-by:` comment governs — older `resume-status:` lines in the history
+   are not reused.**
 2. **Move the [task] to `[Blocked]`** via the adapter. The board's owner of `[Blocked]`
    (default: team-lead) now owns resolving it.
 3. The `[Blocked]` owner works the blocker and, once cleared, **moves the [task] back**

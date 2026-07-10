@@ -7,6 +7,12 @@ cost-efficient platform layer — not a product feature.
 
 ```
 ROSTER=principal-cloud-infrastructure-architect senior-technical-product-manager senior-cloud-engineer senior-sre-engineer senior-qa-engineer integrator
+PROTOCOL_TEAM_LEAD=principal-cloud-infrastructure-architect
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-cloud-infrastructure-architect
+PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_QA=senior-qa-engineer
+PROTOCOL_INTEGRATOR=integrator
+PROTOCOL_BACKEND=senior-cloud-engineer
 ```
 
 ## Roster

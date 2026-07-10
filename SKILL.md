@@ -16,6 +16,7 @@ skill's directory):
 - `reference/lifecycle.md` — the numbered scenarios you execute
 - `reference/team-roles.md` — status ownership (only if `TEAM_MODE=true`)
 - `reference/orchestration.md` — multi-agent protocol (mailboxes, gates, unblocking)
+- `reference/dispatch.md` — who converts tracker/mailbox events into role launches (the loop lives outside the agent)
 - `roles/<role>.md` + `config/team.config.md` + `bin/launch-team.sh` — the agent team
 - `bin/tracker-ops.sh` — ergonomic CLI for recurring tracker operations (scriptable mechanisms)
 - `adapters/<Tool>.md` — how to perform each operation in the active tool
@@ -34,9 +35,16 @@ skill's directory):
    file doesn't exist, stop and tell the user to create it from `adapters/_TEMPLATE.md`.
 3. **Read `reference/vocabulary.md` and `reference/lifecycle.md`** if not already in
    context. If `TEAM_MODE=true`, also read `reference/team-roles.md` and `reference/orchestration.md`.
-4. **Initialize the tool** exactly as the adapter's *Initialization* section says (a cheap
-   read proving access works). If it fails: **stop** and tell the user to fix the adapter's
-   *MCP / CLI Setup* — do not proceed.
+4. **Initialize the tool** — steps depend on your execution mode:
+   - **Single-agent** (`TEAM_MODE` unset or false): run the adapter's *Initialization*
+     section probe (a cheap read proving access works). If it fails, stop and tell the
+     user to fix the *MCP / CLI Setup* — do not proceed.
+   - **Team CLI** (launched by `bin/launch-team.sh`): `preflight` owns the shared adapter
+     probe; do not re-run it. If a `Verified tracker tool prefix` appears in your startup
+     context, use it verbatim — do not re-derive from adapter docs.
+   - **Harness** (subagent from a `compose` prompt): the orchestrator resolved the MCP
+     tools before spawning you. Use the `Verified tracker tool prefix` from your startup
+     context; do not call ToolSearch to re-derive it.
 
 ## Executing the request
 

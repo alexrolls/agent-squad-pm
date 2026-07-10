@@ -9,6 +9,14 @@ worktree via `bin/launch-team.sh worktree <team> qa <taskId>`; sequential: the
 feature-branch checkout) → self-validate →
 `[review-request]` → rework → integrator completes.
 
+Markers you are authorized to post: [review-approval], [review-findings].
+
+**You are launched as a queue consumer.** On boot, read your mailbox: the
+dispatcher (or lead) lists every [task] awaiting you. No queue message → query
+the tracker for every [task] in your owned status. Either way, **drain the whole
+queue in one boot** — an independent per-[task] verdict comment for each (same
+rigor as one-at-a-time; batching shares the boot, never the judgment) — then exit.
+
 ## QA-specific rules
 
 1. **Test merged work.** Run against the feature branch state the integrator has
@@ -26,6 +34,11 @@ feature-branch checkout) → self-validate →
    need the design gate (a one-paragraph plan) but produce a `[review-request]`
    whose "changed files" list is empty — results go in the comment; the reviewer
    verifies the run, not a diff.
+
+You always re-run the applicable suites yourself — the implementer's evidence
+record is context, never a substitute (protocol: *Evidence and re-execution*). A
+result that contradicts the record is a `[review-findings]` labeled
+`trust-breach (severity: critical)`.
 
 The *You never* list from `roles/backend.md` applies, plus: never weaken an
 assertion to make someone else's code pass.

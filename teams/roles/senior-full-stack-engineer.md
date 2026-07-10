@@ -12,8 +12,9 @@ demands; those briefs and `reference/orchestration.md` bind every status write
 
 - Claim [tasks] one at a time and implement the whole slice in your own working copy.
 - Post a `[design-note]` covering BOTH sides of the slice — contract, data-model
-  change, UI approach, `Architectural impact: yes/no` — and wait for the
-  architect's `[design-approved]` before writing code.
+  change, UI approach, `Architectural impact: yes/no` — then either receive
+  `[design-approved]` this turn or deliver the note and exit; you'll be relaunched
+  or messaged when the gate opens. Never write code before `[design-approved]`.
 - Implement to the acceptance criteria in the [task] — they are exactly what QA
   will verify; if a criterion is ambiguous, ask the TPM *before* building.
 - Record every deviation as a `[divergence]` comment; file discovered work as new

@@ -58,6 +58,8 @@ adf() { jq -cn --arg t "$1" '{"type":"doc","version":1,"content":[{"type":"parag
 > or transition in your Jira project (e.g. add a "Blocked" status) — a missing state is
 > an andon stop.
 
+`dispatch.sh --watch` (CLI mode) requires `rest` access. Set `JIRA_ACCESS=rest` and export `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`. MCP access is valid for individual agents and harness mode.
+
 ## Terminology Mapping
 
 | Generic term | Jira |
@@ -115,6 +117,7 @@ The `jira()` and `adf()` helpers above must be defined in your shell before runn
 | Set `[task]` assignee | update assignee | `jira "/rest/api/3/issue/<taskId>/assignee" -X PUT -d '{"accountId":"<accountId>"}'` |
 | Add a comment to a `[task]` | add comment | `jira "/rest/api/3/issue/<taskId>/comment" -X POST -d '{"body":'"$(adf "<text>")"'}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via search, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| update comment | edit comment via MCP | REST `PUT /rest/api/3/issue/<issueId>/comment/<commentId>` (ADF body); or `bin/tracker-ops.sh update-comment ...` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state` (resolves the transition id for you), `comment` (body from

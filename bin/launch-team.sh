@@ -4,10 +4,12 @@
 #
 # Usage:
 #   launch-team.sh team          <preset> <team> <featureId>     # launch a preset roster (teams/<preset>.md)
+#   launch-team.sh preflight     <team> <featureId>              # verify adapter, workspace, UTC pin
 #   launch-team.sh start         <team> <featureId> <role>...
 #   launch-team.sh relaunch      <team> <featureId> <role> [preset]
 #   launch-team.sh compose       <team> <featureId> <role> [preset]  # write the composed startup prompt, print its path — no spawn (harness mode)
-#   launch-team.sh worktree      <team> <role> <taskId>
+#   launch-team.sh worktree      <team> <role> <taskId> [attempt]
+#   launch-team.sh worktree-remove <team> <role> <taskId> [attempt]
 #   launch-team.sh validate-board [config-path]                  # validate board config JSON
 #   launch-team.sh status        <team>
 #   launch-team.sh stop          <team>
@@ -15,17 +17,45 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$SKILL_DIR/config/team.config.md"
+PM_CONFIG="$SKILL_DIR/config/project-management.config.md"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 die() { echo "launch-team: $*" >&2; exit 1; }
 
 read_key() { # read_key KEY -> value with surrounding quotes stripped; empty if null/missing
-  local line
+  local line _t
   line="$(grep -m1 "^$1=" "$CONFIG" || true)"
   line="${line#*=}"
-  line="${line%\"}"; line="${line#\"}"
+  if [ "${line#\"}" != "$line" ]; then
+    line="${line#\"}"; line="${line%%\"*}"
+  else
+    line="${line%%[[:space:]]#*}"
+    _t="${line##*[![:space:]]}"; line="${line%"$_t"}"
+  fi
   [ "$line" = "null" ] && line=""
   printf '%s' "$line"
+}
+
+read_pm_key() { # read from project-management.config.md; quotes stripped; null -> empty; inline # stripped
+  local line _t; line="$(grep -m1 "^$1=" "$PM_CONFIG" || true)"
+  line="${line#*=}"
+  if [ "${line#\"}" != "$line" ]; then
+    line="${line#\"}"; line="${line%%\"*}"
+  else
+    line="${line%%[[:space:]]#*}"
+    _t="${line##*[![:space:]]}"; line="${line%"$_t"}"
+  fi
+  [ "$line" = "null" ] && line=""
+  printf '%s' "$line"
+}
+
+is_mcp_only() { # is_mcp_only <adapter> -> 0 if configured for MCP-only access
+  case "$1" in
+    Linear)       [ "$(read_pm_key LINEAR_ACCESS)"  = "mcp"  ] ;;
+    Jira)         [ "$(read_pm_key JIRA_ACCESS)"    = "mcp"  ] ;;
+    GitHubIssues) [ "$(read_pm_key GITHUB_USE_MCP)" = "true" ] ;;
+    *)            return 1 ;;
+  esac
 }
 
 role_cmd_key() { # backend -> BACKEND_CMD ; principal-architect -> PRINCIPAL_ARCHITECT_CMD
@@ -135,11 +165,61 @@ for machine in ("features", "tasks"):
             if n not in seen:
                 errors.append("%s: status '%s' unreachable from the initial status" % (machine, n))
 
+markers = cfg.get("markers")
+if markers is not None:
+    if not isinstance(markers, dict) or not markers:
+        errors.append("markers: must be a non-empty object of marker -> {authorizedRoles: [...]}")
+    else:
+        for mname, spec in markers.items():
+            roles = (spec or {}).get("authorizedRoles") if isinstance(spec, dict) else None
+            if not isinstance(roles, list) or not roles:
+                errors.append("markers/%s: 'authorizedRoles' must be a non-empty list" % mname)
+                continue
+            for r in roles:
+                if not role_exists(r):
+                    errors.append("markers/%s: unknown role '%s'" % (mname, r))
+
 if errors:
     for e in errors: print("validate-board: %s" % e, file=sys.stderr)
     sys.exit(1)
 print("board config OK: %s" % cfg_path)
 PYEOF
+}
+
+preflight() { # preflight <team> <featureId> — fail before five agents do
+  local team="$1" fid="$2"
+  local dir; dir="$(teamroot "$team")"
+  validate_board >/dev/null
+  mkdir -p "$dir/preflight" 2>/dev/null || die "preflight: cannot create workspace $dir"
+  ( : > "$dir/preflight/.write-test" && rm "$dir/preflight/.write-test" ) \
+    || die "preflight: workspace not writable: $dir"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/preflight/utc.txt"
+  local _a; _a="$(grep -m1 '^PRODUCT_MANAGEMENT_TOOL=' "$PM_CONFIG" | cut -d= -f2 | tr -d '"' || true)"
+  local _adapter="${TRACKER_ADAPTER:-$_a}"
+  if is_mcp_only "$_adapter"; then
+    die "preflight FAILED — CLI dispatcher requires scriptable tracker access for $_adapter.
+  MCP access is harness-mode only; shell dispatch cannot call MCP tools.
+  Fix: in config/project-management.config.md set the scriptable option and export credentials:
+    Linear:       LINEAR_ACCESS=rest  +  LINEAR_API_KEY
+    Jira:         JIRA_ACCESS=rest    +  JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+    GitHubIssues: GITHUB_USE_MCP=false  (gh CLI is the scriptable path)
+  Or use harness mode: launch-team.sh compose <team> <featureId> <role> [preset]"
+  fi
+  local probe_err
+  if probe_err="$("$SKILL_DIR/bin/tracker-ops.sh" export "$fid" /dev/null 2>&1 >/dev/null)"; then
+    echo "preflight OK: adapter read verified, workspace writable, UTC pinned"
+  elif printf '%s' "$probe_err" | grep -q "no tracker-ops backend" \
+       && [ -s "$dir/preflight/tool-prefix.txt" ]; then
+    echo "preflight OK: MCP tool prefix on record ($(cat "$dir/preflight/tool-prefix.txt")), workspace writable, UTC pinned (harness prompt composition only; CLI dispatch.sh requires scriptable access)"
+  else
+    die "preflight FAILED — no agent was launched.
+  probe: $probe_err
+  Scriptable adapter (REST/CLI/files): fix credentials/config, then verify with:
+    bin/tracker-ops.sh export $fid /dev/null
+  MCP adapter: run ONE probe agent that loads the tracker tools (deferred tools
+  via ToolSearch), performs one read, and writes the exact tool prefix
+  (e.g. mcp__linear__) to $dir/preflight/tool-prefix.txt — then relaunch."
+  fi
 }
 
 teamroot() {
@@ -164,6 +244,12 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt
     echo "- Repository root: $REPO_ROOT"
     echo "- Skill directory: $SKILL_DIR (adapter + PM config live here)"
     echo "- Team workspace: $dir"
+    if [ -s "$dir/preflight/utc.txt" ]; then
+      echo "- Preflight UTC pin: $(cat "$dir/preflight/utc.txt") — generate every timestamp with: date -u +%Y-%m-%dT%H:%M:%SZ"
+    fi
+    if [ -s "$dir/preflight/tool-prefix.txt" ]; then
+      echo "- Verified tracker tool prefix: $(cat "$dir/preflight/tool-prefix.txt") (preflight-verified — use it verbatim; do not re-derive from adapter docs)"
+    fi
     echo
     echo "Begin by running the Mandatory Preparation in $SKILL_DIR/SKILL.md, then act"
     echo "as your role brief and the protocol below instruct. Work autonomously."
@@ -196,6 +282,10 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt
 
 launch_one() { # launch_one <team> <featureId> <role> [preset]
   local team="$1" fid="$2" role="$3" preset="${4:-}"
+  if [ -z "$preset" ]; then
+    local _pf; _pf="$(teamroot "$team")/preset.env"
+    [ -f "$_pf" ] && { local _l; _l="$(grep -m1 '^PRESET=' "$_pf" || true)"; preset="${_l#PRESET=}"; }
+  fi
   [ -n "$(role_brief "$role")" ] || die "unknown role: $role"
   local key; key="$(role_cmd_key "$role")"
   key_is_null "$key" && die "role '$role' is disabled ($key=null); remove it from the roster"
@@ -212,7 +302,7 @@ launch_one() { # launch_one <team> <featureId> <role> [preset]
     tmux has-session -t "team-$team" 2>/dev/null || tmux new-session -d -s "team-$team" -n _hub
     tmux kill-window -t "team-$team:$role" 2>/dev/null || true
     tmux new-window -t "team-$team" -n "$role" \
-      "cd '$REPO_ROOT' && $cmd; echo '[launch-team] $role exited'; sleep 86400"
+      "cd '$REPO_ROOT' && { $cmd; rc=\$?; }; echo '[launch-team] $role exited ('\$rc')'; rm -f '$dir/pids/$role.pid'; sleep 86400"
     echo "tmux" > "$dir/pids/$role.pid"
     echo "launched $role in tmux session team-$team"
   else
@@ -235,6 +325,9 @@ case "${1:-}" in
     roster="$(roster_of "$preset")"                       # validate before the loop
     [ -n "$roster" ] || die "teams/$preset.md has an empty ROSTER"
     validate_board >/dev/null
+    [ "${SKIP_PREFLIGHT:-}" = "1" ] || preflight "$team" "$fid"
+    dir="$(teamroot "$team")"
+    { printf 'PRESET=%s\n' "$preset"; grep '^PROTOCOL_' "$SKILL_DIR/teams/$preset.md" || true; } > "$dir/preset.env"
     for role in $roster; do
       if key_is_null "$(role_cmd_key "$role")"; then
         echo "skipping $role (disabled: $(role_cmd_key "$role")=null)"; continue
@@ -259,9 +352,10 @@ case "${1:-}" in
     echo "$prompt"
     ;;
   worktree)
-    [ $# -eq 4 ] || die "usage: worktree <team> <role> <taskId>"
-    team="$2"; role="$3"; task="$4"
-    wt="$(teamroot "$team")/worktrees/$role-$task"
+    [ $# -ge 4 ] && [ $# -le 5 ] || die "usage: worktree <team> <role> <taskId> [attempt]"
+    team="$2"; role="$3"; task="$4"; attempt="${5:-1}"
+    case "$attempt" in ''|*[!0-9]*) die "attempt must be a positive integer" ;; esac
+    wt="$(teamroot "$team")/worktrees/$role#$attempt-$task"
     [ -d "$wt" ] && { echo "$wt"; exit 0; }
     mkdir -p "$(dirname "$wt")"
     if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$role-$task"; then
@@ -269,7 +363,22 @@ case "${1:-}" in
     else
       git -C "$REPO_ROOT" worktree add "$wt" -b "$role-$task" "$team" >/dev/null
     fi
+    setup="$(read_key WORKTREE_SETUP)"
+    if [ -n "$setup" ]; then
+      if ! ( cd "$wt" && eval "$setup" ) >/dev/null; then
+        git -C "$REPO_ROOT" worktree remove --force "$wt" >/dev/null 2>&1 || true
+        git -C "$REPO_ROOT" worktree prune
+        die "WORKTREE_SETUP failed in $wt — worktree removed. Fix the command or the environment; never claim validations in an unprovisioned tree."
+      fi
+    fi
     echo "$wt"
+    ;;
+  worktree-remove)
+    [ $# -ge 4 ] && [ $# -le 5 ] || die "usage: worktree-remove <team> <role> <taskId> [attempt]"
+    wt="$(teamroot "$2")/worktrees/$3#${5:-1}-$4"
+    git -C "$REPO_ROOT" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$REPO_ROOT" worktree prune
+    echo "removed $wt (registration pruned)"
     ;;
   status)
     [ $# -eq 2 ] || die "usage: status <team>"
@@ -302,11 +411,15 @@ case "${1:-}" in
     done
     echo "stopped team $2"
     ;;
+  preflight)
+    [ $# -eq 3 ] || die "usage: preflight <team> <featureId>"
+    preflight "$2" "$3"
+    ;;
   validate-board)
     [ $# -le 2 ] || die "usage: validate-board [config-path]"
     validate_board "${2:-}"
     ;;
   *)
-    die "usage: launch-team.sh {team|start|relaunch|compose|worktree|validate-board|status|stop} ..."
+    die "usage: launch-team.sh {team|preflight|start|relaunch|compose|worktree|worktree-remove|validate-board|status|stop} ..."
     ;;
 esac

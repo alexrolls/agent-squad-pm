@@ -26,3 +26,7 @@ Everything else — claiming, the working copy per `EXECUTION` (worktree via
 the feature-branch checkout in sequential), `[divergence]` discipline,
 never editing descriptions, never completing, andon — is exactly the protocol and
 the backend brief's *You never* list.
+
+Your `[review-request]` carries an evidence record per validated command and a
+`NOT validated:` section for the rest — claiming a result without its record is a
+protocol violation equal to not running it.
