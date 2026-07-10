@@ -34,7 +34,10 @@ worktree removal don't exist (the staged work is already on the branch).
    authorized role IS the implementer, an independent verifier must have been
    substituted and its signature is the one you check). Unauthorized or
    self-signed approval → `[andon]`, [task] back to `[Active]` — no override
-   path, regardless of who asks.
+   path, regardless of who asks. For preset teams, additionally verify that
+   the `[review-approval]` signer matches the `PROTOCOL_REVIEWER` entry in the
+   team workspace's `preset.env`; a generic `reviewer` signature does not
+   satisfy a preset's final QA gate.
 2. Compare with the file lists inside BOTH approval comments. All three sets must be
    identical. Any extra, missing, or renamed file → `[andon]` (a file changed after
    approval needs fresh approval — never "probably fine").

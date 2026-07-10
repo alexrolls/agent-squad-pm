@@ -271,6 +271,10 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt
 
 launch_one() { # launch_one <team> <featureId> <role> [preset]
   local team="$1" fid="$2" role="$3" preset="${4:-}"
+  if [ -z "$preset" ]; then
+    local _pf; _pf="$(teamroot "$team")/preset.env"
+    [ -f "$_pf" ] && { local _l; _l="$(grep -m1 '^PRESET=' "$_pf" || true)"; preset="${_l#PRESET=}"; }
+  fi
   [ -n "$(role_brief "$role")" ] || die "unknown role: $role"
   local key; key="$(role_cmd_key "$role")"
   key_is_null "$key" && die "role '$role' is disabled ($key=null); remove it from the roster"
@@ -311,6 +315,8 @@ case "${1:-}" in
     [ -n "$roster" ] || die "teams/$preset.md has an empty ROSTER"
     validate_board >/dev/null
     [ "${SKIP_PREFLIGHT:-}" = "1" ] || preflight "$team" "$fid"
+    dir="$(teamroot "$team")"
+    { printf 'PRESET=%s\n' "$preset"; grep '^PROTOCOL_' "$SKILL_DIR/teams/$preset.md" || true; } > "$dir/preset.env"
     for role in $roster; do
       if key_is_null "$(role_cmd_key "$role")"; then
         echo "skipping $role (disabled: $(role_cmd_key "$role")=null)"; continue

@@ -44,6 +44,14 @@ is_mcp_only() { # is_mcp_only <adapter> -> 0 if configured for MCP-only access
   esac
 }
 
+resolve_role() { # resolve_role <team> <protocol-role> -> concrete role (or same if no mapping)
+  local pf; pf="$(teamroot "$1")/preset.env"
+  [ -f "$pf" ] || { printf '%s' "$2"; return; }
+  local key; key="PROTOCOL_$(printf '%s' "$2" | tr 'a-z-' 'A-Z_')"
+  local val; val="$(grep -m1 "^$key=" "$pf" | cut -d= -f2 || true)"
+  printf '%s' "${val:-$2}"
+}
+
 teamroot() {
   local root; root="$(read_key TEAMWORK_ROOT)"; root="${root:-.teamwork}"
   printf '%s/%s/%s' "$(git rev-parse --show-toplevel)" "$root" "$1"
@@ -92,7 +100,7 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   local stuck; stuck="$(read_key STUCK_AFTER_MINUTES)"; stuck="${stuck:-15}"
   local plan
   plan="$(python3 - "$SKILL_DIR" "$dir" "$stuck" 3<&- <<'PYEOF'
-import json, os, sys, time
+import json, os, re as _re, sys, time
 skill, workdir, stuck_min = sys.argv[1], sys.argv[2], int(sys.argv[3])
 board = json.load(open(os.path.join(skill, 'config', 'statuses.config.json')))
 terminal = {s['name'] for s in board['tasks']['statuses'] if s.get('terminal')}
@@ -101,6 +109,14 @@ blocked_transitions = next(
     set())
 tasks = json.load(open(os.path.join(workdir, 'tasks.json')))['tasks']
 by_id = {str(t['taskId']): t for t in tasks}
+
+preset_env = os.path.join(workdir, 'preset.env')
+protocol_reviewer = None
+if os.path.exists(preset_env):
+    with open(preset_env) as _f:
+        for _ln in _f:
+            _m = _re.match(r'^PROTOCOL_REVIEWER=(.+)$', _ln.strip())
+            if _m: protocol_reviewer = _m.group(1); break
 
 def last(t, *names):  # index of the last comment starting with any [name]
     idx = -1
@@ -159,7 +175,19 @@ for t in tasks:
         continue
     ra, aa = last(t, 'review-approval'), last(t, 'architecture-approval')
     if ra > req and aa > req:
-        merge_q.append(tid)
+        if protocol_reviewer:
+            ra_body = ((t.get('comments') or [])[ra]).get('body') or ''
+            sig = _re.search(r'—\s*([\w-]+)(?:\s*\(posted by[^)]*\))?\s*$', ra_body.strip())
+            signer = sig.group(1) if sig else None
+            if signer == protocol_reviewer:
+                merge_q.append(tid)
+            else:
+                anomalies.append(tid)
+                print("dispatch: warning — %s [review-approval] signed by '%s', expected preset "
+                      "final gate '%s' — routing to team-lead" % (tid, signer, protocol_reviewer),
+                      file=sys.stderr)
+        else:
+            merge_q.append(tid)
     else:
         if ra <= req: review_q.append(tid)
         if aa <= req: arch_q.append(tid)
@@ -220,17 +248,18 @@ PYEOF
       unblock-no-rs)
         echo "plan: unblock $arg — NO RESUME STATUS (lead must resume; add 'resume-status: <Status>' to the block comment)" ;;
       launch)
-        local _ck; _ck="$(role_cmd_key "$arg")"
+        local concrete; concrete="$(resolve_role "$team" "$arg")"
+        local _ck; _ck="$(role_cmd_key "$concrete")"
         if key_is_null "$_ck"; then
-          echo "plan: launch $arg — skipped (${_ck}=null; the team-lead routes this queue)"
-        elif role_live "$team" "$arg"; then
-          echo "plan: launch $arg — skipped (live instance)"
+          echo "plan: launch $arg (→$concrete) — skipped (${_ck}=null; the team-lead routes this queue)"
+        elif role_live "$team" "$concrete"; then
+          echo "plan: launch $arg (→$concrete) — skipped (live instance)"
         else
-          echo "plan: launch $arg ($detail)"
+          echo "plan: launch $arg (→$concrete) ($detail)"
           if [ "$dry" != "yes" ]; then
-            local mf; mf="$(next_mailbox_file "$dir/mailbox/$arg")"
+            local mf; mf="$(next_mailbox_file "$dir/mailbox/$concrete")"
             printf 'From: dispatcher\nRe: %s\n---\n%s\n' "$fid" "$detail" > "$mf"
-            "$SKILL_DIR/bin/launch-team.sh" start "$team" "$fid" "$arg"
+            "$SKILL_DIR/bin/launch-team.sh" start "$team" "$fid" "$concrete"
           fi
         fi ;;
     esac

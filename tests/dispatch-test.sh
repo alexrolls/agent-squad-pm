@@ -252,5 +252,88 @@ STATUS_CONFIG=config/statuses.config.json
 ```
 EOF
 
+# -- D3.8: preset routing + signer check ---------------------------------------
+cat > feat/preset-test.md <<'EOF'
+# Preset Test [Active]
+
+## 1 Design pending [Active]
+
+**Assignee:** senior-full-stack-engineer
+
+> [design-note] approach — senior-full-stack-engineer
+EOF
+PT_FID="feat/preset-test.md"
+mkdir -p .teamwork/feat-preset-team
+cat > .teamwork/feat-preset-team/preset.env <<'EOF'
+PRESET=full-stack
+PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_QA=senior-qa-engineer
+PROTOCOL_INTEGRATOR=integrator
+PROTOCOL_BACKEND=senior-full-stack-engineer
+PROTOCOL_FRONTEND=senior-full-stack-engineer
+EOF
+preset_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-preset-team "$PT_FID" --once --dry-run 2>&1)"
+echo "$preset_plan" | grep -q "launch principal-architect (→principal-software-architect)" \
+  && echo "ok: preset: PA routes to principal-software-architect" \
+  || { echo "FAIL: preset routing wrong; plan: $preset_plan"; FAILURES=$((FAILURES+1)); }
+# real pass: concrete-role pid written, generic protocol-role pid absent
+TEAM_RUNNER=background "$DISPATCH" feat-preset-team "$PT_FID" --once
+check "preset: concrete role pid written"   test -f .teamwork/feat-preset-team/pids/principal-software-architect.pid
+check "preset: generic protocol pid absent" test ! -f .teamwork/feat-preset-team/pids/principal-architect.pid
+
+# D3.8.2+3: signer check
+cat > feat/signer-test.md <<'EOF'
+# Signer Test [Active]
+
+## 1 Terminal [Ready to deploy]
+
+**Assignee:** senior-full-stack-engineer
+
+Done.
+
+## 2 Generic reviewer [Review]
+
+**Assignee:** senior-full-stack-engineer
+
+> [review-request] ready — senior-full-stack-engineer
+> [review-approval] LGTM — reviewer
+> [architecture-approval] LGTM — principal-software-architect
+
+## 3 Preset QA approved [Review]
+
+**Assignee:** senior-full-stack-engineer
+
+> [review-request] ready — senior-full-stack-engineer
+> [review-approval] LGTM — senior-qa-engineer
+> [architecture-approval] LGTM — principal-software-architect
+EOF
+SIG_FID="feat/signer-test.md"
+mkdir -p .teamwork/feat-signer-team
+cat > .teamwork/feat-signer-team/preset.env <<'EOF'
+PRESET=full-stack
+PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_QA=senior-qa-engineer
+PROTOCOL_INTEGRATOR=integrator
+PROTOCOL_BACKEND=senior-full-stack-engineer
+PROTOCOL_FRONTEND=senior-full-stack-engineer
+EOF
+signer_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-signer-team "$SIG_FID" --once --dry-run --unblock=auto 2>&1)"
+echo "$signer_plan" | grep -q "signed by 'reviewer', expected preset final gate 'senior-qa-engineer'" \
+  && echo "ok: generic reviewer: warning printed" \
+  || { echo "FAIL: no signer warning in: $signer_plan"; FAILURES=$((FAILURES+1)); }
+echo "$signer_plan" | grep "launch integrator" | grep -qv "signer-test.*#2" \
+  && echo "ok: generic reviewer: task 2 not in merge queue" \
+  || { echo "FAIL: task 2 incorrectly in merge queue"; FAILURES=$((FAILURES+1)); }
+echo "$signer_plan" | grep -q "launch integrator.*signer-test.*#3" \
+  && echo "ok: preset QA (task 3) unlocks integrator" \
+  || { echo "FAIL: integrator not in plan or missing task 3; plan: $signer_plan"; FAILURES=$((FAILURES+1)); }
+echo "$signer_plan" | grep -q "launch team-lead" \
+  && echo "ok: generic reviewer: team-lead notified" \
+  || { echo "FAIL: team-lead not in plan"; FAILURES=$((FAILURES+1)); }
+
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }
