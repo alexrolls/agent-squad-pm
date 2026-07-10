@@ -233,7 +233,7 @@ check "suggest-only: no write for valid-rs task" grep -q '^## 2 Needs Review \[B
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Linear
-LINEAR_ACCESS=mcp
+LINEAR_ACCESS=mcp                 # mcp = Linear MCP server
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF
@@ -243,6 +243,20 @@ elif echo "$mcp_d_out" | grep -q "dispatch requires scriptable tracker access"; 
   echo "ok: Linear+MCP dispatch fails with scriptable-access message"
 else
   echo "FAIL: wrong dispatch MCP error: $mcp_d_out"; FAILURES=$((FAILURES+1))
+fi
+# Negative guard: false MCP flag with shipped inline-comment format must NOT trip the MCP guard
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=GitHubIssues
+GITHUB_USE_MCP=false              # false = gh CLI
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+neg_d_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team-gh "$FID" --once --dry-run 2>&1 || true)"
+if echo "$neg_d_out" | grep -q "dispatch requires scriptable tracker access"; then
+  echo "FAIL: GITHUB_USE_MCP=false incorrectly triggered MCP guard"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: GITHUB_USE_MCP=false (with inline comment) not treated as MCP-only"
 fi
 # restore to Markdown
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'

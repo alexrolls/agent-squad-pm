@@ -36,9 +36,15 @@ read_key() { # read_key KEY -> value with surrounding quotes stripped; empty if 
   printf '%s' "$line"
 }
 
-read_pm_key() { # read from project-management.config.md; quotes stripped; null -> empty
-  local line; line="$(grep -m1 "^$1=" "$PM_CONFIG" || true)"
-  line="${line#*=}"; line="${line%\"}"; line="${line#\"}"
+read_pm_key() { # read from project-management.config.md; quotes stripped; null -> empty; inline # stripped
+  local line _t; line="$(grep -m1 "^$1=" "$PM_CONFIG" || true)"
+  line="${line#*=}"
+  if [ "${line#\"}" != "$line" ]; then
+    line="${line#\"}"; line="${line%%\"*}"
+  else
+    line="${line%%[[:space:]]#*}"
+    _t="${line##*[![:space:]]}"; line="${line%"$_t"}"
+  fi
   [ "$line" = "null" ] && line=""
   printf '%s' "$line"
 }
