@@ -241,6 +241,24 @@ check "MCP preflight passes with prefix on record" "$LAUNCH" preflight pf-team p
 out="$("$LAUNCH" compose pf-team pf/feature.md backend)"
 check "composed prompt carries verified prefix" grep -q "mcp__sometool__" "$out"
 
+# -- preflight: Linear+MCP fails; tool-prefix.txt does NOT bypass the guard ----
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Linear
+LINEAR_ACCESS=mcp
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+mcp_pf_out="$("$LAUNCH" preflight pf-team pf/feature.md 2>&1 || true)"
+echo "$mcp_pf_out" | grep -q "CLI dispatcher requires scriptable tracker access for Linear" \
+  && echo "ok: Linear+MCP: preflight fails with scriptable-access message" \
+  || { echo "FAIL: Linear+MCP preflight wrong message: $mcp_pf_out"; FAILURES=$((FAILURES+1)); }
+printf 'mcp__linear__' > .teamwork/pf-team/preflight/tool-prefix.txt
+mcp_pf_out2="$("$LAUNCH" preflight pf-team pf/feature.md 2>&1 || true)"
+echo "$mcp_pf_out2" | grep -q "CLI dispatcher requires scriptable tracker access for Linear" \
+  && echo "ok: tool-prefix.txt does not bypass Linear+MCP guard" \
+  || { echo "FAIL: tool-prefix bypassed the MCP guard: $mcp_pf_out2"; FAILURES=$((FAILURES+1)); }
+
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown

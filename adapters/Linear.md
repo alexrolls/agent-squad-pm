@@ -43,6 +43,8 @@ Relevant config: `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_PROJECT`, `LINEAR_ACCESS
 > Make sure every status in `config/statuses.config.json` has a matching workflow state
 > in your Linear team (e.g. create a "Blocked" state) — a missing state is an andon stop.
 
+`dispatch.sh --watch` (CLI mode) requires `rest` access. Set `LINEAR_ACCESS=rest` and export `LINEAR_API_KEY`. MCP access is valid for individual agents and harness mode (`launch-team.sh compose`).
+
 ## Terminology Mapping
 
 | Generic term | Linear |

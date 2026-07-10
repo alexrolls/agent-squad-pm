@@ -104,7 +104,7 @@ check "reviewer launched"            test -f .teamwork/feat-team/pids/reviewer.p
 mkdir -p .teamwork/feat-team/pids
 echo $$ > .teamwork/feat-team/pids/reviewer.pid
 plan2="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
-echo "$plan2" | grep -q "launch reviewer — skipped (live instance)" \
+echo "$plan2" | grep -q "launch reviewer.*skipped (live instance)" \
   && echo "ok: dedup skips live reviewer" || { echo "FAIL: dedup"; FAILURES=$((FAILURES+1)); }
 
 # -- suggest mode: Markdown default never writes -------------------------------
@@ -228,6 +228,29 @@ echo "$rs_sug" | grep -q "unblock $RS_FID#2 — SUGGESTED" \
   && echo "ok: suggest-only: valid-rs task shows SUGGESTED" \
   || { echo "FAIL: suggest-only: wrong message for valid-rs task"; FAILURES=$((FAILURES+1)); }
 check "suggest-only: no write for valid-rs task" grep -q '^## 2 Needs Review \[Blocked\]$' "$RS_FID"
+
+# -- D2.5: Linear+MCP → dispatch fails before tracker-ops ----------------------
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Linear
+LINEAR_ACCESS=mcp
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+if mcp_d_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team-mcp "$FID" --once --dry-run 2>&1)"; then
+  echo "FAIL: Linear+MCP dispatch should exit non-zero"; FAILURES=$((FAILURES+1))
+elif echo "$mcp_d_out" | grep -q "dispatch requires scriptable tracker access"; then
+  echo "ok: Linear+MCP dispatch fails with scriptable-access message"
+else
+  echo "FAIL: wrong dispatch MCP error: $mcp_d_out"; FAILURES=$((FAILURES+1))
+fi
+# restore to Markdown
+cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Markdown
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
 
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }

@@ -58,6 +58,8 @@ adf() { jq -cn --arg t "$1" '{"type":"doc","version":1,"content":[{"type":"parag
 > or transition in your Jira project (e.g. add a "Blocked" status) — a missing state is
 > an andon stop.
 
+`dispatch.sh --watch` (CLI mode) requires `rest` access. Set `JIRA_ACCESS=rest` and export `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`. MCP access is valid for individual agents and harness mode.
+
 ## Terminology Mapping
 
 | Generic term | Jira |

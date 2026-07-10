@@ -17,6 +17,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$SKILL_DIR/config/team.config.md"
+PM_CONFIG="$SKILL_DIR/config/project-management.config.md"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 die() { echo "launch-team: $*" >&2; exit 1; }
@@ -28,6 +29,22 @@ read_key() { # read_key KEY -> value with surrounding quotes stripped; empty if 
   line="${line%\"}"; line="${line#\"}"
   [ "$line" = "null" ] && line=""
   printf '%s' "$line"
+}
+
+read_pm_key() { # read from project-management.config.md; quotes stripped; null -> empty
+  local line; line="$(grep -m1 "^$1=" "$PM_CONFIG" || true)"
+  line="${line#*=}"; line="${line%\"}"; line="${line#\"}"
+  [ "$line" = "null" ] && line=""
+  printf '%s' "$line"
+}
+
+is_mcp_only() { # is_mcp_only <adapter> -> 0 if configured for MCP-only access
+  case "$1" in
+    Linear)       [ "$(read_pm_key LINEAR_ACCESS)"  = "mcp"  ] ;;
+    Jira)         [ "$(read_pm_key JIRA_ACCESS)"    = "mcp"  ] ;;
+    GitHubIssues) [ "$(read_pm_key GITHUB_USE_MCP)" = "true" ] ;;
+    *)            return 1 ;;
+  esac
 }
 
 role_cmd_key() { # backend -> BACKEND_CMD ; principal-architect -> PRINCIPAL_ARCHITECT_CMD
@@ -166,12 +183,23 @@ preflight() { # preflight <team> <featureId> — fail before five agents do
   ( : > "$dir/preflight/.write-test" && rm "$dir/preflight/.write-test" ) \
     || die "preflight: workspace not writable: $dir"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/preflight/utc.txt"
+  local _a; _a="$(grep -m1 '^PRODUCT_MANAGEMENT_TOOL=' "$PM_CONFIG" | cut -d= -f2 | tr -d '"' || true)"
+  local _adapter="${TRACKER_ADAPTER:-$_a}"
+  if is_mcp_only "$_adapter"; then
+    die "preflight FAILED — CLI dispatcher requires scriptable tracker access for $_adapter.
+  MCP access is harness-mode only; shell dispatch cannot call MCP tools.
+  Fix: in config/project-management.config.md set the scriptable option and export credentials:
+    Linear:       LINEAR_ACCESS=rest  +  LINEAR_API_KEY
+    Jira:         JIRA_ACCESS=rest    +  JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+    GitHubIssues: GITHUB_USE_MCP=false  (gh CLI is the scriptable path)
+  Or use harness mode: launch-team.sh compose <team> <featureId> <role> [preset]"
+  fi
   local probe_err
   if probe_err="$("$SKILL_DIR/bin/tracker-ops.sh" export "$fid" /dev/null 2>&1 >/dev/null)"; then
     echo "preflight OK: adapter read verified, workspace writable, UTC pinned"
   elif printf '%s' "$probe_err" | grep -q "no tracker-ops backend" \
        && [ -s "$dir/preflight/tool-prefix.txt" ]; then
-    echo "preflight OK: MCP tool prefix on record ($(cat "$dir/preflight/tool-prefix.txt")), workspace writable, UTC pinned"
+    echo "preflight OK: MCP tool prefix on record ($(cat "$dir/preflight/tool-prefix.txt")), workspace writable, UTC pinned (harness prompt composition only; CLI dispatch.sh requires scriptable access)"
   else
     die "preflight FAILED — no agent was launched.
   probe: $probe_err

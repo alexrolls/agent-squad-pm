@@ -45,6 +45,8 @@ gh label create "status:blocked" --color E4E669 2>/dev/null || true
 }
 ```
 
+`dispatch.sh --watch` (CLI mode) requires `GITHUB_USE_MCP=false` (the default `gh` CLI path). Set `GITHUB_USE_MCP=true` only for harness/agent mode.
+
 ## Terminology Mapping
 
 | Generic term | GitHub |

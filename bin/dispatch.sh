@@ -28,6 +28,22 @@ read_key() { # from team.config.md; quotes stripped; null -> empty
   printf '%s' "$line"
 }
 
+read_pm_key() { # read from project-management.config.md; quotes stripped; null -> empty
+  local line; line="$(grep -m1 "^$1=" "$PM_CONFIG" || true)"
+  line="${line#*=}"; line="${line%\"}"; line="${line#\"}"
+  [ "$line" = "null" ] && line=""
+  printf '%s' "$line"
+}
+
+is_mcp_only() { # is_mcp_only <adapter> -> 0 if configured for MCP-only access
+  case "$1" in
+    Linear)       [ "$(read_pm_key LINEAR_ACCESS)"  = "mcp"  ] ;;
+    Jira)         [ "$(read_pm_key JIRA_ACCESS)"    = "mcp"  ] ;;
+    GitHubIssues) [ "$(read_pm_key GITHUB_USE_MCP)" = "true" ] ;;
+    *)            return 1 ;;
+  esac
+}
+
 teamroot() {
   local root; root="$(read_key TEAMWORK_ROOT)"; root="${root:-.teamwork}"
   printf '%s/%s/%s' "$(git rev-parse --show-toplevel)" "$root" "$1"
@@ -65,6 +81,12 @@ adapter_default_unblock() {
 dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   local team="$1" fid="$2" dry="$3" unblock="$4"
   local dir; dir="$(teamroot "$team")"
+  local _a; _a="$(grep -m1 '^PRODUCT_MANAGEMENT_TOOL=' "$PM_CONFIG" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)"
+  local adapter="${TRACKER_ADAPTER:-$_a}"
+  if is_mcp_only "$adapter"; then
+    die "dispatch requires scriptable tracker access — $adapter is configured for MCP-only.
+  Set the scriptable option in config/project-management.config.md or use harness mode."
+  fi
   mkdir -p "$dir"
   "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$dir/tasks.json" >/dev/null
   local stuck; stuck="$(read_key STUCK_AFTER_MINUTES)"; stuck="${stuck:-15}"
