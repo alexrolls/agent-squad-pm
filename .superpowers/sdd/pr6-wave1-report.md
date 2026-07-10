@@ -306,3 +306,21 @@ The lifecycle.md instance (the only instruction to a one-shot agent) has been fi
 | `96b9fec` | fix: CLI dispatch requires scriptable tracker access — MCP is harness-mode only |
 | `e64865c` | fix: dispatcher resolves preset protocol mappings; preset final gate guards the merge queue |
 | `26dcf9c` | docs: SKILL preparation modes, README command table, lifecycle wait-language |
+
+---
+
+## Wave 3 — read_key inline comment stripping (c55768c)
+
+**Finding:** `read_key` in both `bin/dispatch.sh` and `bin/launch-team.sh` did not strip inline comments from unquoted values. The shipped `config/team.config.md` uses inline comments on Coordination keys (e.g. `STUCK_AFTER_MINUTES=15           # Lead treats...`), causing `int("15           # Lead treats...")` to throw `ValueError` in the Python dispatch engine and `TEAMWORK_ROOT` to produce garbage paths.
+
+**Fix — identical in both scripts:** After extracting the raw value, branch on whether the value is quoted:
+- Quoted (starts with `"`): extract content between first and second `"` (`line="${line#\"}"; line="${line%%\"*}"`). CMD templates containing `#` are unaffected.
+- Unquoted: strip `[[:space:]]#.*` suffix with `%%[[:space:]]#*`, then trim trailing whitespace via `_t="${line##*[![:space:]]}"; line="${line%"$_t"}"`.
+
+**Note:** `read_pm_key` (reads `project-management.config.md`) was not changed — the PM config has no inline comments and the team-lead's spec scoped the fix to `read_key` only.
+
+**Tests added to `tests/dispatch-test.sh`:**
+1. Replaces `STUCK_AFTER_MINUTES` with `STUCK_AFTER_MINUTES=7   # inline comment` and runs `--once --dry-run`; verifies exit 0 (Python `int(7)` succeeds — without the fix, `int("7   # inline comment")` throws `ValueError`).
+2. Replaces `TEAM_DEFAULT_CMD` with `TEAM_DEFAULT_CMD="true"   # outer-comment`, runs a non-dry-run dispatch, waits 0.2 s, and checks the reviewer log has no bash errors (proves the CMD was `true`, not the broken `true"   # outer-comment`).
+
+**Results:** 3/3 suites ALL PASS · shellcheck zero production warnings · validate-board embedded in launcher-test.sh PASS.
