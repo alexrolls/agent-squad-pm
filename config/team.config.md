@@ -26,6 +26,9 @@ FRONTEND_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
 QA_CMD=null
 REVIEWER_CMD="gemini --yolo \"$(cat '{prompt_file}')\""
 TEAM_DEFAULT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
+TASK_FAST_CMD=null               # Optional task-level override for explicit model-profile: fast
+TASK_STANDARD_CMD=null           # Optional task-level override; null falls back to the role command
+TASK_STRONG_CMD=null             # Optional override for security/schema/concurrency/contract work
 ```
 
 > Mixing LLMs is the design intent — e.g. Claude for team-lead/principal-architect,
@@ -42,29 +45,25 @@ TEAM_DEFAULT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptE
 
 ```
 TEAMWORK_ROOT=.teamwork          # Team workspace root (repo-relative). Add to .gitignore.
-POLL_INTERVAL_SECONDS=120        # How often idle agents re-check mailbox + tracker
+POLL_INTERVAL_SECONDS=120        # Fallback only; local runtime events wake dispatch within ~1s
 STUCK_AFTER_MINUTES=15           # Lead treats silence longer than this as "stuck"
 ESCALATE_AFTER_ATTEMPTS=2        # Failed unblock attempts before the Lead escalates to the human
-TRACKER_WRITERS=all              # all = every role writes to the tracker itself;
+TRACKER_WRITERS=all              # all = each worker drains its own outbox and progress upserts;
                                  # lead = single-writer mode: only the team-lead holds
                                  # credentials and posts on the team's behalf
                                  # (reference/orchestration.md → "Tracker write modes")
-EXECUTION=sequential             # sequential = one [task] in flight at a time; it reserves the
-                                 # feature-branch checkout from claim until integration (a [task]
-                                 # in [Review] still owns it), claims are dispatched by the
-                                 # team-lead (no self-claiming), the integrator commits in
-                                 # place — no task branches, no worktrees.
-                                 # parallel = worktree-per-[task] + task branches + integrator
-                                 # merge; REQUIRED the moment >=2 implementers should work
-                                 # concurrently (reference/orchestration.md → "Execution modes")
+EXECUTION=sequential             # Both modes use one task branch/worktree per task attempt.
+                                 # sequential = one implementation task in flight; parallel =
+                                 # dependency/resource-aware bounded waves. Gate roles stay
+                                 # batched queue consumers and feature-branch integration is serial.
 MAX_ACTIVE_IMPLEMENTERS=null     # Only under EXECUTION=parallel. 1 = pipelined dispatch:
                                  # full worktree isolation, but the team-lead dispatches
                                  # the next [task] when the current one enters [Review]
                                  # instead of after integration (reference/orchestration.md
                                  # → "Execution modes"). >=2 = bounded full parallelism;
-                                 # null = unbounded parallel. Setting it under sequential
+                                 # null = conservative default of 2. Setting it under sequential
                                  # is a config error — the launcher refuses to run.
-WORKTREE_SETUP=null              # Run once inside every freshly created worktree, fail-loud
+WORKTREE_SETUP=null              # Run once inside every freshly created task worktree, fail-loud
                                  # (e.g. "pnpm install --frozen-lockfile && pnpm build").
                                  # null = bare worktree. Provisioning is what makes
                                  # implementer validation claims executable — an

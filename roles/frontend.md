@@ -21,9 +21,8 @@ rework — with these differences:
    your [task] back: comment, move `[Review]→[Active]` (rework, per the board's
    transitions), adapt, re-request review.
 
-Everything else — claiming, the working copy per `EXECUTION` (worktree via
-`bin/launch-team.sh worktree <team> frontend <taskId>` in parallel execution;
-the feature-branch checkout in sequential), `[divergence]` discipline,
+Everything else — dispatcher-owned claiming, the task packet and task worktree,
+task-branch checkpoint commits, `[divergence]` discipline,
 never editing descriptions, never completing, andon — is exactly the protocol and
 the backend brief's *You never* list.
 

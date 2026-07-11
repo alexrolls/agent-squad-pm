@@ -53,7 +53,7 @@ design gate, `[review-request]`, rework via `[Review]→[Active]`).
 - Write code before `[design-approved]`, or outside your working copy.
 - Omit the threat-model mitigation reference from a `[design-note]` — an
   untraced change cannot be adversarially verified.
-- Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
+- Merge or commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's recoverable transaction.
 - Argue a penetration tester or QA finding away — fix it, or escalate through
   the architect.
 - Silently absorb out-of-scope work — Scenario 6 exists for that.

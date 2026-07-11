@@ -80,6 +80,36 @@ role_live() { # role_live <team> <role> -> 0 if a live instance exists
   fi
 }
 
+task_live() { # task_live <team> <role> <taskId> <attempt>
+  local key instance pf pid
+  key="$(python3 "$SKILL_DIR/bin/runtime-state.py" key "$3")"
+  instance="$2--$key--a$4"
+  pf="$(teamroot "$1")/pids/tasks/$instance.pid"
+  [ -f "$pf" ] || return 1
+  pid="$(cat "$pf")"
+  if [ "$pid" = "tmux" ]; then
+    tmux list-windows -t "team-$1" -F '#{window_name}' 2>/dev/null | grep -qx "$instance"
+  else
+    kill -0 "$pid" 2>/dev/null
+  fi
+}
+
+task_any_live() { # task_any_live <team> <taskId> -> any role/attempt process for task
+  local key pf pid instance
+  key="$(python3 "$SKILL_DIR/bin/runtime-state.py" key "$2")"
+  for pf in "$(teamroot "$1")"/pids/tasks/*--"$key"--a*.pid; do
+    [ -f "$pf" ] || continue
+    pid="$(cat "$pf")"
+    instance="$(basename "$pf" .pid)"
+    if [ "$pid" = "tmux" ]; then
+      tmux list-windows -t "team-$1" -F '#{window_name}' 2>/dev/null | grep -qx "$instance" && return 0
+    elif kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 next_mailbox_file() { # next_mailbox_file <mailbox-dir> -> path with next free NNN
   local mb="$1" max=0 n f
   mkdir -p "$mb"
@@ -108,152 +138,29 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   Set the scriptable option in config/project-management.config.md or use harness mode."
   fi
   mkdir -p "$dir"
+  local lock="$dir/dispatch.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "dispatch: another pass owns $lock; skipping"
+    return 0
+  fi
+  trap 'rmdir "$lock" 2>/dev/null || true' RETURN
+  if [ "$dry" != "yes" ]; then
+    "$SKILL_DIR/bin/process-outbox.sh" "$team" "$fid"
+  fi
   "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$dir/tasks.json" >/dev/null
+  if [ "$dry" != "yes" ]; then
+    "$SKILL_DIR/bin/sync-progress.sh" "$team" "$fid" "$dir/tasks.json"
+  fi
   local stuck; stuck="$(read_key STUCK_AFTER_MINUTES)"; stuck="${stuck:-15}"
-  local plan
-  plan="$(python3 - "$SKILL_DIR" "$dir" "$stuck" 3<&- <<'PYEOF'
-import json, os, re as _re, sys, time
-skill, workdir, stuck_min = sys.argv[1], sys.argv[2], int(sys.argv[3])
-board = json.load(open(os.path.join(skill, 'config', 'statuses.config.json')))
-terminal = {s['name'] for s in board['tasks']['statuses'] if s.get('terminal')}
-blocked_transitions = next(
-    (set(s['transitions']) for s in board['tasks']['statuses'] if s['name'] == 'Blocked'),
-    set())
-tasks = json.load(open(os.path.join(workdir, 'tasks.json')))['tasks']
-by_id = {str(t['taskId']): t for t in tasks}
-
-preset_env = os.path.join(workdir, 'preset.env')
-protocol_reviewer = None
-if os.path.exists(preset_env):
-    with open(preset_env) as _f:
-        for _ln in _f:
-            _m = _re.match(r'^PROTOCOL_REVIEWER=(.+)$', _ln.strip())
-            if _m: protocol_reviewer = _m.group(1); break
-
-def last(t, *names):  # index of the last comment starting with any [name]
-    idx = -1
-    for i, c in enumerate(t.get('comments') or []):
-        b = (c.get('body') or '').lstrip()
-        if any(b.startswith('[%s]' % n) for n in names):
-            idx = i
-    return idx
-
-def blockers_terminal(t):
-    bb = t.get('blockedBy') or []
-    return all(by_id.get(str(b), {}).get('status') in terminal for b in bb)
-
-def current_block_body(t):
-    """Latest comment body containing a 'blocked-by:' line; None if none exists."""
-    result = None
-    for c in (t.get('comments') or []):
-        body = (c.get('body') or '')
-        if any(ln.strip().startswith('blocked-by:') for ln in body.splitlines()):
-            result = body
-    return result
-
-def resume_status_from_block(t):
-    """resume-status from the latest block-shaped comment; None if absent or no block."""
-    body = current_block_body(t)
-    if body is None: return None
-    for ln in body.splitlines():
-        ls = ln.strip()
-        if ls.startswith('resume-status: '):
-            return ls[len('resume-status: '):].strip()
-    return None
-
-acts = []
-no_rs_blocks = []
-for t in tasks:  # 1. auto-unblock candidates
-    if t.get('status') == 'Blocked' and (t.get('blockedBy') or []) and blockers_terminal(t):
-        tid = str(t['taskId'])
-        rs = resume_status_from_block(t)
-        if rs is not None and rs in blocked_transitions:
-            acts.append(('unblock', tid, rs))
-        else:
-            if rs is not None:
-                print("dispatch: warning — %s has invalid resume-status '%s' "
-                      "(not a legal transition from Blocked; legal: %s)"
-                      % (tid, rs, ', '.join(sorted(blocked_transitions))), file=sys.stderr)
-            no_rs_blocks.append(tid)
-            acts.append(('unblock-no-rs', tid, rs or ''))
-
-# warn on unknown blockedBy references
-for t in tasks:
-    tid = str(t['taskId'])
-    for b in (t.get('blockedBy') or []):
-        if str(b) not in by_id:
-            print("dispatch: warning — %s blockedBy references unknown [task] '%s' "
-                  "(never auto-unblocked; check the tracker relation)" % (tid, b),
-                  file=sys.stderr)
-
-design_q = [str(t['taskId']) for t in tasks
-            if last(t, 'design-note') > last(t, 'design-approved', 'design-pushback')]
-review_q, arch_q, merge_q, anomalies = [], [], [], []
-for t in tasks:
-    if t.get('status') != 'Review':
-        continue
-    tid, req = str(t['taskId']), last(t, 'review-request')
-    if req == -1:
-        anomalies.append(tid)
-        continue
-    ra, aa = last(t, 'review-approval'), last(t, 'architecture-approval')
-    if ra > req and aa > req:
-        if protocol_reviewer:
-            ra_body = ((t.get('comments') or [])[ra]).get('body') or ''
-            sig = _re.search(r'—\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$', ra_body.strip())
-            signer = sig.group(1) if sig else None
-            if signer == protocol_reviewer:
-                merge_q.append(tid)
-            else:
-                anomalies.append(tid)
-                print("dispatch: warning — %s [review-approval] signed by '%s', expected preset "
-                      "final gate '%s' — routing to team-lead" % (tid, signer, protocol_reviewer),
-                      file=sys.stderr)
-        else:
-            merge_q.append(tid)
-    else:
-        if ra <= req: review_q.append(tid)
-        if aa <= req: arch_q.append(tid)
-
-if design_q or arch_q:
-    acts.append(('launch', 'principal-architect',
-                 'Dispatch queue — design gates: %s; architecture reviews: %s. '
-                 'Drain every item, post per-[task] markers, exit.'
-                 % (', '.join(design_q) or 'none', ', '.join(arch_q) or 'none')))
-if review_q:
-    acts.append(('launch', 'reviewer',
-                 'Dispatch queue — [Review]: %s. Drain every item, post per-[task] verdicts, exit.'
-                 % ', '.join(review_q)))
-if merge_q:
-    acts.append(('launch', 'integrator',
-                 'Dispatch queue — dual-approved, integrate in dependency order: %s. '
-                 'Per-[task] atomic commit+move, then exit.' % ', '.join(merge_q)))
-
-planned = [str(t['taskId']) for t in tasks
-           if t.get('status') == 'Planned' and not t.get('assignee') and blockers_terminal(t)]
-stale = []
-hb = os.path.join(workdir, 'heartbeats')
-if os.path.isdir(hb):
-    now = time.time()
-    stale = [f for f in os.listdir(hb)
-             if now - os.path.getmtime(os.path.join(hb, f)) > stuck_min * 60]
-if planned or stale or anomalies or no_rs_blocks:
-    detail = ('Lead-actionable — dispatchable [Planned]: %s; stale heartbeats: %s'
-              % (', '.join(planned) or 'none', ', '.join(stale) or 'none'))
-    if anomalies:
-        detail += '; anomalous [Review] without [review-request]: %s' % ', '.join(anomalies)
-    if no_rs_blocks:
-        detail += ('; blocked/terminal-but-no-resume-status (add resume-status: <Status>'
-                   ' to the block comment): %s' % ', '.join(no_rs_blocks))
-    acts.append(('launch', 'team-lead', detail + '. One supervision pass, then exit.'))
-
-for a in acts:
-    print('\t'.join(a))
-PYEOF
-)"
+  local execution max_active plan
+  execution="$(read_key EXECUTION)"; execution="${execution:-sequential}"
+  max_active="$(read_key MAX_ACTIVE_IMPLEMENTERS)"
+  local planner_args=(--skill "$SKILL_DIR" --workdir "$dir" --stuck-minutes "$stuck" --execution "$execution")
+  [ -z "$max_active" ] || planner_args+=(--max-active "$max_active")
+  plan="$(python3 "$SKILL_DIR/bin/dispatch-plan.py" "${planner_args[@]}")"
   if [ -z "$plan" ]; then echo "dispatch: nothing actionable"; return 0; fi
-  local action arg detail
-  while IFS="$(printf '\t')" read -r action arg detail; do
+  local action arg detail extra
+  while IFS="$(printf '\t')" read -r action arg detail extra; do
     case "$action" in
       unblock)
         case "$unblock" in
@@ -280,9 +187,41 @@ PYEOF
         else
           echo "plan: launch $arg (→$concrete) ($detail)"
           if [ "$dry" != "yes" ]; then
+            if [ -n "$extra" ]; then
+              local packages="" task_id package
+              local _old_ifs="$IFS"; IFS='|'
+              for task_id in $extra; do
+                package="$("$SKILL_DIR/bin/review-package.sh" "$team" "$task_id" 2>/dev/null || true)"
+                [ -z "$package" ] || packages="$packages $task_id=$package"
+              done
+              IFS="$_old_ifs"
+              [ -z "$packages" ] || detail="$detail Review packages:$packages"
+            fi
             local mf; mf="$(next_mailbox_file "$dir/mailbox/$concrete")"
             printf 'From: dispatcher\nRe: %s\n---\n%s\n' "$fid" "$detail" > "$mf"
             "$SKILL_DIR/bin/launch-team.sh" start "$team" "$fid" "$concrete"
+          fi
+        fi ;;
+      claim-task)
+        local claim_role; claim_role="$(resolve_role "$team" "$arg")"
+        if task_live "$team" "$claim_role" "$detail" "$extra"; then
+          echo "plan: claim $detail for $claim_role - skipped (live task instance)"
+        else
+          echo "plan: claim $detail for $claim_role (attempt $extra)"
+          if [ "$dry" != "yes" ]; then
+            "$SKILL_DIR/bin/tracker-ops.sh" claim "$detail" "$claim_role"
+            "$SKILL_DIR/bin/runtime-event.sh" "$team" "$fid" "$detail" "$extra" "$claim_role" task.claimed claimed "task claimed by deterministic dispatcher" >/dev/null
+            "$SKILL_DIR/bin/launch-team.sh" start-task "$team" "$fid" "$claim_role" "$detail" "$extra"
+          fi
+        fi ;;
+      launch-task)
+        local task_role; task_role="$(resolve_role "$team" "$arg")"
+        if task_any_live "$team" "$detail"; then
+          echo "plan: launch task $detail as $task_role - skipped (another task attempt is live)"
+        else
+          echo "plan: launch task $detail as $task_role (attempt $extra)"
+          if [ "$dry" != "yes" ]; then
+            "$SKILL_DIR/bin/launch-team.sh" start-task "$team" "$fid" "$task_role" "$detail" "$extra"
           fi
         fi ;;
     esac
@@ -308,8 +247,11 @@ case "$MODE" in
     INTERVAL="$(read_key POLL_INTERVAL_SECONDS)"; INTERVAL="${INTERVAL:-120}"
     echo "dispatch: watching (every ${INTERVAL}s) — this shell is the loop owner; keep it alive (tmux/nohup)"
     while true; do
+      before="$(python3 "$SKILL_DIR/bin/runtime-state.py" count --workspace "$(teamroot "$TEAM")")"
       dispatch_once "$TEAM" "$FID" no "$UNBLOCK" || echo "dispatch: pass failed — retrying next interval" >&2
-      sleep "$INTERVAL"
+      after="$(python3 "$SKILL_DIR/bin/runtime-state.py" count --workspace "$(teamroot "$TEAM")")"
+      [ "$after" != "$before" ] && continue
+      python3 "$SKILL_DIR/bin/runtime-state.py" wait --workspace "$(teamroot "$TEAM")" --count "$after" --timeout "$INTERVAL" >/dev/null
     done ;;
   *) die "mode must be --once or --watch" ;;
 esac

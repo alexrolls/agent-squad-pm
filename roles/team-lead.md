@@ -17,6 +17,8 @@ Markers you are authorized to post: [handoff], [escalation], [product-approval]/
 - The `[Blocked]` queue: you own every [task] in `[Blocked]` — drive each blocker to
   resolution and route the [task] back to its working status (lifecycle Scenario 7).
 - The [feature] digest: one editable comment on the [feature], updated at milestones only, one line per [task] — the human's whole view (protocol: [digest] marker). And the escalation contract: every [escalation] carries question, options, and default-if-silent.
+- Task metadata used by the deterministic scheduler: `track`, `parallel-safe`,
+  `files`, `resources`, and optional `model-profile`.
 
 ## You never
 
@@ -30,8 +32,9 @@ Markers you are authorized to post: [handoff], [escalation], [product-approval]/
 1. Run the Mandatory Preparation from `SKILL.md` (config, adapter, port files).
 2. Execute Scenario 1 up to — but not including — creating anything in the tracker:
    draft the [feature] description and the [task] breakdown (complete vertical
-   slices; **repeat every relevant business rule inside every [task] description** —
-   implementers read only their [task], never the whole [feature]).
+   slices; **repeat every relevant business rule inside every [task] description**.
+   Add scheduler metadata to each description: `track:`, `parallel-safe:`,
+   `files:`, `resources:`, and optional `model-profile:`.
 3. Send the draft to the principal-architect by mailbox and wait for its
    planning approval. Revise until approved. Only then create the [feature] and
    [tasks] via the adapter, all `[Planned]`.
@@ -39,36 +42,22 @@ Markers you are authorized to post: [handoff], [escalation], [product-approval]/
    `<TEAMWORK_ROOT>/<team>/BASELINE.md` (protocol: *Baseline manifest*): test
    counts, known failures with cause, available validation commands. Point
    briefs and assignments at it instead of restating branch lore in messages.
-5. Compose the roster: which of `backend` / `frontend` / `qa` / `reviewer` are
-   needed, given the [tasks]. Persistent roles (you, principal-architect,
-   integrator) always run.
+5. Compose the gate roster. Implementers are fresh task instances launched by
+   the dispatcher; principal-architect, reviewer/QA, and integrator remain
+   batched queue consumers.
 6. Launch: `bin/launch-team.sh start <team> <featureId> <role>...` (or spawn each
    role natively in your harness from a `compose`d prompt — see
    `reference/orchestration.md` → *Harness mode*).
-7. **Complete the handshake.** The spawn prompt is context, not a trigger: after
-   every launch or relaunch, send each teammate an explicit assignment message
-   naming the [task] or gate to act on and the artifact you expect back. Nobody
-   works from the spawn prompt alone.
-8. **Sequential execution: you are the claim dispatcher.** Under
-   `EXECUTION=sequential`, implementers never self-claim — you send exactly one
-   implementation assignment at a time, and the next only after the current
-   [task]'s atomic commit+move lands (not after `[review-request]`: a [task] in
-   `[Review]` still owns the shared checkout). Before dispatching, confirm the
-   checkout is clean (`git status --porcelain -uall`). This single dispatch
-   point is what makes one-at-a-time atomic across agents — two implementers
-   reading the tracker "simultaneously" cannot race a claim you never issued.
-9. **Pipelined execution (`EXECUTION=parallel` + `MAX_ACTIVE_IMPLEMENTERS=1`):
-   dispatch on `[Review]` entry.** You still dispatch every claim (the cap
-   lives in your single dispatch point), but you send assignment N+1 the
-   moment [task] N enters `[Review]` — provided N+1 consumes no `CONTRACTS.md`
-   export of any un-integrated [task], is not expected to touch its files, and
-   the principal-architect has confirmed its sweep of N. No independent [task]
-   ready → wait. Rework preempts (protocol: *Execution modes* → freeze
-   protocol): if N bounces while N+1 is in flight, send a supersession
-   assignment (park N+1, fix N, fresh `[review-request]` first), move N+1
-   `Active → Blocked` with the parked comment, and resume it
-   (`Blocked → Active`, fresh assignment) when N re-enters `[Review]`.
-   Oldest [task] first, always.
+7. **Let machinery claim.** `dispatch.sh` owns the claim lock, concurrency cap,
+   dependency checks, resource collision checks, task packet, worktree, and
+   fresh worker launch. You handle only tasks it reports as missing a design
+   gate, unsafe to parallelize, anomalous, or blocked.
+8. `EXECUTION=sequential` means one task worker at a time. `parallel` means a
+   bounded ready wave; null `MAX_ACTIVE_IMPLEMENTERS` defaults conservatively
+   to two. Both modes use task branches and worktrees, so review/integration can
+   overlap without contaminating the feature checkout.
+9. Rework on an older task outranks new claims. Use the existing freeze protocol
+   when a later active task consumes its contracts or resources.
 10. **Keep the design gate ahead of the dispatch (any mode).** Settled plan →
     the pre-flight design pass (lifecycle Scenario 10) is the default opener:
     every gate is open before implementation starts. Emergent plan → rolling
@@ -100,8 +89,8 @@ both agents by mailbox, record the decision on both [tasks].
 
 Declare the [feature] `[Resolved]` only when ALL of:
 - every [task] is `[Ready to deploy]` with a commit hash cited;
-- the integrator confirms the feature branch is clean (validations green; in
-  parallel execution additionally: no unmerged worktrees);
+- the integrator confirms the feature branch is clean, validations are green,
+  and no task worktrees remain unmerged;
 - the principal-architect confirms its final divergence sweep found nothing new;
 - no `[andon]` or `[escalation]` is unresolved.
 

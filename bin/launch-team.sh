@@ -6,8 +6,10 @@
 #   launch-team.sh team          <preset> <team> <featureId>     # launch a preset roster (teams/<preset>.md)
 #   launch-team.sh preflight     <team> <featureId>              # verify adapter, workspace, UTC pin
 #   launch-team.sh start         <team> <featureId> <role>...
+#   launch-team.sh start-task    <team> <featureId> <role> <taskId> [attempt] [preset]
 #   launch-team.sh relaunch      <team> <featureId> <role> [preset]
 #   launch-team.sh compose       <team> <featureId> <role> [preset]  # write the composed startup prompt, print its path — no spawn (harness mode)
+#   launch-team.sh compose-task  <team> <featureId> <role> <taskId> [attempt] [preset]
 #   launch-team.sh worktree      <team> <role> <taskId> [attempt]
 #   launch-team.sh worktree-remove <team> <role> <taskId> [attempt]
 #   launch-team.sh validate-board [config-path]                  # validate board config JSON
@@ -60,6 +62,14 @@ is_mcp_only() { # is_mcp_only <adapter> -> 0 if configured for MCP-only access
 
 role_cmd_key() { # backend -> BACKEND_CMD ; principal-architect -> PRINCIPAL_ARCHITECT_CMD
   printf '%s_CMD' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+}
+
+task_key() { python3 "$SKILL_DIR/bin/runtime-state.py" key "$1"; }
+
+task_branch() { printf 'agent-task/%s' "$(task_key "$1")"; }
+
+task_instance() { # task_instance <role> <taskId> <attempt>
+  printf '%s--%s--a%s' "$1" "$(task_key "$2")" "$3"
 }
 
 key_is_null() { # key_is_null KEY -> 0 if the config sets KEY explicitly to null (disabled)
@@ -280,6 +290,61 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt
   printf '%s' "$out"
 }
 
+compose_task_prompt() { # compose_task_prompt <team> <featureId> <role> <taskId> <attempt> [preset]
+  local team="$1" fid="$2" role="$3" task="$4" attempt="$5" preset="${6:-}"
+  local dir; dir="$(teamroot "$team")"
+  local instance; instance="$(task_instance "$role" "$task" "$attempt")"
+  local brief; brief="$(role_brief "$role")"
+  [ -n "$brief" ] || die "unknown role: $role (no brief in roles/ or teams/roles/)"
+  local wt; wt="$dir/worktrees/$role#$attempt-$(task_key "$task")"
+  local branch; branch="$(task_branch "$task")"
+  [ -d "$wt" ] || die "task worktree does not exist: $wt"
+  local execution; execution="$("$SKILL_DIR/bin/task-packet.sh" "$team" "$fid" "$task" "$role" "$attempt" "$wt" "$branch")"
+  local packet report profile
+  packet="$(printf '%s' "$execution" | python3 -c 'import json,sys; print(json.load(sys.stdin)["packetPath"])')"
+  report="$(printf '%s' "$execution" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reportPath"])')"
+  profile="$(printf '%s' "$execution" | python3 -c 'import json,sys; print(json.load(sys.stdin)["modelProfile"])')"
+  local out="$dir/prompts/tasks/$instance.md"
+  mkdir -p "$dir/prompts/tasks" "$dir/pids/tasks" "$dir/heartbeats"
+  {
+    echo "# Task execution context"
+    echo
+    echo "- Role: $role"
+    echo "- Team / feature branch: $team"
+    echo "- featureId: $fid"
+    echo "- taskId: $task"
+    echo "- Attempt: $attempt"
+    echo "- Model profile: $profile"
+    echo "- Working copy: $wt"
+    echo "- Task branch: $branch"
+    echo "- Task packet: $packet"
+    echo "- Report file: $report"
+    echo "- Heartbeat: $dir/heartbeats/$instance"
+    echo
+    echo "Read the task packet first. It is the single source of requirements for this run."
+    echo "Do not load the full orchestration reference or the whole tracker history."
+    echo
+    echo "## Execution contract"
+    echo
+    echo "1. Work only in the named working copy and only for this task."
+    echo "2. Ask for missing context; never guess across task boundaries."
+    echo "3. Follow test-driven development where the task changes executable behavior."
+    echo "4. Commit checkpoints only to the task branch. Never switch to or modify the feature branch."
+    echo "5. Before reporting DONE, leave the task branch clean and write the complete report file."
+    echo "6. Return one status: DONE, DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT."
+    echo "7. Emit stage changes with:"
+    echo "   $SKILL_DIR/bin/runtime-event.sh '$team' '$fid' '$task' '$attempt' '$role' <event-type> <stage> '<summary>' [artifact]"
+    echo "8. Submit tracker artifacts with $SKILL_DIR/bin/submit-artifact.sh; never paste long logs into messages."
+    echo
+    echo "Start by emitting task.started / implementing. End by submitting a [review-request], [andon],"
+    echo "or context request artifact before exiting. The artifact, not process exit, closes the assignment."
+    echo
+    echo "---"
+    cat "$brief"
+  } > "$out"
+  printf '%s' "$out"
+}
+
 launch_one() { # launch_one <team> <featureId> <role> [preset]
   local team="$1" fid="$2" role="$3" preset="${4:-}"
   if [ -z "$preset" ]; then
@@ -315,6 +380,74 @@ launch_one() { # launch_one <team> <featureId> <role> [preset]
   fi
 }
 
+launch_task() { # launch_task <team> <featureId> <role> <taskId> <attempt> [preset]
+  local team="$1" fid="$2" role="$3" task="$4" attempt="$5" preset="${6:-}"
+  case "$attempt" in ''|*[!0-9]*) die "attempt must be a positive integer" ;; esac
+  local key; key="$(role_cmd_key "$role")"
+  key_is_null "$key" && die "role '$role' is disabled ($key=null)"
+  local dir; dir="$(teamroot "$team")"
+  local execution
+  execution="$dir/executions/$(task_key "$task").json"
+  if [ -f "$execution" ]; then
+    local previous previous_role previous_worktree previous_instance previous_pidfile previous_pid
+    previous="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt", 0))' "$execution")"
+    [ "$attempt" -ge "$previous" ] || die "attempt $attempt is stale; latest recorded attempt is $previous"
+    if [ "$attempt" -gt "$previous" ]; then
+      previous_role="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["role"])' "$execution")"
+      previous_worktree="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree"])' "$execution")"
+      previous_instance="$(task_instance "$previous_role" "$task" "$previous")"
+      previous_pidfile="$dir/pids/tasks/$previous_instance.pid"
+      if [ -f "$previous_pidfile" ]; then
+        previous_pid="$(cat "$previous_pidfile")"
+        if [ "$previous_pid" = "tmux" ]; then
+          tmux list-windows -t "team-$team" -F '#{window_name}' 2>/dev/null | grep -qx "$previous_instance" \
+            && die "cannot start attempt $attempt while $previous_instance is live"
+        elif kill -0 "$previous_pid" 2>/dev/null; then
+          die "cannot start attempt $attempt while $previous_instance is live"
+        fi
+      fi
+      if [ -d "$previous_worktree" ]; then
+        [ -z "$(git -C "$previous_worktree" status --porcelain -uall)" ] \
+          || die "cannot start attempt $attempt: prior worktree is dirty; quarantine or salvage it first"
+        git -C "$REPO_ROOT" worktree remove --force "$previous_worktree" >/dev/null
+        git -C "$REPO_ROOT" worktree prune
+      fi
+      rm -f "$previous_pidfile"
+    fi
+  fi
+  local wt; wt="$("$0" worktree "$team" "$role" "$task" "$attempt")"
+  local prompt; prompt="$(compose_task_prompt "$team" "$fid" "$role" "$task" "$attempt" "$preset")"
+  local execution profile task_cmd_key cmd_tpl
+  execution="$(teamroot "$team")/executions/$(task_key "$task").json"
+  profile="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["modelProfile"])' "$execution")"
+  task_cmd_key="TASK_$(printf '%s' "$profile" | tr 'a-z-' 'A-Z_')_CMD"
+  cmd_tpl="$(read_key "$task_cmd_key")"
+  [ -n "$cmd_tpl" ] || cmd_tpl="$(read_key "$key")"
+  [ -n "$cmd_tpl" ] || cmd_tpl="$(read_key TEAM_DEFAULT_CMD)"
+  [ -n "$cmd_tpl" ] || die "no command for task role '$role' or model profile '$profile'"
+  local cmd="${cmd_tpl//\{prompt_file\}/$prompt}"
+  local instance; instance="$(task_instance "$role" "$task" "$attempt")"
+  local pidfile="$dir/pids/tasks/$instance.pid"
+  mkdir -p "$dir/pids/tasks"
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "task instance already live: $instance"
+    return 0
+  fi
+
+  if [ "${TEAM_RUNNER:-auto}" != "background" ] && command -v tmux >/dev/null 2>&1; then
+    tmux has-session -t "team-$team" 2>/dev/null || tmux new-session -d -s "team-$team" -n _hub
+    tmux kill-window -t "team-$team:$instance" 2>/dev/null || true
+    tmux new-window -t "team-$team" -n "$instance" \
+      "cd '$wt' && { $cmd; rc=\$?; }; echo '[launch-team] $instance exited ('\$rc')'; rm -f '$pidfile'; sleep 86400"
+    echo "tmux" > "$pidfile"
+    echo "launched task $task as $instance in tmux"
+  else
+    ( cd "$wt" && exec bash -c "$cmd" >"$dir/pids/tasks/$instance.log" 2>&1 ) &
+    echo $! > "$pidfile"
+    echo "launched task $task as $instance in background (pid $(cat "$pidfile"))"
+  fi
+}
+
 case "${1:-}" in validate-board|'') ;; *) validate_config ;; esac
 
 case "${1:-}" in
@@ -340,6 +473,10 @@ case "${1:-}" in
     team="$2"; fid="$3"; shift 3
     for role in "$@"; do launch_one "$team" "$fid" "$role"; done
     ;;
+  start-task)
+    [ $# -ge 5 ] && [ $# -le 7 ] || die "usage: start-task <team> <featureId> <role> <taskId> [attempt] [preset]"
+    launch_task "$2" "$3" "$4" "$5" "${6:-1}" "${7:-}"
+    ;;
   relaunch)
     [ $# -eq 4 ] || [ $# -eq 5 ] || die "usage: relaunch <team> <featureId> <role> [preset]"
     launch_one "$2" "$3" "$4" "${5:-}"
@@ -351,17 +488,25 @@ case "${1:-}" in
     prompt="$(compose_prompt "$2" "$3" "$4" "${5:-}")"
     echo "$prompt"
     ;;
+  compose-task)
+    [ $# -ge 5 ] && [ $# -le 7 ] || die "usage: compose-task <team> <featureId> <role> <taskId> [attempt] [preset]"
+    "$0" worktree "$2" "$4" "$5" "${6:-1}" >/dev/null
+    prompt="$(compose_task_prompt "$2" "$3" "$4" "$5" "${6:-1}" "${7:-}")"
+    echo "$prompt"
+    ;;
   worktree)
     [ $# -ge 4 ] && [ $# -le 5 ] || die "usage: worktree <team> <role> <taskId> [attempt]"
     team="$2"; role="$3"; task="$4"; attempt="${5:-1}"
     case "$attempt" in ''|*[!0-9]*) die "attempt must be a positive integer" ;; esac
-    wt="$(teamroot "$team")/worktrees/$role#$attempt-$task"
+    key="$(task_key "$task")"
+    branch="$(task_branch "$task")"
+    wt="$(teamroot "$team")/worktrees/$role#$attempt-$key"
     [ -d "$wt" ] && { echo "$wt"; exit 0; }
     mkdir -p "$(dirname "$wt")"
-    if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$role-$task"; then
-      git -C "$REPO_ROOT" worktree add "$wt" "$role-$task" >/dev/null
+    if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$REPO_ROOT" worktree add "$wt" "$branch" >/dev/null
     else
-      git -C "$REPO_ROOT" worktree add "$wt" -b "$role-$task" "$team" >/dev/null
+      git -C "$REPO_ROOT" worktree add "$wt" -b "$branch" "$team" >/dev/null
     fi
     setup="$(read_key WORKTREE_SETUP)"
     if [ -n "$setup" ]; then
@@ -375,7 +520,7 @@ case "${1:-}" in
     ;;
   worktree-remove)
     [ $# -ge 4 ] && [ $# -le 5 ] || die "usage: worktree-remove <team> <role> <taskId> [attempt]"
-    wt="$(teamroot "$2")/worktrees/$3#${5:-1}-$4"
+    wt="$(teamroot "$2")/worktrees/$3#${5:-1}-$(task_key "$4")"
     git -C "$REPO_ROOT" worktree remove --force "$wt" 2>/dev/null || true
     git -C "$REPO_ROOT" worktree prune
     echo "removed $wt (registration pruned)"
@@ -398,12 +543,28 @@ case "${1:-}" in
       hb="-"; [ -f "$dir/heartbeats/$role" ] && hb="$(cat "$dir/heartbeats/$role")"
       printf '%-22s %-20s %s\n' "$role" "$state" "$hb"
     done
+    for pf in "$dir"/pids/tasks/*.pid; do
+      [ -e "$pf" ] || continue
+      instance="$(basename "$pf" .pid)"
+      pid="$(cat "$pf")"
+      if [ "$pid" = "tmux" ]; then state="tmux:team-$2:$instance"
+      elif kill -0 "$pid" 2>/dev/null; then state="running (pid $pid)"
+      else state="DEAD"; fi
+      hb="-"; [ -f "$dir/heartbeats/$instance" ] && hb="$(cat "$dir/heartbeats/$instance")"
+      printf '%-48s %-20s %s\n' "$instance" "$state" "$hb"
+    done
     ;;
   stop)
     [ $# -eq 2 ] || die "usage: stop <team>"
     dir="$(teamroot "$2")"
     tmux kill-session -t "team-$2" 2>/dev/null || true
     for pf in "$dir"/pids/*.pid; do
+      [ -e "$pf" ] || continue
+      pid="$(cat "$pf")"
+      [ "$pid" != "tmux" ] && kill "$pid" 2>/dev/null || true
+      rm -f "$pf"
+    done
+    for pf in "$dir"/pids/tasks/*.pid; do
       [ -e "$pf" ] || continue
       pid="$(cat "$pf")"
       [ "$pid" != "tmux" ] && kill "$pid" 2>/dev/null || true

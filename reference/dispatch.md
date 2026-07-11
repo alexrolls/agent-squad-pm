@@ -7,7 +7,7 @@ time. **Dispatch is a stateless read-and-act pass** executed by machinery:
 
 | Runtime | Loop owner | One pass = |
 |---|---|---|
-| CLI (tmux / background processes) | `bin/dispatch.sh <team> <featureId> --once` (or `--watch`, which repeats it every `POLL_INTERVAL_SECONDS`) | read tracker export + mailboxes + heartbeats → launch actionable roles via `launch-team.sh start` |
+| CLI (tmux / background processes) | `bin/dispatch.sh <team> <featureId> --once` (or `--watch`) | process artifact outbox → read tracker export → sync PM projection → claim/launch task instances and gate roles |
 | Harness (in-session subagents) | the team-lead orchestrator itself — its native event loop | same table, executed directly: subagent spawn = role launch, idle notifications = heartbeats |
 
 `--watch` needs a persistent shell (tmux window or `nohup`) — **the human
@@ -25,18 +25,24 @@ heartbeat files, then acts top to bottom:
 | `[design-note]` with no later `[design-approved]`/`[design-pushback]` | Launch principal-architect with the **whole** pending-design queue |
 | [Task](s) in `[Review]` missing `[review-approval]` / `[architecture-approval]` since the last `[review-request]` | Launch reviewer / principal-architect with the **whole** review queue |
 | [Task](s) in `[Review]` holding both approvals | Launch integrator with the merge queue in dependency order |
-| Dispatchable `[Planned]` [tasks] (unassigned, blockers terminal) or stale/artifact-less-idle teammates | Launch team-lead (assignment and unblock-ladder judgment stay the lead's) |
+| Dispatchable `[Planned]` [tasks] (design approved, blockers terminal, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
+| `[Planned]` task missing metadata/gate, resource conflict, stale/artifact-less-idle teammate | Launch team-lead with the whole exception queue |
 | Nothing actionable | Exit cleanly, print "nothing actionable" |
 
 ## Rules
 
-- **Dedup:** never two live instances of one role. CLI: a live pid / tmux
-  window for the role skips its launch. Harness: the orchestrator awaits its
-  subagents, so double-launch cannot happen.
+- **Dedup:** gate roles are deduplicated by role; workers by
+  `<role>/<taskId>/<attempt>`. Two independent backend tasks may run at once,
+  while the same task attempt never double-launches. An atomic dispatch lock
+  prevents overlapping passes from racing the claim.
 - **Queue message before boot:** the pass writes the queue into the role's
   mailbox (`mailbox/<role>/NNN-dispatcher.md`) *before* launching, so the
   role boots as a queue consumer (drain every item, post per-[task] markers,
   exit).
+- **Task packet before boot:** a worker launch creates its task branch,
+  provisioned worktree, immutable task packet, report path, execution record,
+  and task-scoped pid before starting the model. The task prompt does not inline
+  the full orchestration reference.
 - **End of turn = exit.** Role briefs contain no self-scheduling. An agent
   that finished its queue delivers its artifacts and exits; the next pass
   owns what happens next.
@@ -53,9 +59,13 @@ heartbeat files, then acts top to bottom:
   modes*) are decisions the **team-lead** makes during its pass. The
   dispatcher is the trigger mechanism that makes "the moment [task] N enters
   `[Review]`" actually fire; it never overrides lead policy.
-- **Overlap caution (CLI):** two overlapping passes can double-launch a
-  role between the pid check and the boot. Keep `POLL_INTERVAL_SECONDS`
-  above the worst-case agent boot time and don't run `--watch` twice.
+- **Event wakeup with polling fallback:** every runtime/outbox/projection event
+  appends to `events.ndjson`. `--watch` wakes within about one second when the
+  count changes and otherwise falls back to `POLL_INTERVAL_SECONDS`. Events are
+  hints only; every pass re-reads the tracker as truth.
+- **PM projection:** every non-dry pass idempotently upserts one `[progress]`
+  artifact per task and one `[digest]` per feature. No agent is trusted to keep
+  the human view current manually.
 - **Preset rosters:** the script launches the seven protocol roles. Where a
   preset maps a queue to a specialized role (e.g. `senior-qa-engineer` as
   reviewer), the launched team-lead routes the queue; the reviewer launch is

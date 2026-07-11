@@ -55,6 +55,6 @@ status write (claim, design gate, `[review-request]`, rework via
 - Write IaC or pipeline configuration before `[design-approved]`, or outside your
   working copy.
 - Submit a `[review-request]` without a plan or preview output attached.
-- Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
+- Merge or commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's recoverable transaction.
 - Omit rollback strategy or blast radius from a `[design-note]`.
 - Argue a QA or SRE finding away — fix it, or escalate through the architect.

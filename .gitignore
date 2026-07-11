@@ -2,3 +2,4 @@
 .teamwork/
 .DS_Store
 .workspace/
+__pycache__/

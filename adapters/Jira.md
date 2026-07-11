@@ -118,11 +118,14 @@ The `jira()` and `adf()` helpers above must be defined in your shell before runn
 | Add a comment to a `[task]` | add comment | `jira "/rest/api/3/issue/<taskId>/comment" -X POST -d '{"body":'"$(adf "<text>")"'}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via search, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
 | update comment | edit comment via MCP | REST `PUT /rest/api/3/issue/<issueId>/comment/<commentId>` (ADF body); or `bin/tracker-ops.sh update-comment ...` |
+| Upsert task runtime progress | edit the managed progress comment, or create it once | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` |
+| Upsert feature runtime digest | edit the managed digest comment, or create it once | `bin/tracker-ops.sh upsert-digest <featureId> <bodyfile>` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state` (resolves the transition id for you), `comment` (body from
-> a file or stdin — no ADF hand-assembly), `integrate <hash>`, `export`. This table remains
-> the spec; the script is the ergonomic path. MCP sessions call the MCP tools directly.
+> a file or stdin — no ADF hand-assembly), `upsert-progress`, `upsert-digest`,
+> idempotent `integrate <hash>`, and `export`. This table remains the spec; the
+> script is the ergonomic path. MCP sessions call the MCP tools directly.
 
 > `parent` and `jql=parent=` work in team-managed (NextGen) projects. In company-managed (classic) projects, link Stories to the Epic via the Epic Link field (commonly `customfield_10014`) and query with `jql="Epic Link" = <featureId>`.
 

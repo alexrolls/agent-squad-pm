@@ -1,7 +1,6 @@
 ---
-name: agent_squad_pm
+name: agent-squad-pm
 description: Create, track, and update [features] and [tasks] in any project-management tool — Linear, Jira, GitHub Issues, or a Markdown fallback — through one tool-agnostic workflow. Use when the user wants to plan a feature, break work into tasks, start/review/complete a task, change a [task]'s status, or connect/switch the project-management tool, or run a multi-agent team on a feature (orchestration with a team lead, principal architect, and cross-functional implementers). Language- and framework-agnostic.
-allowed-tools: *
 ---
 
 # Project Management Workflow
@@ -19,6 +18,11 @@ skill's directory):
 - `reference/dispatch.md` — who converts tracker/mailbox events into role launches (the loop lives outside the agent)
 - `roles/<role>.md` + `config/team.config.md` + `bin/launch-team.sh` — the agent team
 - `bin/tracker-ops.sh` — ergonomic CLI for recurring tracker operations (scriptable mechanisms)
+- `bin/runtime-state.py` + `bin/task-packet.sh` — durable events, PM projections,
+  and minimal task-local context
+- `bin/submit-artifact.sh` + `bin/process-outbox.sh` — idempotent agent handoffs
+- `bin/review-package.sh` + `bin/integrate-task.sh` — exact review input and
+  recoverable task-branch integration
 - `adapters/<Tool>.md` — how to perform each operation in the active tool
 
 > **Golden rule:** in everything you write — comments, commit messages, messages to the
@@ -45,6 +49,10 @@ skill's directory):
    - **Harness** (subagent from a `compose` prompt): the orchestrator resolved the MCP
      tools before spawning you. Use the `Verified tracker tool prefix` from your startup
      context; do not call ToolSearch to re-derive it.
+   - **Task instance** (startup prompt names a task packet, worktree, and report):
+     read the packet and your role brief only. The dispatcher already resolved the
+     tracker, task state, baseline, contracts, and validation commands. Do not load
+     the whole orchestration reference or tracker history.
 
 ## Executing the request
 
@@ -61,7 +69,7 @@ each generic operation through the adapter's *Operations* table:
 | File a bug / follow-up found mid-work | 6 — File newly-discovered work |
 | Work is stuck / blocked / cannot proceed | 7 — Block a `[task]` |
 | (anything wrong / blocked / failed) | 8 — Andon cord: stop & report |
-| Run an agent team on a feature ("launch the team") | Team: set `TEAM_MODE=true`, follow `reference/orchestration.md`; launch via `bin/launch-team.sh` (CLI processes) or spawn harness subagents from `bin/launch-team.sh compose` prompts |
+| Run an agent team on a feature ("launch the team") | Team: set `TEAM_MODE=true`; gate roles use `start`/`compose`, task workers use `start-task`/`compose-task`, and `dispatch.sh` owns claims and bounded scheduling |
 | Connect a new tool / switch tools | 9 — Connect / switch |
 | Design/plan everything up front, sign off all designs before coding | 10 — Pre-flight design pass |
 
@@ -78,9 +86,10 @@ each generic operation through the adapter's *Operations* table:
 - **When `STRICT_STATUS=true`, verify the current status before writing** and that the
   intended move is in its `transitions` list. If not, pull the andon cord instead of
   forcing the change.
-- **`[Ready to deploy]` means verified-done** — reviewed, tests/build green, and committed
-  (the move and the commit are one atomic step). Never mark work done that was skipped
-  or is failing.
+- **`[Ready to deploy]` means verified-done** — reviewed, tests/build green, and
+  merged to the feature branch. Git plus tracker completion is a durable,
+  idempotent transaction recorded under `.teamwork/<team>/integrations/`; never
+  pretend two systems are physically atomic.
 
 ## Reporting back
 

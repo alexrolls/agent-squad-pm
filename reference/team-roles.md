@@ -22,7 +22,7 @@ When running an actual agent team (`reference/orchestration.md`), the abstract r
 | **Coordinator** | Plans the [feature], creates [tasks], assigns them, decides what new work enters the current iteration. Never writes code. |
 | **Implementer** | Picks up a [task], writes the code, records divergences. |
 | **Reviewer** | Reviews an implementer's work, approves or sends it back. Never modifies code. |
-| **Finalizer** | Runs final validation, commits, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move and to couple that move with a commit. |
+| **Finalizer** | Runs final validation, writes the feature-branch integration commit, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move. |
 | **Principal Architect** | Technical authority: planning approval, per-[task] design gate, architecture half of every review, sole editor of upcoming [task] descriptions. Never writes code. |
 | **Team Lead** | Process authority: plans, launches, supervises, unblocks, reassigns, escalates. Never writes code, never overrides Finalizer/Integrator or Principal Architect. |
 
@@ -47,9 +47,10 @@ ownership checks apply to the role that authored the change.
 
 Two refinements:
 
-- **Entering a `requiresCommit` status** is performed by *that* status's owner, atomically
-  with the commit (on the default board: the integrator commits and moves `[Review]` →
-  `[Ready to deploy]` after both approvals exist).
+- **Entering a `requiresCommit` status** is performed by *that* status's owner
+  after the integration commit succeeds (on the default board: the integrator
+  commits, records the transaction, and idempotently moves `[Review]` → `[Ready
+  to deploy]` after both approvals exist).
 - **Routing:** when an item enters a status, the mover notifies the new owner's mailbox
   (`reference/orchestration.md` → *Status routing*). A `{"team": ...}` owner is reached
   via that team's lead, who dispatches internally.
@@ -62,7 +63,7 @@ Worked example — the default board:
 | `[Active]` | implementer | `Active → Review` (with `[review-request]`), `Active → Blocked` |
 | `[Review]` | reviewer | `Review → Active` (findings); approval hands off to the integrator for `Review → Ready to deploy` |
 | `[Blocked]` | team-lead | `Blocked → Planned / Active / Review` once cleared |
-| `[Ready to deploy]` | integrator | terminal — the atomic commit+move that enters it |
+| `[Ready to deploy]` | integrator | terminal — entered after a recorded integration commit |
 
 Feature statuses: the team-lead owns all three (`Planned`, `Active`, `Resolved`) and
 moves `[feature]` → `[Resolved]` only after the completion checklist passes.
@@ -74,7 +75,11 @@ don't guess, escalate to the Coordinator (concrete role: `team-lead`).
 
 ## Coupling rules
 
-- **Entering a `requiresCommit` status is coupled to a commit.** The Finalizer never moves a [task] to `[Ready to deploy]` without a corresponding successful commit, and never commits a track without the move. The two are one atomic step.
+- **Entering a `requiresCommit` status is coupled to a commit.** The Finalizer
+  never moves a [task] to `[Ready to deploy]` without a corresponding successful
+  integration commit. If the tracker write fails after the commit, the durable
+  transaction remains pending and retry completes the same move/comment without
+  creating another commit.
 - **Ad-hoc work has no [task].** If an agent is pulled off to fix something unrelated
   (e.g. a production incident), it does **not** touch task statuses for that work — it
   reports back and returns to its assigned [task]. File real follow-ups as new [tasks]

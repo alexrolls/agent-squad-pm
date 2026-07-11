@@ -91,10 +91,13 @@ Call the billing charge endpoint on submit.
 | Set `[feature]` status | Edit the `#` title line's trailing `[Status]` |
 | Add a comment to a `[task]` | Append a `> <marker> (yyyy-MM-dd): <content>` line under the task section, where `<marker>` is the exact orchestration marker (e.g. `[design-note]`, `[review-approval]`) or `note` for free-form comments |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` |
-| update comment | **Not supported — append-only.** Post a new comment carrying `supersedes: <marker>-<round>`; readers treat the highest round as current. |
+| update comment | Structured protocol comments remain append-only. Post a new comment carrying `supersedes: <marker>-<round>`; readers treat the highest round as current. |
+| Upsert task runtime progress | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` replaces one managed HTML block in the task section |
+| Upsert feature runtime digest | `bin/tracker-ops.sh upsert-digest <featureId> <bodyfile>` replaces one managed HTML block in the feature file |
 
 > **Helper script.** `bin/tracker-ops.sh` performs these edits mechanically — `claim`,
-> `state`, `comment` (body from a file or stdin), `integrate <hash>`, `export`. When
+> `state`, `comment` (body from a file or stdin), `upsert-progress`,
+> `upsert-digest`, idempotent `integrate <hash>`, and `export`. When
 > using it, address a [task] as `<featureId>#<taskId>` (the feature file plus the task
 > number, e.g. `.workspace/task-manager/2026-07-06-payments/feature.md#2`), since a task
 > number alone doesn't name the file.

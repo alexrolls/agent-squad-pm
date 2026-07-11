@@ -12,6 +12,8 @@
 #   tracker-ops.sh state          <taskId> <Status>                         # set [task] status (generic name)
 #   tracker-ops.sh comment        <taskId> [bodyfile]                       # add comment; body from file or stdin
 #   tracker-ops.sh update-comment <taskId> <commentId> [bodyfile]           # edit an existing comment (Linear/Jira/GitHub; Markdown refuses)
+#   tracker-ops.sh upsert-progress <taskId> [bodyfile]                       # create/update the task's single [progress] artifact
+#   tracker-ops.sh upsert-digest   <featureId> [bodyfile]                    # create/update the feature's single [digest] artifact
 #   tracker-ops.sh claim          <taskId> <role> [--to <Status>]           # claim: initial→working status + claim comment
 #   tracker-ops.sh integrate      <taskId> <hash> [bodyfile]                # terminal move + completion comment citing <hash>
 #   tracker-ops.sh export         <featureId> <outfile>                     # read-side: dump the [feature]'s [tasks] as JSON
@@ -107,6 +109,28 @@ def read_body(path):
         die("empty comment body")
     return body
 
+def replace_managed_block(text, key, body):
+    """Replace one generated block while preserving all user-authored text."""
+    start = '<!-- agent-squad:%s:start -->' % key
+    end = '<!-- agent-squad:%s:end -->' % key
+    block = '%s\n%s\n%s' % (start, body.rstrip(), end)
+    pattern = re.compile(re.escape(start) + r'.*?' + re.escape(end), re.S)
+    if pattern.search(text or ''):
+        return pattern.sub(lambda _m: block, text, count=1)
+    text = (text or '').rstrip()
+    return (text + '\n\n' if text else '') + block + '\n'
+
+def adf_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return '\n'.join(filter(None, (adf_text(x) for x in value)))
+    if isinstance(value, dict):
+        own = value.get('text') or ''
+        nested = adf_text(value.get('content') or [])
+        return '\n'.join(x for x in (own, nested) if x)
+    return ''
+
 def env(name):
     v = os.environ.get(name)
     if not v:
@@ -158,6 +182,18 @@ class Linear:
         self.gql('mutation($id: String!, $sid: String!) { issueUpdate(id: $id, input: {stateId: $sid}) { success } }',
                  {'id': issue['id'], 'sid': sid})
 
+    def current_status(self, task_id):
+        d = self.gql('query($id: String!) { issue(id: $id) { state { name } } }', {'id': task_id})
+        return generic_of(d['issue']['state']['name']) if d.get('issue') else None
+
+    def integration_comment_exists(self, task_id, commit):
+        return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
+
+    def comment_exists(self, task_id, needle):
+        d = self.gql('query($id: String!) { issue(id: $id) { comments { nodes { body } } } }', {'id': task_id})
+        return any(needle in (c.get('body') or '')
+                   for c in d['issue']['comments']['nodes'])
+
     def comment(self, task_id, body):
         issue = self.issue(task_id)
         d = self.gql('mutation($id: String!, $body: String!) { commentCreate(input: {issueId: $id, body: $body}) { success comment { id } } }',
@@ -166,7 +202,25 @@ class Linear:
 
     def update_comment(self, task_id, comment_id, body):
         self.gql('mutation($cid: String!, $body: String!) { commentUpdate(id: $cid, input: {body: $body}) { success } }',
-                 {'cid': comment_id, 'body': body})
+                     {'cid': comment_id, 'body': body})
+
+    def upsert_progress(self, task_id, body):
+        issue = self.issue(task_id)
+        d = self.gql('query($id: String!) { issue(id: $id) { comments { nodes { id body } } } }',
+                     {'id': issue['id']})
+        current = next((c for c in d['issue']['comments']['nodes']
+                        if (c.get('body') or '').lstrip().startswith('[progress]')), None)
+        if current:
+            self.update_comment(task_id, current['id'], body)
+            return current['id']
+        return self.comment(task_id, body)
+
+    def upsert_digest(self, feature_id, body):
+        pid = self.project_id(feature_id)
+        d = self.gql('query($id: String!) { project(id: $id) { description } }', {'id': pid})
+        description = replace_managed_block((d.get('project') or {}).get('description') or '', 'digest', body)
+        self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success } }',
+                 {'id': pid, 'description': description})
 
     def project_id(self, feature_id):
         # The adapter's ID mapping allows a project UUID or a project name.
@@ -182,7 +236,7 @@ class Linear:
         return nodes[0]['id']
 
     def export(self, feature_id):
-        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } inverseRelations { nodes { type issue { identifier } } } } } } }',
+        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { id body createdAt } } inverseRelations { nodes { type issue { identifier } } } } } } }',
                      {'id': self.project_id(feature_id)})
         if not d.get('project'):
             die("no Linear project '%s'" % feature_id)
@@ -196,7 +250,7 @@ class Linear:
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (i.get('assignee') or {}).get('name'),
                           'description': i.get('description'),
-                          'comments': [{'body': c['body'], 'createdAt': c['createdAt']}
+                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c['createdAt']}
                                        for c in i['comments']['nodes']],
                           'blockedBy': blocked_by})
         return tasks
@@ -220,6 +274,18 @@ class Jira:
             die("no Jira transition to '%s' from the current status (available: %s) — andon" % (want, avail))
         self.api('/rest/api/3/issue/%s/transitions' % task_id, {'transition': {'id': tid}})
 
+    def current_status(self, task_id):
+        issue = self.api('/rest/api/3/issue/%s?fields=status' % task_id)
+        return generic_of(issue['fields']['status']['name'])
+
+    def integration_comment_exists(self, task_id, commit):
+        return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
+
+    def comment_exists(self, task_id, needle):
+        issue = self.api('/rest/api/3/issue/%s?fields=comment' % task_id)
+        return any(needle in adf_text(c.get('body'))
+                   for c in (issue.get('fields', {}).get('comment') or {}).get('comments', []))
+
     @staticmethod
     def adf(text):
         return {'type': 'doc', 'version': 1, 'content': [
@@ -234,6 +300,26 @@ class Jira:
         self.api('/rest/api/3/issue/%s/comment/%s' % (task_id, comment_id),
                  {'body': self.adf(body)}, method='PUT')
 
+    def upsert_progress(self, task_id, body):
+        issue = self.api('/rest/api/3/issue/%s?fields=comment' % task_id)
+        comments = (issue.get('fields', {}).get('comment') or {}).get('comments', [])
+        current = next((c for c in comments
+                        if adf_text(c.get('body')).lstrip().startswith('[progress]')), None)
+        if current:
+            self.update_comment(task_id, current['id'], body)
+            return current['id']
+        return self.comment(task_id, body)
+
+    def upsert_digest(self, feature_id, body):
+        issue = self.api('/rest/api/3/issue/%s?fields=comment' % feature_id)
+        comments = (issue.get('fields', {}).get('comment') or {}).get('comments', [])
+        current = next((c for c in comments
+                        if adf_text(c.get('body')).lstrip().startswith('[digest]')), None)
+        if current:
+            self.update_comment(feature_id, current['id'], body)
+        else:
+            self.comment(feature_id, body)
+
     def export(self, feature_id):
         out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks&maxResults=100'
                        % urllib.request.quote('parent=%s' % feature_id))
@@ -247,7 +333,7 @@ class Jira:
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (f.get('assignee') or {}).get('displayName'),
                           'description': f.get('description'),
-                          'comments': [{'body': c.get('body'), 'createdAt': c.get('created')}
+                          'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')), 'createdAt': c.get('created')}
                                        for c in (f.get('comment') or {}).get('comments', [])],
                           'blockedBy': blocked_by})
         return tasks
@@ -260,6 +346,17 @@ class GitHubIssues:
 
     def gh(self, *args, stdin=None):
         cmd = ['gh'] + list(args) + self.repo_args
+        try:
+            r = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
+        except FileNotFoundError:
+            die("gh CLI not found (see the GitHubIssues adapter's setup)")
+        if r.returncode != 0:
+            die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
+        return r.stdout
+
+    @staticmethod
+    def raw_gh(*args, stdin=None):
+        cmd = ['gh'] + list(args)
         try:
             r = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
         except FileNotFoundError:
@@ -294,6 +391,22 @@ class GitHubIssues:
             args += ['--remove-label', old]
         self.gh(*args)
 
+    def current_status(self, task_id):
+        issue = json.loads(self.gh('issue', 'view', str(task_id), '--json', 'state,labels'))
+        label = next((item['name'] for item in issue['labels'] if item['name'].startswith('status:')), None)
+        for status in TASK_STATUSES:
+            closed, wanted = self.parse_tool_value(tool_value(status))
+            if (closed and issue['state'] == 'CLOSED') or (not closed and wanted == label):
+                return status['name']
+        return None
+
+    def integration_comment_exists(self, task_id, commit):
+        return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
+
+    def comment_exists(self, task_id, needle):
+        return any(needle in (comment.get('body') or '')
+                   for comment in self.issue_comments(task_id))
+
     def comment(self, task_id, body):
         out = self.gh('issue', 'comment', str(task_id), '--body-file', '-', stdin=body)
         m = re.search(r'#issuecomment-(\d+)', out)
@@ -309,6 +422,37 @@ class GitHubIssues:
             r = subprocess.run(cmd, capture_output=True, text=True)
         except FileNotFoundError:
             die("gh CLI not found (see the GitHubIssues adapter's setup)")
+        if r.returncode != 0:
+            die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
+
+    def repo_name(self):
+        if PM_CONFIG.get('GITHUB_REPO'):
+            return PM_CONFIG['GITHUB_REPO']
+        return json.loads(self.gh('repo', 'view', '--json', 'nameWithOwner'))['nameWithOwner']
+
+    def issue_comments(self, task_id):
+        repo = self.repo_name()
+        return json.loads(self.raw_gh('api', 'repos/%s/issues/%s/comments?per_page=100' % (repo, task_id)))
+
+    def upsert_progress(self, task_id, body):
+        current = next((c for c in self.issue_comments(task_id)
+                        if (c.get('body') or '').lstrip().startswith('[progress]')), None)
+        if current:
+            self.update_comment(task_id, str(current['id']), body)
+            return str(current['id'])
+        return self.comment(task_id, body)
+
+    def upsert_digest(self, feature_id, body):
+        repo = self.repo_name()
+        milestones = json.loads(self.raw_gh('api', 'repos/%s/milestones?state=all&per_page=100' % repo))
+        current = next((m for m in milestones
+                        if str(m.get('number')) == str(feature_id) or m.get('title') == str(feature_id)), None)
+        if not current:
+            die("no GitHub milestone '%s' — andon" % feature_id)
+        description = replace_managed_block(current.get('description') or '', 'digest', body)
+        cmd = ['gh', 'api', '-X', 'PATCH', 'repos/%s/milestones/%s' % (repo, current['number']),
+               '-f', 'description=%s' % description]
+        r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
 
@@ -329,7 +473,7 @@ class GitHubIssues:
                           'status': generic, 'statusRaw': raw_status,
                           'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
                           'description': i.get('body'),
-                          'comments': [{'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments],
+                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments],
                           'blockedBy': []})
         return tasks
 
@@ -368,6 +512,27 @@ class Markdown:
             die("no task %s in %s — andon" % (num, path))
         self.save(path, pat.sub(lambda m: '%s[%s]' % (m.group(1), tool_value(status).strip('[]')), text, count=1))
 
+    def current_status(self, task_id):
+        path, num = self.split_task_id(task_id)
+        match = self.section_pattern(num).search(self.load(path))
+        if not match:
+            die("no task %s in %s — andon" % (num, path))
+        return generic_of('[%s]' % match.group(2))
+
+    def integration_comment_exists(self, task_id, commit):
+        return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
+
+    def comment_exists(self, task_id, needle):
+        path, num = self.split_task_id(task_id)
+        text = self.load(path)
+        match = self.section_pattern(num).search(text)
+        if not match:
+            return False
+        rest = text[match.end():]
+        nxt = re.search(r'^## ', rest, re.M)
+        section = rest[:nxt.start()] if nxt else rest
+        return needle in section
+
     def set_assignee(self, task_id, assignee):
         path, num = self.split_task_id(task_id)
         text = self.load(path)
@@ -404,6 +569,28 @@ class Markdown:
     def update_comment(self, task_id, comment_id, body):
         die("Markdown adapter is append-only — no stable comment ids; post a new comment with 'supersedes: %s' instead" % comment_id)
 
+    def upsert_progress(self, task_id, body):
+        path, num = self.split_task_id(task_id)
+        text = self.load(path)
+        m = self.section_pattern(num).search(text)
+        if not m:
+            die("no task %s in %s — andon" % (num, path))
+        rest = text[m.end():]
+        nxt = re.search(r'^## ', rest, re.M)
+        section = rest[:nxt.start()] if nxt else rest
+        quoted = '\n'.join('> ' + line for line in body.splitlines())
+        updated = replace_managed_block(section, 'progress', quoted)
+        self.save(path, text[:m.end()] + updated + (rest[nxt.start():] if nxt else ''))
+        return 'managed-progress-%s' % num
+
+    def upsert_digest(self, feature_id, body):
+        text = self.load(feature_id)
+        first_task = re.search(r'^## ', text, re.M)
+        head = text[:first_task.start()] if first_task else text
+        tail = text[first_task.start():] if first_task else ''
+        quoted = '\n'.join('> ' + line for line in body.splitlines())
+        self.save(feature_id, replace_managed_block(head, 'digest', quoted).rstrip() + '\n\n' + tail.lstrip())
+
     def export(self, feature_id):
         text = self.load(feature_id)
         tasks = []
@@ -428,11 +615,25 @@ class Markdown:
             if _cur:
                 _b = '\n'.join(_cur).strip()
                 if _b: _blocks.append(_b)
-            comments = [{'body': _b, 'createdAt': None} for _b in _blocks]
+            description_lines, managed = [], False
+            for _l in section.split('\n'):
+                if _l.startswith('<!-- agent-squad:') and _l.endswith(':start -->'):
+                    managed = True
+                    continue
+                if managed:
+                    if _l.startswith('<!-- agent-squad:') and _l.endswith(':end -->'):
+                        managed = False
+                    continue
+                if _l.startswith('> ') or re.match(r'^\*\*(Assignee|BlockedBy):\*\*', _l):
+                    continue
+                description_lines.append(_l)
+            description = re.sub(r'\n{3,}', '\n\n', '\n'.join(description_lines)).strip()
+            comments = [{'id': ('managed-progress-%s' % num if _b.startswith('[progress]') else None),
+                         'body': _b, 'createdAt': None} for _b in _blocks]
             tasks.append({'taskId': '%s#%s' % (feature_id, num), 'title': title,
                           'status': generic_of(raw), 'statusRaw': raw,
-                          'assignee': (am.group(1).strip() if am and am.group(1).strip() != '—' else None),
-                          'description': section.strip(), 'comments': comments,
+                          'assignee': (am.group(1).strip() if am and am.group(1).strip() not in ('-', '—') else None),
+                          'description': description, 'comments': comments,
                           'blockedBy': blocked_by})
         return tasks
 
@@ -445,7 +646,9 @@ backend = BACKENDS[ADAPTER]()
 def op_state(args):
     if len(args) != 2:
         die("usage: state <taskId> <Status>")
-    backend.set_state(args[0], status_by_name(args[1]))
+    target = status_by_name(args[1])
+    if backend.current_status(args[0]) != target['name']:
+        backend.set_state(args[0], target)
     print("%s → [%s]" % (args[0], args[1]))
 
 def op_comment(args):
@@ -459,6 +662,20 @@ def op_comment(args):
     cid = backend.comment(args[0], body)
     print("comment added to %s%s" % (args[0], " (id: %s)" % cid if cid else ""))
 
+def op_comment_once(args):
+    if len(args) != 3:
+        die("usage: comment-once <taskId> <deliveryId> <bodyfile>")
+    task_id, delivery_id = args[0], args[1]
+    if not re.fullmatch(r'[A-Za-z0-9._:-]+', delivery_id):
+        die("invalid delivery id '%s'" % delivery_id)
+    body = read_body(args[2])
+    token = "delivery-id: %s" % delivery_id
+    if token not in body:
+        body += "\n\n" + token
+    if not backend.comment_exists(task_id, token):
+        backend.comment(task_id, body)
+    print("comment delivery %s recorded on %s" % (delivery_id, task_id))
+
 def op_update_comment(args):
     if len(args) not in (2, 3):
         die("usage: update-comment <taskId> <commentId> [bodyfile]  (no file / '-' = stdin)")
@@ -466,6 +683,24 @@ def op_update_comment(args):
         die("adapter '%s' does not support update-comment" % ADAPTER)
     backend.update_comment(args[0], args[1], read_body(args[2] if len(args) == 3 else None))
     print("comment %s updated on %s" % (args[1], args[0]))
+
+def op_upsert_progress(args):
+    if len(args) not in (1, 2):
+        die("usage: upsert-progress <taskId> [bodyfile]  (no file / '-' = stdin)")
+    body = read_body(args[1] if len(args) == 2 else None)
+    if not body.lstrip().startswith('[progress]'):
+        die("upsert-progress body must begin with [progress]")
+    cid = backend.upsert_progress(args[0], body)
+    print("progress updated on %s%s" % (args[0], " (id: %s)" % cid if cid else ""))
+
+def op_upsert_digest(args):
+    if len(args) not in (1, 2):
+        die("usage: upsert-digest <featureId> [bodyfile]  (no file / '-' = stdin)")
+    body = read_body(args[1] if len(args) == 2 else None)
+    if not body.lstrip().startswith('[digest]'):
+        die("upsert-digest body must begin with [digest]")
+    backend.upsert_digest(args[0], body)
+    print("digest updated on %s" % args[0])
 
 def op_claim(args):
     to = None
@@ -503,8 +738,10 @@ def op_integrate(args):
     if extra:
         body += "\n\n" + extra
     body += "\n\n— integrator"
-    backend.set_state(task_id, term)
-    backend.comment(task_id, body)
+    if backend.current_status(task_id) != term['name']:
+        backend.set_state(task_id, term)
+    if not backend.integration_comment_exists(task_id, commit):
+        backend.comment(task_id, body)
     print("%s → [%s] (commit %s)" % (task_id, term['name'], commit))
 
 def op_export(args):
@@ -520,9 +757,10 @@ def op_export(args):
         f.write('\n')
     print("exported %d [tasks] of %s to %s" % (len(tasks), feature_id, outfile))
 
-OPS = {'state': op_state, 'comment': op_comment, 'update-comment': op_update_comment,
+OPS = {'state': op_state, 'comment': op_comment, 'comment-once': op_comment_once, 'update-comment': op_update_comment,
+       'upsert-progress': op_upsert_progress, 'upsert-digest': op_upsert_digest,
        'claim': op_claim, 'integrate': op_integrate, 'export': op_export}
 if not ARGS or ARGS[0] not in OPS:
-    die("usage: tracker-ops.sh {state|comment|update-comment|claim|integrate|export} ...")
+    die("usage: tracker-ops.sh {state|comment|comment-once|update-comment|upsert-progress|upsert-digest|claim|integrate|export} ...")
 OPS[ARGS[0]](ARGS[1:])
 PYEOF
