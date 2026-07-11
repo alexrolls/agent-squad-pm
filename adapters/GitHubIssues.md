@@ -105,11 +105,14 @@ CLI column assumes `-R <GITHUB_REPO>` is appended when `GITHUB_REPO` is set.
 | Add a comment to a `[task]` | `gh issue comment <taskId> --body-file <file>` (or `--body-file -` for stdin — prefer files over `--body` to avoid shell-quoting) |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` (wraps `gh issue list --milestone ... --json ...`) |
 | update comment | `gh api -X PATCH repos/<owner>/<repo>/issues/comments/<commentId> -f body=...`; or `bin/tracker-ops.sh update-comment ...`. Feature digest: milestones take no comments — edit the milestone description instead. |
+| Upsert task runtime progress | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` updates one managed issue comment |
+| Upsert feature runtime digest | `bin/tracker-ops.sh upsert-digest <milestone> <bodyfile>` updates one managed block in the milestone description |
 
 > **Helper script.** `bin/tracker-ops.sh` wraps the recurring operations over the `gh`
 > CLI — `claim`, `state` (does the label juggling and open/close for you), `comment`
-> (body from a file or stdin), `integrate <hash>`, `export`. This table remains the spec;
-> the script is the ergonomic path.
+> (body from a file or stdin), `upsert-progress`, `upsert-digest`, idempotent
+> `integrate <hash>`, and `export`. This table remains the spec; the script is
+> the ergonomic path.
 
 ## Rules
 

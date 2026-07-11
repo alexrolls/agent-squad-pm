@@ -508,6 +508,117 @@ echo "$ml_plan" | grep -q "launch integrator.*ml-signer.*#4" \
   && echo "ok: (posted by team-lead) suffix: signer accepted, integrator unlocked" \
   || { echo "FAIL: (posted by team-lead) suffix not accepted; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
 
+# -- bounded parallel scheduler: two same-role task instances, one conflict held --
+cat > feat/parallel-test.md <<'EOF'
+# Parallel Test [Active]
+
+## 1 Backend A [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: true
+files: src/a.py
+resources: schema:a
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+
+## 2 Backend B [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: true
+files: src/b.py
+resources: schema:b
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+
+## 3 Conflicts with A [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: true
+files: src
+resources: schema:c
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+EOF
+PAR_FID=feat/parallel-test.md
+sed -i '' 's/^EXECUTION=sequential$/EXECUTION=parallel/' .claude/skills/pm/config/team.config.md
+printf 'MAX_ACTIVE_IMPLEMENTERS=2\n' >> .claude/skills/pm/config/team.config.md
+parallel_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$PAR_FID" --once --dry-run)"
+echo "$parallel_plan" | grep -q "claim $PAR_FID#1.*backend" && echo "ok: parallel scheduler claims task 1" || { echo "FAIL: task 1 not claimed"; FAILURES=$((FAILURES+1)); }
+echo "$parallel_plan" | grep -q "claim $PAR_FID#2.*backend" && echo "ok: parallel scheduler claims task 2" || { echo "FAIL: task 2 not claimed"; FAILURES=$((FAILURES+1)); }
+echo "$parallel_plan" | grep -q "constrained ready tasks: $PAR_FID#3" && echo "ok: conflicting resource held" || { echo "FAIL: conflict not constrained"; FAILURES=$((FAILURES+1)); }
+
+cat > feat/unsafe-test.md <<'EOF'
+# Unsafe Test [Active]
+
+## 1 Exclusive migration [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: false
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+
+## 2 Otherwise parallel safe [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: true
+files: src/safe.py
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+EOF
+UNSAFE_FID=feat/unsafe-test.md
+unsafe_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-unsafe-team "$UNSAFE_FID" --once --dry-run)"
+echo "$unsafe_plan" | grep -q "claim $UNSAFE_FID#1.*backend" && echo "ok: unsafe task can claim an empty wave" || { echo "FAIL: unsafe task not claimed"; FAILURES=$((FAILURES+1)); }
+if echo "$unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
+  echo "FAIL: scheduler mixed a parallel-safe task into an unsafe wave"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: unsafe task remains exclusive within its wave"
+fi
+sed -i '' -e 's/^## 1 Exclusive migration \[Planned\]$/## 1 Exclusive migration [Active]/' \
+  -e '/^## 1 Exclusive migration /,/^## 2 /s/^\*\*Assignee:\*\* —$/**Assignee:** backend/' "$UNSAFE_FID"
+active_unsafe_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-unsafe-team "$UNSAFE_FID" --once --dry-run)"
+if echo "$active_unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
+  echo "FAIL: scheduler launched beside an active unsafe task"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: active unsafe task keeps the wave exclusive"
+fi
+TEAM_RUNNER=background "$DISPATCH" feat-team "$PAR_FID" --once --unblock=off >/dev/null
+check "parallel task 1 becomes Active" grep -q '^## 1 Backend A \[Active\]$' "$PAR_FID"
+check "parallel task 2 becomes Active" grep -q '^## 2 Backend B \[Active\]$' "$PAR_FID"
+check "conflicting task remains Planned" grep -q '^## 3 Conflicts with A \[Planned\]$' "$PAR_FID"
+check "same role gets two isolated worktrees" test "$(find .teamwork/feat-team/worktrees -maxdepth 1 -type d -name 'backend#1-*' | wc -l | tr -d ' ')" -ge 2
+check "two execution records persisted" test "$(find .teamwork/feat-team/executions -type f -name '*.json' | wc -l | tr -d ' ')" -ge 2
+sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
+
 # -- read_key: inline comments stripped; quoted values with inner # untouched -----
 cat > feat/rk-test.md <<'EOF'
 # ReadKey Test [Active]

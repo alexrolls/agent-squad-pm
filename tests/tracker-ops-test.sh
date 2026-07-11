@@ -59,6 +59,17 @@ Call the endpoint.
 EOF
 T="feat/feature.md"
 
+# -- generated PM surfaces: one task progress block + one feature digest -------
+printf '[progress]\nstage: planned\nsummary: queued\n' | "$OPS" upsert-progress "$T#2" -
+printf '[progress]\nstage: ready\nsummary: design approved\n' | "$OPS" upsert-progress "$T#2" -
+check "progress upsert keeps one managed block" test "$(grep -c 'agent-squad:progress:start' "$T")" -eq 1
+check "progress upsert replaces old content" grep -q '^> stage: ready$' "$T"
+if grep -q '^> stage: planned$' "$T"; then echo "FAIL: stale progress retained"; FAILURES=$((FAILURES+1)); else echo "ok: stale progress removed"; fi
+printf '[digest]\nT#1 - planned\n' | "$OPS" upsert-digest "$T" -
+printf '[digest]\nT#1 - active\n' | "$OPS" upsert-digest "$T" -
+check "digest upsert keeps one managed block" test "$(grep -c 'agent-squad:digest:start' "$T")" -eq 1
+check "digest upsert replaces old content" grep -q '^> T#1 - active$' "$T"
+
 # -- claim: assignee + initial→Active + claim comment ---------------------------
 "$OPS" claim "$T#1" backend
 check "claim sets status"        grep -q '^## 1 Add form \[Active\]$' "$T"
@@ -77,9 +88,17 @@ printf 'From a file.\n' > body.txt
 "$OPS" comment "$T#1" body.txt
 check "comment from file"         grep -q '> note (....-..-..): From a file\.' "$T"
 
+# -- comment-once: uncertain delivery retries stay idempotent ------------------
+printf '[review-request]\nFiles: a.py\n' > delivery.txt
+"$OPS" comment-once "$T#1" delivery-123 delivery.txt
+"$OPS" comment-once "$T#1" delivery-123 delivery.txt
+check "comment-once retry keeps one delivery" test "$(grep -c 'delivery-id: delivery-123' "$T")" -eq 1
+
 # -- state: legal generic status names only --------------------------------------
 "$OPS" state "$T#1" Review
+"$OPS" state "$T#1" Review
 check "state moves the task"      grep -q '^## 1 Add form \[Review\]$' "$T"
+check "state retry is idempotent" grep -q '^## 1 Add form \[Review\]$' "$T"
 
 # -- integrate: terminal move + hash citation + extra body -----------------------
 printf 'VALIDATE_TEST green. Merged: a.py\n' | "$OPS" integrate "$T#1" abc1234 -
@@ -87,6 +106,8 @@ check "integrate terminal status" grep -q '^## 1 Add form \[Ready to deploy\]$' 
 check "integrate cites the hash"  grep -q 'Integrated: commit abc1234\.' "$T"
 check "integrate appends body"    grep -q 'VALIDATE_TEST green\. Merged: a\.py' "$T"
 check "integrate signed"          grep -q -- '— integrator' "$T"
+printf 'VALIDATE_TEST green. Merged: a.py\n' | "$OPS" integrate "$T#1" abc1234 -
+check "integrate retry is idempotent" test "$(grep -c 'Integrated: commit abc1234\.' "$T")" -eq 1
 
 # -- export: JSON snapshot with generic statuses ----------------------------------
 "$OPS" export "$T" tasks.json
@@ -99,7 +120,10 @@ assert byid['$T#1']['status'] == 'Ready to deploy'
 assert byid['$T#2']['status'] == 'Planned'
 assert byid['$T#1']['assignee'] == 'backend'
 assert byid['$T#2']['assignee'] is None
+assert '[design-note]' not in byid['$T#1']['description']
+assert '**Assignee:**' not in byid['$T#1']['description']
 assert any('design-note' in c['body'] for c in byid['$T#1']['comments'])
+assert any(c['body'].startswith('[progress]') for c in byid['$T#2']['comments'])
 assert byid['$T#2']['blockedBy'] == ['$T#1'], byid['$T#2'].get('blockedBy')
 assert byid['$T#1']['blockedBy'] == []
 "

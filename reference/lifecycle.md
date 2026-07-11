@@ -26,6 +26,10 @@ Turn an idea into a tracked feature with a task breakdown.
    giant task or twenty trivial ones.
 4. **Create each [task]** via the adapter, status `[Planned]`, linked to the `featureId`.
    Put implementation checkpoints as `[subtasks]` (checklist bullets) in the description.
+   In team mode add scheduler metadata on separate lines:
+   `track: backend|frontend|qa`, `parallel-safe: true|false`, `files: <comma-list>`,
+   `resources: <contracts/migrations/shared-state>`, and optional
+   `model-profile: fast|standard|strong`. Unknown or unsafe tasks serialize.
 5. **Confirm** the created `featureId` and `taskId`s back to the user.
 
 > A "PRD-style" wizard (interactive requirements gathering before step 2) is a good fit
@@ -48,7 +52,9 @@ Turn an idea into a tracked feature with a task breakdown.
    the dispatcher/harness relaunches you when the principal-architect's
    `[design-approved]` arrives — see `reference/orchestration.md`. Single-agent mode
    skips this step.
-6. Implement, keeping the [task] description's `[subtasks]` as your checklist.
+6. The dispatcher claims the task and launches a fresh task instance with an
+   immutable packet, task branch, attempt worktree, and report path. Implement
+   only from that packet, keeping `[subtasks]` as the checklist.
 
 ---
 
@@ -69,9 +75,10 @@ Reality rarely matches the plan. When you must deviate from what the [task] desc
 
 ## Scenario 4 — Request review
 
-1. Before requesting review, add a comment summarizing: what changed, which files, the
-   suggested commit message, and the result of any build/test you ran.
-2. **Move the [task] to `[Review]`** via the adapter.
+1. Before requesting review, leave the task worktree clean with checkpoint
+   commits on the task branch. Write the task report and evidence records.
+2. Submit `[review-request]` through `bin/submit-artifact.sh`; the durable outbox
+   posts the comment and moves the [task] to `[Review]` idempotently.
 3. Single-agent: you now switch hats and review, or hand to the user. Team mode: notify the
    reviewer (see `team-roles.md`).
 
@@ -87,9 +94,10 @@ Only after the work is reviewed **and** verified (tests/build green, change actu
 what the [task] asked):
 
 1. Confirm the [task] is in `[Review]`. If not, andon cord.
-2. The terminal status carries `requiresCommit: true` on the default board: **commit the
-   work and move the [task] to `[Ready to deploy]` as one atomic step** — never one
-   without the other. Cite the commit hash in the completion comment.
+2. The terminal status carries `requiresCommit: true`. The integrator runs
+   `bin/integrate-task.sh`, which validates the task branch, merges and validates
+   the feature branch, commits, records the transaction, idempotently updates the
+   tracker, and removes the worktree last. Cite the feature-branch hash.
 3. If **all** [tasks] in the [feature] have reached the terminal status, move the
    [feature] to `[Resolved]`.
 
@@ -211,7 +219,7 @@ The per-[task] gate is unchanged — this scenario only moves *when* it runs.
 | 2 Start | `[task]` → `[Active]` (feature → `[Active]` on first) |
 | 3 Diverge | comment only |
 | 4 Review | `[task]` → `[Review]` (or back to `[Active]` on rework) |
-| 5 Finalize | commit + `[task]` → `[Ready to deploy]` (atomic); feature → `[Resolved]` when all done |
+| 5 Finalize | recoverable merge transaction + `[task]` → `[Ready to deploy]`; feature → `[Resolved]` when all done |
 | 6 New work | create `[task]` `[Planned]` |
 | 7 Block | comment + `[task]` → `[Blocked]`; owner routes it back when cleared |
 | 8 Andon | **no write** — stop and report |

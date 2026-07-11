@@ -55,11 +55,10 @@ is context, not a trigger.
    rolling look-ahead instead: when [task] N is dispatched, N+1's
    `[design-note]` is written and reviewed while N is in flight (skip when
    N+1 depends on N's implementation detail).
-4. **Implementation.** Own working copy per implementer (a per-[task] worktree
-   under `EXECUTION=parallel`; the feature-branch checkout under `sequential`),
-   the [task]'s [subtasks] as checklist, `[divergence]` comments for every
-   deviation, self-validation with the `VALIDATE_*` commands before requesting
-   review.
+4. **Implementation.** One immutable task packet, task branch, and worktree per
+   attempt in both execution modes; the [task]'s [subtasks] as checklist,
+   `[divergence]` comments for every deviation, checkpoint commits, and
+   self-validation with the `VALIDATE_*` commands before requesting review.
 5. **Review — in this order:**
    1. **Architect** — architecture review → `[architecture-approval]`.
    2. **Team-specific specialist reviews** (listed in the team file, if any).
@@ -75,8 +74,10 @@ is context, not a trigger.
    preset teams sequence it so QA always judges the final shape of the change
    (see *Review modes* below for the trade-offs of the other modes).
 6. **Integration.** The standard `integrator` (`roles/integrator.md`) verifies
-   the approvals and file lists, validates, merges, commits, and marks
-   `[Ready to deploy]` — the atomic pair. Every preset roster includes it.
+   the exact review package, validates the task branch, merges and validates the
+   feature branch, commits, then idempotently marks `[Ready to deploy]`. A
+   durable transaction record makes retries safe. Every preset roster includes
+   it.
 7. **Close.** When all [tasks] are `[Ready to deploy]`: the architect runs the feature
    completion checklist, the TPM confirms the acceptance criteria hold at
    feature level with a feature-level `[product-approval]` comment, and only
@@ -131,16 +132,14 @@ closes the loop (*Report before idle*).
 
 ```
 Re: <taskId>
-Assignment: <one line — what this [task] delivers>
-Inputs: [task] description + all comments; approved [design-note] + conditions
-        <link/pointer>; cross-cutting rulings <pointer, if any>; CONTRACTS.md
-        lines you consume: <lines or "none">
-Checklist: numbered architecture checklist from [design-approved] — implement
-        to satisfy every item
-Baseline: BASELINE.md — bar is no new failures
-Validate: <VALIDATE_* / VALIDATE_SCRIPT expectations for this change>
-Report back: [review-request] with changed-file list, validation results, and
-        any index-only staging operation — deliver before idling.
+Packet: <immutable task-packet.md path>
+Worktree: <attempt worktree path>
+Task branch: <agent-task/safe-task-key>
+Report: <attempt report path>
+Read: the packet and your role brief only; fetch other context by explicit
+      pointer when the packet says it is required.
+Report back: checkpoint the task branch, then submit the report artifact before
+      exiting. The outbox owns tracker delivery.
 ```
 
 Gate roles drain the whole queue in one boot: one boot reviews every [task] currently awaiting that gate ("drain the [Review] queue"), posting per-[task] verdicts — never one boot per [task] when several wait.
@@ -149,13 +148,14 @@ Gate roles drain the whole queue in one boot: one boot reviews every [task] curr
 
 ```
 Re: <taskId>  (mode: <sequential|parallel|tiered>)
-Diff: <files changed, one-line summary> (working copy: <worktree path, or
-        "feature-branch checkout" in sequential execution>)
+Review package: <review-package.md path with exact base/head commits and diff>
 Rule on: <open [divergence]s awaiting a ruling, or "none">
 Check: [design-approved] numbered architecture checklist (your Phase-1 seed —
         add items, never subtract) + its conditions; review-ledger.md lines that
         apply; CONTRACTS.md exports this [task] registered or consumes
-Evidence: the [review-request]'s evidence records (commit, command, exit, counts, log path) — spot-check per the protocol's *Evidence and re-execution* matrix; QA re-runs regardless.
+Evidence: the [review-request]'s evidence records (commit, command, exit,
+        counts, log path) — spot-check per the protocol's *Evidence and
+        re-execution* matrix; QA re-runs regardless.
 Report back: [architecture-approval] / [review-approval] with the explicit file
         list, or [review-findings] — deliver before idling.
 ```

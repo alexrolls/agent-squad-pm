@@ -77,9 +77,12 @@ MCP tool / CLI command / file edit.
 | Add a comment to a `[task]` | <...> |
 | Export the `[tasks]` of a `[feature]` to a file | <how to dump id/title/status/assignee/description/comments as JSON — gives credential-less roles a read-only snapshot> |
 | update comment | <tool mechanism for editing an existing comment; optional — if the tool can't edit, document the append-a-superseding-comment degradation> |
+| Upsert task runtime progress | <how to find and update one managed progress projection without duplicates> |
+| Upsert feature runtime digest | <how to find and update one managed digest projection without duplicates> |
 
 > If the tool has a scriptable (non-MCP) mechanism, consider adding a backend for it to
-> `bin/tracker-ops.sh` so `claim` / `state` / `comment` / `integrate` / `export` work
+> `bin/tracker-ops.sh` so `claim` / `state` / `comment` / `upsert-progress` /
+> `upsert-digest` / `integrate` / `export` work
 > without hand-built API calls. The Operations table above remains the spec either way.
 
 ## Rules

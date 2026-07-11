@@ -45,8 +45,9 @@ Rules that hold for every board:
   case, greppable (`[Planned]`, `[Ready to deploy]`).
 - **Exactly one `initial` status** per machine — where new items are created.
 - **At least one `terminal` status** — where work ends; it has no outbound transitions.
-- **`requiresCommit`** — entering such a status is atomically coupled to a successful
-  commit, performed by that status's owner.
+- **`requiresCommit`** — entering such a status requires a successful integration
+  commit by that status's owner. The tracker transition is idempotent and
+  recoverable from the integration transaction record.
 - **"Next status" means a status listed in the current status's `transitions`.** Any
   other move is illegal — an **andon cord** condition (see `lifecycle.md`).
 
@@ -102,8 +103,8 @@ Markers are the machine-readable protocol prefixes that begin every coordination
 | `[product-approval]` | Product owner scope/acceptance sign-off. |
 | `[product-pushback]` | Product owner scope gate closed. |
 | `[handoff]` | Team-lead reassignment summary for a fresh agent. |
-| `[progress]` | One per [task], edited in place: current stage, updated-at, ≤ 3 lines of state. |
-| `[digest]` | One per [feature], edited in place by the team-lead at milestones: one line per [task] — the human's whole view. |
+| `[progress]` | One per [task], mechanically upserted from runtime/tracker state: stage, actor, attempt, timestamp, and one-line summary. |
+| `[digest]` | One per [feature], mechanically upserted from the tracker snapshot: one line per [task] for the human's whole view. |
 | `[andon]` | Stop-the-line report: what failed, exact error, what was not done. |
 | `[escalation]` | Needs the human: question, options, default-if-silent. |
 

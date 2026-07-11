@@ -102,11 +102,14 @@ Completed (Linear project states).
 | Add a comment to a `[task]` | `create_comment` | `lin '{"query":"mutation { commentCreate(input: {issueId: \"<taskId>\", body: \"<md>\"}) { success } }"}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via `list_issues` + `get_issue`, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
 | update comment | `update_comment` MCP tool | GraphQL `commentUpdate(id: $commentId, input: {body: $body})`; or `bin/tracker-ops.sh update-comment <taskId> <commentId> <bodyfile>` |
+| Upsert task runtime progress | update the existing managed progress comment or create it | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` |
+| Upsert feature runtime digest | update the existing managed digest comment or create it | `bin/tracker-ops.sh upsert-digest <featureId> <bodyfile>` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state`, `comment` (body from a file or stdin, so no shell-quoting
-> of GraphQL payloads), `integrate <hash>`, `export`. This table remains the spec; the
-> script is the ergonomic path. MCP sessions call the MCP tools directly instead.
+> of GraphQL payloads), `upsert-progress`, `upsert-digest`, idempotent `integrate
+> <hash>`, and `export`. This table remains the spec; the script is the ergonomic
+> path. MCP sessions call the MCP tools directly instead.
 > The `export` output gives credential-less roles a stable read-only snapshot
 > (`<TEAMWORK_ROOT>/<team>/tasks.json` by convention — see `reference/orchestration.md`).
 

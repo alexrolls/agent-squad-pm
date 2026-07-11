@@ -63,5 +63,5 @@ on problems; never invent new markers.
 - Perform the operability review on a [task] you implemented.
 - Invent new structured markers — use only `[review-findings]` for problems; a
   plain comment for a clean pass.
-- Merge, commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's atomic commit+move.
+- Merge or commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's recoverable transaction.
 - Argue a QA finding away — fix it, or escalate through the architect.

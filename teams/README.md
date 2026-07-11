@@ -26,11 +26,11 @@ is the final review gate** before the standard `integrator` merges.
    it, so you don't need a key per role. Add `<ROLE>_CMD` (e.g.
    `SENIOR_STAFF_ENGINEER_CMD`) only to pin a specific CLI to a specific role; set
    it explicitly to `null` to disable the role (a `team` launch skips it). Pick
-   `EXECUTION` too: `sequential` (default — one [task] in flight at a time,
-   reserving the shared checkout until integration, with claims dispatched by
-   the lead; no worktrees) or `parallel` — required the moment you want two
-   implementers working concurrently, and only after the before-you-parallelize
-   checklist in `reference/orchestration.md` → *Execution modes* has passed.
+   `EXECUTION` too: `sequential` (default — one [task] worker in flight at a
+   time) or `parallel` (dependency/resource-safe waves bounded by
+   `MAX_ACTIVE_IMPLEMENTERS`). Both modes isolate every attempt on a task branch
+   and worktree; use `parallel` only after the checklist in
+   `reference/orchestration.md` → *Execution modes* has passed.
    Presets whose rosters carry more than one implementation-capable role (e.g.
    Deep Infra's cloud + SRE engineers, Deep Security's engineer + pen-tester)
    are still safe under `sequential` **because** claims come only from the

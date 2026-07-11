@@ -23,17 +23,23 @@ Two principles rule everything:
 
 ```
 <TEAMWORK_ROOT>/<team>/
-├── prompts/<role>.md            # composed startup prompts (written by the launcher)
+├── prompts/<role>.md            # full gate-role startup prompts
+├── prompts/tasks/<instance>.md  # lean prompt for one task attempt
 ├── mailbox/<role>/NNN-<from>.md # incoming messages for <role>, numbered, append-only
 ├── heartbeats/<role>            # one line: <ISO-8601 UTC> | <taskId or -> | <state>
-├── pids/<role>.pid              # process id when launched in background mode
-├── worktrees/<role>#<attempt>-<taskId>/ # per-instance working copies, provisioned via WORKTREE_SETUP (parallel execution only)
+├── pids/<role>.pid              # one live instance per gate role
+├── pids/tasks/<instance>.pid    # one live instance per role/task/attempt
+├── worktrees/<role>#<attempt>-<safe-task-key>/ # isolated task working copies
+├── executions/<safe-task-key>.json # packet, branch, worktree, attempt, model profile
+├── integrations/<safe-task-key>.json # recoverable merge/tracker transaction
+├── events.ndjson                # append-only wake/event journal; never authoritative
+├── pm-projection.json           # disposable progress/digest projection
+├── outbox/{pending,done}/       # structured artifacts awaiting tracker publication
 ├── CONTRACTS.md                 # append-only registry of names plans export/consume (see "Contract registry")
 ├── BASELINE.md                  # known state of the branch at creation: test counts, known failures, validation commands (see "Baseline manifest")
 ├── review-ledger.md             # reviewers' one-line-per-ruling ledger of still-live conditions
 ├── tasks.json                   # read-only [task] export for credential-less roles (adapter "export" operation)
 ├── artifacts/<taskId>/          # full logs, checklists, evidence files — cited by path from budgeted comments
-├── progress-ids/<taskId>        # comment id of the [task]'s editable [progress] comment
 └── ESCALATIONS.md               # the Lead's log of everything escalated to the human
 ```
 
@@ -115,11 +121,16 @@ it — same protocol, different transport:
 | Filesystem-degradation statement | Not needed — the harness delivers messages |
 
 Everything else is unchanged: the tracker is still the single source of durable
-truth, markers and statuses are still the protocol, worktrees (in parallel
-execution) still come from `launch-team.sh worktree`, and the *Report before
+truth, markers and statuses are still the protocol, task worktrees still come
+from `launch-team.sh worktree`, and the *Report before
 idle* contract applies with the harness's idle notification standing in for a
 stale heartbeat. The two modes mix freely — e.g. harness subagents for
 implementers, a CLI process for a long-lived reviewer.
+
+Task workers use `compose-task`, not the full role prompt. The resulting prompt
+points to one task packet and one report path; a fresh subagent reads only that
+packet, its role brief, and code needed by the task. Gate roles remain batched
+queue consumers and retain the full protocol context.
 
 ## Execution modes — sequential by default, parallel by declaration
 
@@ -127,41 +138,30 @@ implementers, a CLI process for a long-lived reviewer.
 the team runs. It changes **where code is written and how integration commits** —
 nothing else: markers, gates, reviews, and statuses are identical in both modes.
 
-- **`sequential` (default).** Exactly one [task] is **in flight** at a time,
-  and it **reserves the shared checkout from claim until its atomic
-  commit+move to the terminal status** — not merely while `[Active]`. A [task]
-  in `[Review]` (or bounced back for rework) still owns the checkout: its
-  uncommitted diff sits there until the integrator commits it. Implementers
-  edit the feature-branch checkout directly; the integrator verifies, stages,
-  validates, and commits **in place** — no task branches, no worktrees, no
-  merge step. Because agents checking tracker state before claiming is not
-  atomic across [tasks], sequential claiming is **lead-dispatched**: the
-  team-lead (owner of `[Planned]`) sends one assignment at a time and sends
-  the next only after the previous [task] integrated — implementers never
-  self-claim in this mode. One serialized writer needs no isolation; per-task
-  branches would be pure overhead. This is the proven path for harness-run
-  teams.
-- **`parallel`.** Required the moment two implementers can be `[Active]` at
-  once. The full isolation machinery applies: one worktree + task branch per
-  [task] (`bin/launch-team.sh worktree`), the integrator merges serially in
-  dependency order, and same-file collisions are handed back to the implementer
-  for rebase.
+- **`sequential` (default).** Exactly one implementation [task] is in flight.
+  It still receives a task branch and task-attempt worktree: context isolation,
+  checkpoint recovery, and exact review packages are correctness properties,
+  not parallel-only optimizations. The next claim waits for integration.
+- **`parallel`.** The dispatcher computes a ready wave and launches up to
+  `MAX_ACTIVE_IMPLEMENTERS` fresh task instances. Every candidate must have an
+  approved design, terminal blockers, and non-conflicting declared files and
+  resources. The integrator remains serialized in dependency order.
 
 - **Concurrency cap — `MAX_ACTIVE_IMPLEMENTERS` (parallel only).** Bounds how
-  many [tasks] may be in implementer hands at once; `null` leaves parallelism
-  unbounded. With the cap set (any value), claims are **lead-dispatched**
-  exactly as in sequential mode — the cap lives in the lead's single dispatch
-  point, never in self-claiming agents racing the tracker. Setting the key
+  many [tasks] may be in implementer hands at once; `null` defaults to 2.
+  Claims are **dispatcher-owned**: one locked pass performs the tracker claim,
+  creates the packet/worktree, and launches the worker. Agents never self-claim.
+  Setting the key
   under `EXECUTION=sequential` is a config error (the launcher refuses it).
 
   `MAX_ACTIVE_IMPLEMENTERS=1` is **pipelined dispatch**: full parallel
   isolation (worktree + task branch per [task], serial integrator merges), but
-  the lead sends assignment N+1 when [task] N **enters `[Review]`** rather
+  the dispatcher claims N+1 when [task] N **enters `[Review]`** rather
   than after integration — N's review, rework, and integration overlap N+1's
   implementation. Its rules:
 
   - **Independence.** N+1 must consume no `CONTRACTS.md` export of any
-    un-integrated [task] and must not be expected to touch the same files.
+    un-integrated [task] and must not share declared `files:` or `resources:`.
     No independent [task] ready → the lead waits; never stack a task branch
     on un-integrated work.
   - **Sweep gate.** N+1 is dispatched only after the principal-architect
@@ -254,8 +254,8 @@ pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
 | `[product-approval]` | product owner role (e.g. `senior-technical-product-manager`; the team-lead where no product role exists) | Scope/acceptance sign-off: scope ruling, acceptance-criteria verdict, any conditions. |
 | `[product-pushback]` | product owner role (same) | Scope gate closed: what must change in scope or acceptance criteria before work proceeds. |
 | `[handoff]` | team-lead | Reassignment: summary of state so a fresh agent can resume. |
-| `[progress]` | implementer (via lead in scribe mode) | **One per [task], edited in place** (`tracker-ops.sh update-comment`; Markdown adapter: append a superseding one). Content: stage (`claimed / design-approved / implementing / validating / review-round-N`), updated-at (UTC), ≤ 3 lines of state. Edit on stage boundaries only, ≥ 10 min apart. First post: capture the comment id in `<TEAMWORK_ROOT>/<team>/progress-ids/<taskId>`; a relaunched scribe re-reads the trail to find it. |
-| `[digest]` | team-lead | **One per [feature], on the [feature] itself, edited in place** at milestones only (a [task] hits terminal status, a gate rejects, an `[andon]`, feature done): one line per [task] (`<taskId> <title> — [Status] (<reason if blocked/rejected>)`) + `⚠ escalation open: <taskId>` lines. The human reads this one comment, never the trails. GitHubIssues: milestones take no comments — keep the digest in the milestone description (`gh api PATCH`). |
+| `[progress]` | dispatcher projection | **One per [task], upserted mechanically** by `runtime-event.sh` / `sync-progress.sh`: stage, actor, attempt, updated-at, and one-line summary. Agents emit events; they do not hand-edit progress history. |
+| `[digest]` | dispatcher projection | **One per [feature], upserted mechanically** from the tracker snapshot: one line per [task] with tracker status and execution stage. Linear/GitHub/Markdown use a managed description block where feature comments are unavailable. |
 | `[andon]` | any role | Stop-the-line report: what failed, exact error, what you did NOT do. |
 | `[escalation]` | team-lead | Needs the human. Required shape: `question:` (one sentence), `context:` (≤ 4 lines), `options:` (≥ 2, each with a one-line consequence), `default-if-silent: <option> after <N hours>`. Also appended to `ESCALATIONS.md`. An `[escalation]` without options + default is a protocol error (`[andon]`). |
 
@@ -297,24 +297,23 @@ a validation run.
 `TRACKER_WRITERS` in `config/team.config.md` sets who physically writes to the
 tracker:
 
-- **`all` (default).** Every role performs its own adapter operations. Requires
-  every agent to hold tracker access.
+- **`all` (default).** A worker's runtime events may upsert its managed progress
+  record immediately, and `submit-artifact.sh` drains that worker's outbox entry
+  before returning. Every worker therefore needs scriptable tracker access.
 - **`lead` — single-writer ("scribe") mode.** Only the team-lead holds tracker
-  credentials. Roles compose their artifacts exactly as the protocol requires —
-  same markers, same content, signed `— <role>` — but deliver them to the lead
-  (mailbox or harness message) instead of posting. The lead posts each block
-  **verbatim**, appending `(posted by team-lead)` to the signature:
-  `— <role> (posted by team-lead)`. Status changes work the same way: the role
-  requests the move, the lead performs the write.
+  credentials. Roles compose their artifacts exactly as the protocol requires,
+  sign them with the authoring role, and enqueue them with
+  `submit-artifact.sh`. The dispatcher drains the durable outbox, posts each
+  block verbatim with an idempotency delivery id, performs the requested status
+  move, and projects local runtime events into `[progress]`/`[digest]` records.
 
   In `lead` mode, status ownership and marker authorship rules apply to the
   **authoring** role, not the writing one — the lead is a scribe, never an
   author, and gains no authority from holding the pen: it still cannot approve a
-  design, soften a finding, or override a veto, and it must not edit, summarize,
-  or reorder a block it posts. Trade-offs to accept knowingly: signatures no
-  longer prove authorship (acceptable inside one supervised team), and the lead
-  becomes a serialization point (which is also the point — no credential sprawl,
-  no write races, uniform formatting).
+  design, soften a finding, or override a veto. The outbox record binds the
+  authoring role, body, requested transition, and attempt. Trade-offs to accept
+  knowingly: the lead becomes a serialization point (which is also the point —
+  no credential sprawl, no write races, uniform formatting).
 
 ## Status routing
 
@@ -327,49 +326,36 @@ one that performs its outbound transitions.
 
 ## Claiming a [task]
 
-1. Read the [task] in full via the adapter (description, [subtasks], all comments).
-2. Verify status is `[Planned]` and it belongs to your track. If not → `[andon]`.
-   Also verify the sweep is not pending on your track: under `EXECUTION=sequential`,
-   the previously integrated [task] has no `[divergence]` comments still awaiting
-   the principal-architect's sweep; under `parallel`, the most recent [task] that
-   entered `[Review]` on your track has the PA's sweep confirmation. If pending,
-   wait or ask the PA by mailbox. Under `EXECUTION=sequential` — and under
-   `parallel` whenever `MAX_ACTIVE_IMPLEMENTERS` is set — you claim only on the
-   team-lead's assignment (never self-serve — see *Execution modes*). Under
-   `sequential`, additionally verify before touching anything that
-   **the shared checkout is free**: no [task] anywhere is in flight
-   (`[Active]` **or** `[Review]` — a [task] in review still owns the checkout
-   until integrated), and `git status --porcelain -uall` on the feature-branch
-   checkout is clean. Dirty checkout or an in-flight [task] → don't claim;
-   tell the lead.
-3. Set assignee = your role name AND move `[Planned] → [Active]` (one adapter write
+1. The locked dispatcher reads the [task] in full via the adapter.
+2. It verifies status `[Planned]`, terminal blockers, an approved design, an
+   available concurrency slot, and non-conflicting declared resources. If not,
+   it leaves the task unclaimed and routes the reason to the team-lead.
+   No implementer self-claims in either execution mode.
+3. The dispatcher sets assignee = the concrete role AND moves
+   `[Planned] → [Active]` (one adapter write
    where the tool allows, else assignee first).
-4. **Read back.** If the assignee is not you, another agent won — back off silently
-   and pick the next `[Planned]` [task] on your track.
-5. Set up your working copy (roles that write code only). `EXECUTION=parallel`:
-   create your worktree — `bin/launch-team.sh worktree <team> <role> <taskId>`.
-   The worktree is your **instance's** scratch space (attempt-numbered); it arrives provisioned when `WORKTREE_SETUP` is set — validation claims may only cite commands actually executed inside it.
-   `EXECUTION=sequential`: work in the feature-branch checkout directly; there
-   is no worktree and no task branch (see *Execution modes*).
+4. **Read back.** A claim mismatch is an andon condition; no worker launches.
+5. `start-task` creates the collision-safe task branch, attempt worktree, task
+   packet, report path, execution record, and task-instance pid. `WORKTREE_SETUP`
+   provisions it before launch. The fresh worker receives no unrelated history.
 
 One implementer per [task], ever. Claiming is the lock.
 
 ## The task pipeline
 
 ```
-claim → [design-note] → wait for [design-approved]      (no code before the gate)
-      → implement in your working copy                   ([divergence] comments as needed)
-        (worktree in parallel execution; feature-branch checkout in sequential)
+approved design → dispatcher claim → fresh task packet + task worktree
+      → implement in the task worktree                  ([divergence] artifacts as needed)
       → self-validate (VALIDATE_SCRIPT or the VALIDATE_* that apply; bar =
         no new failures vs BASELINE.md)
-      → [review-request] + move to [Review]
+      → clean task-branch checkpoint commit + task report
+      → outbox [review-request] + move to [Review]
       → reviewer three-phase review ∥ principal-architect architecture review
       → findings? → back to [Active], fix, [review-request] again
       → [review-approval] + [architecture-approval] (both, with file lists)
-      → integrator: verify lists == diff, stage explicitly, validate
-        (VALIDATE_SCRIPT or VALIDATE_*, judged against BASELINE.md),
-        merge to the feature branch (parallel execution only), commit,
-        move to [Ready to deploy] (atomic pair)
+      → integrator: verify lists == review package, run integrate-task.sh
+        (preserve + validate reviewed task head, merge --no-commit, validate
+        feature branch, commit, idempotent tracker completion, cleanup)
       → principal-architect divergence sweep updates upcoming [tasks]
         (sequential: runs here; parallel: already ran at [Review] entry)
 ```
@@ -430,32 +416,21 @@ resolvable only by a fresh implementer run and a new record, never by explanatio
 
 ## Integration
 
-The `integrator` is the **only** role that merges to the feature branch, commits, or
-marks `[Ready to deploy]`. Pipeline (all-or-nothing, zero tolerance, no overrides — not
-even from the team-lead):
+The `integrator` is the **only** role that writes the feature branch or marks
+`[Ready to deploy]`. Implementer checkpoint commits exist only on task branches.
 
-1. Verify both approval comments exist and their file lists are identical to the
-   full changed-file set — `git diff --name-only <feature-branch>...HEAD` plus
-   `git status --porcelain -uall` for uncommitted work (always `-uall`: plain
-   porcelain hides the files inside a new directory), run from inside the
-   [task]'s worktree (parallel execution) or the feature-branch checkout
-   (sequential — the changed set is just the uncommitted work). Any mismatch →
-   `[andon]`.
-2. Stage by explicit file list (never `add -A`), verify the staged set matches.
-   Index-only operations (untracking a file) are the implementer's one sanctioned
-   staging exception — allowed only when named in the `[review-request]`.
-3. Validate — `VALIDATE_SCRIPT` with the changed-file list if set, else
-   `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_FORMAT` (skip `null` ones, record
-   skips). Judge against `BASELINE.md`: the bar is no NEW failures. Any new
-   failure → `[andon]`, task back to `[Active]`.
-4. Parallel execution only: merge the task branch into the feature branch;
-   remove the worktree. (Sequential: nothing to merge — the staged work already
-   sits on the feature-branch checkout.)
-5. Commit, capture the hash, then immediately move the [task] to `[Ready to deploy]`,
-   citing the hash. Commit and completion are one atomic pair — never one without
-   the other.
-6. When every [task] is `[Ready to deploy]`, tell the team-lead and principal-architect; the [feature] moves to
-   `[Resolved]` only after the Lead's completion checklist passes.
+1. Verify current `[review-approval]` and `[architecture-approval]`, authorized
+   independent signers, and identical approved file lists.
+2. Verify the generated review package Head equals the clean task branch HEAD.
+3. Run `bin/integrate-task.sh <team> <featureId> <taskId> <role> <attempt>`.
+   The script preserves that reviewed task-branch head, validates it, merges to
+   the feature branch with `--no-commit`, validates again, commits, records the
+   merge, performs idempotent tracker completion, removes the worktree, and only
+   then marks the transaction complete. Conflicts and validation failures abort
+   before commit.
+4. Verify the transaction says `completed`. When every [task] is terminal, tell
+   the team-lead and principal-architect; feature resolution still requires the
+   Lead's completion checklist.
 
 ## Supervision — the team-lead loop
 
@@ -508,26 +483,19 @@ An idle ping is never a completion signal; only the artifact is.
 
 ## Recovery
 
-Relaunched or restarted agents need no session state: read your role brief, query
-the tracker for [tasks] assigned to your role in any non-terminal status, read the
-comment trail (design note, approvals, findings), check your working copy, resume
-at the pipeline stage the comments prove you reached. If the trail is ambiguous →
-`[andon]`.
+Relaunched task workers need no session state: the dispatcher creates a fresh
+attempt packet from current binding artifacts and points it at the existing task
+branch. Gate roles re-read their queue from the tracker and exact review
+packages. If either trail is ambiguous, emit `[andon]` rather than inferring
+missing state.
 
 ### Relaunch hygiene
 
-A killed or unresponsive instance may have left uncommitted
-writes in its working copy; a successor must never inherit them silently — orphan
-files reaching review as if they were deliberate is exactly how a relaunch
-contaminates a [task]. Before the replacement starts, the lead quarantines the
-residue: parallel execution — discard the dead instance's worktree (`bin/launch-team.sh worktree-remove <team> <role> <taskId> [attempt]`; use `git worktree move` first if salvage is on the table) and let the successor create attempt N+1 on the same task branch; sequential — `git stash -u` on the feature-branch
-checkout (safe to attribute wholesale: the checkout-reservation rule means the
-only uncommitted work there is the dead instance's own [task]). The successor then rules **explicitly**, as a comment on the [task]:
-**salvage** (restore the quarantined changes and justify every kept file against
-the approved `[design-note]`) or **discard** (drop them and redo from the tracker
-trail). Since implementers don't commit, "start clean" always means giving up the
-dead instance's work — that trade is the successor's call to make on the record,
-never an accident of inheritance.
+A killed or unresponsive task instance may leave uncommitted writes in its
+attempt worktree. Quarantine or remove that worktree, then create attempt N+1 on
+the same task branch. Reviewed checkpoint commits survive; uncommitted residue
+does not cross attempts unless the successor explicitly salvages and justifies
+it against the approved design. Gate-role recovery remains tracker-driven.
 
 ## Andon cord
 
@@ -541,7 +509,7 @@ never fabricate a result, never claim a status you did not verify.
 | Capability | Needed by | If missing |
 |---|---|---|
 | File read/write | all | — (hard requirement) |
-| Shell + git | all; worktrees for implementers (parallel execution) | — (hard requirement) |
+| Shell + git | all task workers; worktrees in both execution modes | — (hard requirement) |
 | Tracker access (adapter: MCP, REST + API key, CLI, or files) | all | use another mechanism from the adapter's *Access mechanisms*; never fabricate |
 | Shared filesystem with the team | mailbox/heartbeats | poll the tracker; say so once on your [task] |
 | Harness-native teammates (subagent spawn + messaging) | harness mode | launch CLI processes via `bin/launch-team.sh` (tmux / background) |

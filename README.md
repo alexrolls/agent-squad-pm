@@ -46,8 +46,8 @@ CLI or IDE that can read files (Claude Code, Codex CLI, Gemini CLI, Aider,
 Cursor, Windsurf, Cline, …).
 
 **For multi-agent teams, additionally:** the launcher (`bin/launch-team.sh`) needs
-`bash` + `git` (with `EXECUTION=parallel` it uses git worktrees to isolate
-agents). `tmux` is optional but recommended — without it, agents run as
+`bash` + `git`; every implementation task uses a task branch and isolated
+worktree. `tmux` is optional but recommended — without it, agents run as
 background processes.
 
 **Tracker access is optional.** The default `Markdown` tracker stores everything
@@ -88,8 +88,8 @@ That's the whole loop — plan → start → review → complete — in generic 
 that works identically on every tracker. When you're ready for a real tracker or
 a full team, keep reading.
 
-> **Sanity-check the team launcher** (no LLM calls, no cost):
-> `bash tests/launcher-test.sh` → should print `ALL PASS`.
+> **Sanity-check the runtime** (no LLM calls, no cost):
+> `bash tests/run-all.sh` should finish with `ALL TESTS PASS`.
 
 ---
 
@@ -106,16 +106,15 @@ anywhere and point the agent at `SKILL.md`.
 | **Cursor / Windsurf / Cline** | the tool's rules dir | reference `SKILL.md` in chat |
 | **Anything else** | anywhere | point the agent at `SKILL.md` |
 
-Multi-agent teams work on a git branch (and, with `EXECUTION=parallel`, in **git
-worktrees**), so the bundle must live inside a git repository. `.teamwork/` and
-`.workspace/` are already git-ignored.
+Multi-agent teams work on a git branch and use a task branch plus **git
+worktree** for every implementation attempt, so the bundle must live inside a
+git repository. `.teamwork/` and `.workspace/` are already git-ignored.
 
-Two execution modes (`config/team.config.md` → `EXECUTION`): **`sequential`**
-(default) runs one [task] at a time in the feature-branch checkout — the proven
-path for harness-run and single-implementer teams; **`parallel`** turns on
-worktree-per-[task] + task-branch isolation and is required the moment two
-implementers can work at once. See `reference/orchestration.md` → *Execution
-modes*, including the checklist to validate before you parallelize.
+Two execution modes (`config/team.config.md` → `EXECUTION`) share the same
+task-branch/worktree isolation: **`sequential`** runs one task worker at a time;
+**`parallel`** dispatches dependency/resource-safe waves, bounded by
+`MAX_ACTIVE_IMPLEMENTERS` (default 2 when unset). Gate roles and integration
+remain serialized where required.
 
 ---
 
@@ -154,6 +153,12 @@ Command templates for common CLIs:
 **Mixing LLMs is the design intent** — e.g. Claude to lead and architect, Codex to
 implement, Gemini to review for diversity. Same-LLM teams work too.
 
+Optional `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, and `TASK_STRONG_CMD` overrides
+route individual task packets by explicit `model-profile:`, conservative risk
+classification, or a bounded low-risk fast path for documentation, formatting,
+and structurally small test/config tasks. Missing overrides fall back to the
+role command.
+
 ### Harness mode — teammates as subagents, no CLI processes
 
 If your harness can spawn subagents and message them (e.g. Claude Code's Agent
@@ -169,9 +174,9 @@ why the many specialized preset-team roles need no per-role keys — set
 `TEAM_DEFAULT_CMD` once and only override the roles you want on a different model.
 
 > ⚠️ **Safety:** those templates use auto-approve flags (`acceptEdits`,
-> `--full-auto`, `--yolo`) so agents can work unattended. Only the integrator
-> commits, and with `EXECUTION=parallel` each implementer is additionally
-> isolated in its own git worktree — but still run teams on a branch you can
+> `--full-auto`, `--yolo`) so agents can work unattended. Workers may commit
+> untrusted checkpoints only to task branches; only the integrator writes the
+> feature branch. Every implementer is isolated in its own git worktree — but still run teams on a branch you can
 > throw away, and review the tracker before merging to your main branch.
 
 ---
@@ -233,7 +238,8 @@ needs nothing).
 | Section | Keys | Purpose |
 |---|---|---|
 | Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
-| Coordination | `TEAMWORK_ROOT` (`.teamwork`), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`all`), `EXECUTION` (`sequential`) | Timing of the lead's supervision loop; `TRACKER_WRITERS=lead` enables single-writer ("scribe") mode — only the lead holds tracker credentials and posts on the team's behalf; `EXECUTION=parallel` turns on worktree-per-[task] isolation, required for ≥2 concurrent implementers |
+| Task model routing | `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, `TASK_STRONG_CMD` | Optional task-level command overrides selected from packet metadata and conservative risk classification; each falls back to the role command |
+| Coordination | `TEAMWORK_ROOT` (`.teamwork`), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`all`), `EXECUTION` (`sequential`), `MAX_ACTIVE_IMPLEMENTERS` (`null`) | Event-driven supervision with polling fallback; `TRACKER_WRITERS=lead` enables a durable single-writer outbox; `sequential` allows one task worker and `parallel` schedules dependency/resource-safe waves (unset cap defaults to 2) |
 | Validation | `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_SCRIPT` | Your stack's commands; the integrator runs them before every merge (`null` = skip). `VALIDATE_SCRIPT` replaces the three with one repo-owned script that receives the changed-file list |
 
 Point the `VALIDATE_*` commands at your real build/test/lint (e.g.
@@ -291,7 +297,9 @@ Just talk to your agent in the generic vocabulary:
 | `start <team> <featureId> <role>…` | Launch specific roles (custom teams) |
 | `relaunch <team> <featureId> <role> [preset]` | Restart one crashed/wedged agent |
 | `compose <team> <featureId> <role> [preset]` | Write a role's startup prompt **without spawning** — for running teammates as subagents inside your own harness (see `reference/orchestration.md` → *Harness mode*) |
-| `worktree <team> <role> <taskId> [attempt]` | Create an implementer's isolated worktree (parallel execution) |
+| `start-task <team> <featureId> <role> <taskId> [attempt] [preset]` | Generate a packet and launch one task-scoped worker in its worktree |
+| `compose-task <team> <featureId> <role> <taskId> [attempt] [preset]` | Generate a packet and lean startup prompt without spawning, for harness subagents |
+| `worktree <team> <role> <taskId> [attempt]` | Create an implementer's isolated task worktree |
 | `worktree-remove <team> <role> <taskId> [attempt]` | Remove a worktree and prune its registration |
 | `status <team>` | Show each agent's state + last heartbeat |
 | `stop <team>` | Stop the whole team |
@@ -301,24 +309,27 @@ Just talk to your agent in the generic vocabulary:
 | Command | Purpose |
 |---|---|
 | `dispatch.sh <team> <featureId> --once [--dry-run] [--unblock=auto\|suggest\|off]` | One deterministic read-and-act pass |
-| `dispatch.sh <team> <featureId> --watch [--unblock=…]` | Repeat every `POLL_INTERVAL_SECONDS` — run in a persistent shell (tmux/nohup); **you own this process** |
+| `dispatch.sh <team> <featureId> --watch [--unblock=…]` | Wake on runtime events with `POLL_INTERVAL_SECONDS` as a fallback — run in a persistent shell (tmux/nohup); **you own this process** |
 
 > **CLI dispatch requires scriptable tracker access.** Linear and Jira default to MCP; set `LINEAR_ACCESS=rest` or `JIRA_ACCESS=rest` in `config/project-management.config.md` before running `dispatch.sh --watch`. Harness mode (`launch-team.sh compose`) supports MCP natively.
 
 There is also `bin/tracker-ops.sh` — an ergonomic wrapper for the recurring
 tracker operations (`claim`, `state`, `comment` with the body from a file/stdin,
-`update-comment <id> <file>`, `integrate <hash>`, `export`) over the scriptable
-access mechanisms (Linear/Jira REST, `gh`, Markdown files). The adapter docs
-remain the spec; MCP sessions use their native tools instead.
+`update-comment <id> <file>`, `upsert-progress`, `upsert-digest`, `integrate
+<hash>`, `export`) over the scriptable access mechanisms (Linear/Jira REST,
+`gh`, Markdown files). The adapter docs remain the spec; MCP sessions use their
+native tools instead.
 
 **The flow every team follows:** the Principal Architect leads (plans with the
 Product Manager, gates each `[task]`'s design before any code, reviews
-architecture) → specialists implement in their working copies (isolated
-worktrees in parallel execution) → the **Senior QA
-Engineer is the final review gate** → the integrator merges and marks
-`[Ready to deploy]` (commit and the move are one atomic step). The lead detects
-stuck/conflicting/crashed agents and unblocks them — message → decide → reassign →
-relaunch — escalating to you only as a last resort.
+architecture) → the dispatcher creates immutable task packets and isolated
+worktrees → specialists checkpoint their task branches → the **Senior QA
+Engineer is the final review gate** over an exact review package → the
+integrator validates and merges one task at a time, then idempotently marks it
+`[Ready to deploy]`. Runtime events trigger PM progress and feature-digest
+upserts. The lead detects stuck/conflicting/crashed agents and unblocks them —
+message → decide → reassign → relaunch — escalating to you only as a last
+resort.
 
 ---
 
@@ -333,7 +344,8 @@ relaunch — escalating to you only as a last resort.
 | `deep-infra` | Principal Cloud & Infrastructure Architect · TPM · Senior Cloud Engineer · Senior SRE · Senior QA | Cloud infra, IaC, delivery pipelines, reliability |
 
 Every preset: the **Principal Architect leads**, the **Senior QA Engineer is the
-final gate**, and a standard integrator makes the atomic commit. Details in
+final gate**, and a standard integrator owns serialized feature-branch commits
+and recoverable tracker finalization. Details in
 [`teams/README.md`](teams/README.md).
 
 ---
@@ -366,19 +378,19 @@ source of truth:
 
 ```
           PM tool (Linear/Jira/…) = single source of truth
-   claims = status transitions · coordination = structured comments
+ claims = locked transitions · progress = idempotent projected comments
                        ▲ via the adapter port ▲
  architect (leads) ── product manager ── engineers ── QA (final gate) ── integrator (commits)
-                         └── one working copy per implementer ──┘
-                          (git worktree each in parallel execution)
+                         └── one task packet + worktree per attempt ──┘
                        ▼ optional low-latency transport ▼
-        .teamwork/<team>/  mailboxes · heartbeats  (degrades to tracker polling)
+ .teamwork/<team>/  events · outbox · mailboxes · heartbeats  (polling fallback)
 ```
 
-An agent claims a `[task]` by moving its status and setting itself as assignee;
-all coordination (design notes, approvals, findings, escalations) are structured
-comments on the `[task]`. File mailboxes/heartbeats under `.teamwork/` make this
-fast when agents share a machine and degrade to tracker polling when they don't.
+The dispatcher claims a `[task]` under a per-pass lock, generates its packet,
+and launches exactly one attempt. Design notes, approvals, findings, and
+escalations remain structured tracker comments. An append-only event journal
+wakes local coordination quickly; the durable outbox serializes tracker writes
+when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
 
 ---
 
@@ -405,10 +417,15 @@ fast when agents share a machine and degrade to tracker polling when they don't.
 │   ├── full-stack.md · deep-backend.md · deep-frontend.md · deep-security.md · deep-infra.md
 │   └── roles/                        14 specialized role briefs
 ├── bin/
-│   ├── launch-team.sh                the team launcher (spawn, compose, worktrees, board validation)
-│   └── tracker-ops.sh                ergonomic tracker CLI (claim/state/comment/integrate/export)
+│   ├── launch-team.sh                role and task-instance launcher
+│   ├── dispatch.sh · dispatch-plan.py deterministic bounded scheduler
+│   ├── runtime-state.py · task_metadata.py
+│   │                                  event journal, metadata/routing, task packets
+│   ├── submit-artifact.sh · process-outbox.sh
+│   ├── review-package.sh · integrate-task.sh
+│   └── tracker-ops.sh                idempotent tracker operations
 └── tests/                            offline smoke tests (no LLM calls)
-    └── launcher-test.sh · tracker-ops-test.sh
+    └── run-all.sh                    tracker, runtime, dispatch, launcher, integration
 ```
 
 ---
@@ -440,7 +457,7 @@ exact protocol markers — never invent new ones.
 | A role won't launch in a preset | It's likely `<ROLE>_CMD=null` (explicitly disabled). Remove the line to fall back to `TEAM_DEFAULT_CMD` |
 | No `tmux` | Agents run as background processes automatically; use `status`/`stop` and read logs under `.teamwork/<team>/pids/` |
 | Team seems stuck | `bin/launch-team.sh status <team>` shows heartbeats; the lead auto-unblocks, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md` |
-| Want to verify the plumbing | `bash tests/launcher-test.sh && bash tests/tracker-ops-test.sh` → `ALL PASS` twice (stub agent + local files; no LLM, no cost) |
+| Want to verify the plumbing | `bash tests/run-all.sh` → `ALL TESTS PASS` (stub agents + local files; no LLM, no cost) |
 
 ---
 

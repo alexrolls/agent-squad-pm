@@ -72,22 +72,26 @@ else
 fi
 
 # -- worktree subcommand -------------------------------------------------------
+T42_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key T-42)"
+T42_WT=".teamwork/test-feature/worktrees/backend#1-$T42_KEY"
 "$LAUNCH" worktree test-feature backend T-42
-check "worktree created"  test -d .teamwork/test-feature/worktrees/backend#1-T-42
-check "worktree branch"   git -C .teamwork/test-feature/worktrees/backend#1-T-42 rev-parse --abbrev-ref HEAD
-[ "$(git -C .teamwork/test-feature/worktrees/backend#1-T-42 rev-parse --abbrev-ref HEAD)" = "backend-T-42" ] \
-  && echo "ok: branch name backend-T-42" || { echo "FAIL: branch name"; FAILURES=$((FAILURES+1)); }
+check "worktree created"  test -d "$T42_WT"
+check "worktree branch"   git -C "$T42_WT" rev-parse --abbrev-ref HEAD
+[ "$(git -C "$T42_WT" rev-parse --abbrev-ref HEAD)" = "agent-task/$T42_KEY" ] \
+  && echo "ok: collision-safe task branch" || { echo "FAIL: branch name"; FAILURES=$((FAILURES+1)); }
 
 # -- worktree re-add: remove the worktree dir but keep the branch, re-add should succeed --
-git worktree remove .teamwork/test-feature/worktrees/backend#1-T-42
+git worktree remove "$T42_WT"
 "$LAUNCH" worktree test-feature backend T-42
-check "worktree re-add with existing branch" test -d .teamwork/test-feature/worktrees/backend#1-T-42
+check "worktree re-add with existing branch" test -d "$T42_WT"
 
 # -- worktree provisioning: WORKTREE_SETUP runs once, fail-loud -----------------
 CFG_WT=.claude/skills/pm/config/team.config.md
 printf 'WORKTREE_SETUP="touch provisioned.txt"\n' >> "$CFG_WT"
+T77_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key T-77)"
+T78_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key T-78)"
 "$LAUNCH" worktree test-feature backend T-77
-check "WORKTREE_SETUP provisioned the tree" test -f .teamwork/test-feature/worktrees/backend#1-T-77/provisioned.txt
+check "WORKTREE_SETUP provisioned the tree" test -f ".teamwork/test-feature/worktrees/backend#1-$T77_KEY/provisioned.txt"
 sed -i '' '/^WORKTREE_SETUP="touch provisioned.txt"$/d' "$CFG_WT"
 printf 'WORKTREE_SETUP="false"\n' >> "$CFG_WT"
 if "$LAUNCH" worktree test-feature backend T-78 >/dev/null 2>&1; then
@@ -95,17 +99,17 @@ if "$LAUNCH" worktree test-feature backend T-78 >/dev/null 2>&1; then
 else
   echo "ok: failing WORKTREE_SETUP is fail-loud"
 fi
-check "failed provisioning removed the tree" test ! -d .teamwork/test-feature/worktrees/backend#1-T-78
+check "failed provisioning removed the tree" test ! -d ".teamwork/test-feature/worktrees/backend#1-$T78_KEY"
 sed -i '' '/^WORKTREE_SETUP="false"$/d' "$CFG_WT"
 
 # -- attempt-bound relaunch isolation ------------------------------------------
 "$LAUNCH" worktree-remove test-feature backend T-77
-check "worktree-remove cleaned the dir" test ! -d .teamwork/test-feature/worktrees/backend#1-T-77
-git worktree list | grep -q 'backend#1-T-77' && { echo "FAIL: stale worktree registration"; FAILURES=$((FAILURES+1)); } || echo "ok: worktree pruned"
+check "worktree-remove cleaned the dir" test ! -d ".teamwork/test-feature/worktrees/backend#1-$T77_KEY"
+git worktree list | grep -q "backend#1-$T77_KEY" && { echo "FAIL: stale worktree registration"; FAILURES=$((FAILURES+1)); } || echo "ok: worktree pruned"
 "$LAUNCH" worktree test-feature backend T-77 2
-check "attempt 2 gets a fresh tree on the same branch" test -d .teamwork/test-feature/worktrees/backend#2-T-77
-[ "$(git -C .teamwork/test-feature/worktrees/backend#2-T-77 rev-parse --abbrev-ref HEAD)" = "backend-T-77" ] \
-  && echo "ok: attempt 2 reuses branch backend-T-77" || { echo "FAIL: attempt-2 branch"; FAILURES=$((FAILURES+1)); }
+check "attempt 2 gets a fresh tree on the same branch" test -d ".teamwork/test-feature/worktrees/backend#2-$T77_KEY"
+[ "$(git -C ".teamwork/test-feature/worktrees/backend#2-$T77_KEY" rev-parse --abbrev-ref HEAD)" = "agent-task/$T77_KEY" ] \
+  && echo "ok: attempt 2 reuses task branch" || { echo "FAIL: attempt-2 branch"; FAILURES=$((FAILURES+1)); }
 
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
 SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
@@ -282,7 +286,7 @@ STATUS_CONFIG=config/statuses.config.json
 EOF
 
 # -- tmux liveness: pid file removed on agent exit; dead pane never blocks relaunch ----
-if command -v tmux >/dev/null 2>&1; then
+if [ "${TEAM_RUNNER:-auto}" != "background" ] && command -v tmux >/dev/null 2>&1; then
   TL_TEAM="tmux-liveness"
   tmux kill-session -t "team-$TL_TEAM" 2>/dev/null || true
   rm -rf ".teamwork/$TL_TEAM"
@@ -308,7 +312,7 @@ if command -v tmux >/dev/null 2>&1; then
     || { echo "FAIL: tmux: relaunch did not say launched — output: $relaunch_out"; FAILURES=$((FAILURES+1)); }
   tmux kill-session -t "team-$TL_TEAM" 2>/dev/null || true
 else
-  echo "skip: tmux tests (tmux unavailable)"
+  echo "skip: tmux tests (tmux unavailable or TEAM_RUNNER=background)"
 fi
 
 # -- status + stop --------------------------------------------------------------
