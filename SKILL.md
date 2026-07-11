@@ -1,6 +1,6 @@
 ---
 name: agent-squad-pm
-description: Create, track, and update [features] and [tasks] in any project-management tool — Linear, Jira, GitHub Issues, or a Markdown fallback — through one tool-agnostic workflow. Use when the user wants to plan a feature, break work into tasks, start/review/complete a task, change a [task]'s status, or connect/switch the project-management tool, or run a multi-agent team on a feature (orchestration with a team lead, principal architect, and cross-functional implementers). Language- and framework-agnostic.
+description: Create, track, and update [features] and [tasks] in any project-management tool — Linear, Jira, GitHub Issues, or a Markdown fallback — through one tool-agnostic workflow. Use when the user wants to plan a feature, break work into tasks, start/review/complete a task, change a [task]'s status, connect/switch the project-management tool, run a multi-agent team on a feature (orchestration with a team lead, principal architect, and cross-functional implementers), or fetch/update the latest Agent Squad PM skill itself. Language- and framework-agnostic.
 ---
 
 # Project Management Workflow
@@ -18,6 +18,7 @@ skill's directory):
 - `reference/dispatch.md` — who converts tracker/mailbox events into role launches (the loop lives outside the agent)
 - `roles/<role>.md` + `config/team.config.md` + `bin/launch-team.sh` — the agent team
 - `bin/tracker-ops.sh` — ergonomic CLI for recurring tracker operations (scriptable mechanisms)
+- `bin/update-installed-skill.sh` — fetch the latest upstream skill bundle into the current repository
 - `bin/runtime-state.py` + `bin/task-packet.sh` — durable events, PM projections,
   and minimal task-local context
 - `bin/submit-artifact.sh` + `bin/process-outbox.sh` — idempotent agent handoffs
@@ -28,6 +29,26 @@ skill's directory):
 > **Golden rule:** in everything you write — comments, commit messages, messages to the
 > user — use only the generic vocabulary — terms `[feature]`, `[task]`, `[subtask]` and the statuses defined in `config/statuses.config.json` (default board: `[Planned]`/`[Active]`/`[Review]`/`[Blocked]`/`[Ready to deploy]`). Never write "issue", "epic",
 > "story", or "ticket" outside the adapter. See the banned-terms list in `vocabulary.md`.
+
+## Self-update request
+
+If the user asks to "fetch latest Agent Squad PM", "update agent_squad_pm skill",
+"sync this skill from upstream", or equivalent, do this before the normal mandatory
+preparation:
+
+1. From the target repository, run:
+
+   ```bash
+   bash .claude/skills/agent_squad_pm/bin/update-installed-skill.sh
+   ```
+
+   If this skill is installed somewhere else, run the same script from this skill's
+   `bin/` directory with `--install-dir <path-to-installed-skill>`.
+2. Keep the default config-preserving behavior unless the user explicitly asks to
+   replace project config. Existing `config/project-management.config.md`,
+   `config/team.config.md`, and `config/statuses.config.json` are preserved.
+3. Report the script's target path and git status/diff summary. Do not commit unless
+   the user asks.
 
 ## Mandatory Preparation (every invocation)
 

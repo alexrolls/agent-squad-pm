@@ -106,6 +106,42 @@ anywhere and point the agent at `SKILL.md`.
 | **Cursor / Windsurf / Cline** | the tool's rules dir | reference `SKILL.md` in chat |
 | **Anything else** | anywhere | point the agent at `SKILL.md` |
 
+### Update an installed copy
+
+From any repository where the skill is installed in Claude Code's default
+location, run:
+
+```bash
+bash .claude/skills/agent_squad_pm/bin/update-installed-skill.sh
+```
+
+Or ask Claude:
+
+```
+Fetch latest Agent Squad PM skill.
+```
+
+The updater fetches `main` from
+`https://github.com/alexrolls/agent_squad_pm.git`, syncs the bundle into
+`.claude/skills/agent_squad_pm`, and preserves existing project config files by
+default:
+
+- `config/project-management.config.md`
+- `config/team.config.md`
+- `config/statuses.config.json`
+
+To replace those config files with upstream defaults too:
+
+```bash
+bash .claude/skills/agent_squad_pm/bin/update-installed-skill.sh --overwrite-config
+```
+
+To install or update a non-default location:
+
+```bash
+bash /path/to/agent_squad_pm/bin/update-installed-skill.sh --install-dir .codex/pm
+```
+
 Multi-agent teams work on a git branch and use a task branch plus **git
 worktree** for every implementation attempt, so the bundle must live inside a
 git repository. `.teamwork/` and `.workspace/` are already git-ignored.
@@ -418,6 +454,7 @@ when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
 │   └── roles/                        14 specialized role briefs
 ├── bin/
 │   ├── launch-team.sh                role and task-instance launcher
+│   ├── update-installed-skill.sh     refresh this skill from upstream
 │   ├── dispatch.sh · dispatch-plan.py deterministic bounded scheduler
 │   ├── runtime-state.py · task_metadata.py
 │   │                                  event journal, metadata/routing, task packets
