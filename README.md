@@ -154,8 +154,10 @@ Command templates for common CLIs:
 implement, Gemini to review for diversity. Same-LLM teams work too.
 
 Optional `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, and `TASK_STRONG_CMD` overrides
-route individual task packets by explicit `model-profile:` or conservative risk
-classification. Missing overrides fall back to the role command.
+route individual task packets by explicit `model-profile:`, conservative risk
+classification, or a bounded low-risk fast path for documentation, formatting,
+and structurally small test/config tasks. Missing overrides fall back to the
+role command.
 
 ### Harness mode — teammates as subagents, no CLI processes
 
@@ -417,7 +419,8 @@ when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
 ├── bin/
 │   ├── launch-team.sh                role and task-instance launcher
 │   ├── dispatch.sh · dispatch-plan.py deterministic bounded scheduler
-│   ├── runtime-state.py              event journal, PM projection, task packets
+│   ├── runtime-state.py · task_metadata.py
+│   │                                  event journal, metadata/routing, task packets
 │   ├── submit-artifact.sh · process-outbox.sh
 │   ├── review-package.sh · integrate-task.sh
 │   └── tracker-ops.sh                idempotent tracker operations

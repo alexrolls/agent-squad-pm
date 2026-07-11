@@ -26,7 +26,8 @@ FRONTEND_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
 QA_CMD=null
 REVIEWER_CMD="gemini --yolo \"$(cat '{prompt_file}')\""
 TEAM_DEFAULT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
-TASK_FAST_CMD=null               # Optional task-level override for explicit model-profile: fast
+TASK_FAST_CMD=null               # Optional task-level override for explicit or auto-detected
+                                 # low-risk documentation/format/test/config tasks
 TASK_STANDARD_CMD=null           # Optional task-level override; null falls back to the role command
 TASK_STRONG_CMD=null             # Optional override for security/schema/concurrency/contract work
 ```

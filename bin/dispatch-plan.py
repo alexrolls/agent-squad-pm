@@ -11,6 +11,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+from task_metadata import parse_task_metadata
+
 
 MARKER_RE = re.compile(r"^\s*\[([\w-]+)\]")
 
@@ -25,23 +28,7 @@ def last(task: dict, *names: str) -> int:
 
 
 def metadata(task: dict) -> dict:
-    result = {"parallelSafe": False, "files": [], "resources": [], "track": None}
-    text = str(task.get("description") or "")
-    for line in text.splitlines():
-        match = re.match(r"^\s*(parallel-safe|files|resources|track)\s*:\s*(.+?)\s*$", line, re.I)
-        if not match:
-            continue
-        key, value = match.group(1).lower(), match.group(2).strip()
-        if key == "parallel-safe":
-            result["parallelSafe"] = value.lower() in {"true", "yes", "1"}
-        elif key in {"files", "resources"}:
-            result[key] = [item.strip() for item in value.split(",") if item.strip()]
-        else:
-            result["track"] = value.lower()
-    if not result["track"]:
-        haystack = "%s\n%s" % (task.get("title") or "", text)
-        result["track"] = "frontend" if re.search(r"\b(frontend|client|browser|component|css|ui)\b", haystack, re.I) else "backend"
-    return result
+    return parse_task_metadata(task.get("description"), task.get("title"))
 
 
 def resources(task: dict) -> set[str]:

@@ -16,6 +16,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+from task_metadata import is_fast_task, parse_task_metadata
+
 
 MARKER_RE = re.compile(r"^\s*\[([\w-]+)\]")
 CURRENT_MARKERS = {
@@ -284,37 +287,19 @@ def cmd_sync(args) -> None:
     write_json(projection_path, next_projection)
 
 
-def parse_metadata(text: str) -> dict:
-    result = {}
-    aliases = {
-        "track": "track",
-        "parallel-safe": "parallelSafe",
-        "files": "files",
-        "resources": "resources",
-        "model-profile": "modelProfile",
-    }
-    for line in text.splitlines():
-        match = re.match(r"^\s*(track|parallel-safe|files|resources|model-profile)\s*:\s*(.+?)\s*$", line, re.I)
-        if not match:
-            continue
-        key = aliases[match.group(1).lower()]
-        value = match.group(2).strip()
-        if key == "parallelSafe":
-            result[key] = value.lower() in {"true", "yes", "1"}
-        elif key in {"files", "resources"}:
-            result[key] = [item.strip() for item in value.split(",") if item.strip()]
-        else:
-            result[key] = value.lower()
-    return result
-
-
 def model_profile(task: dict, metadata: dict) -> str:
     explicit = metadata.get("modelProfile")
     if explicit in {"fast", "standard", "strong"}:
         return explicit
     text = "%s\n%s" % (task.get("title") or "", task.get("description") or "")
-    if re.search(r"\b(auth|security|permission|tenant|migration|schema|concurren|race|crypt|contract|public api)\b", text, re.I):
+    if re.search(
+        r"\b(?:auth\w*|security|permissions?|tenant|migrations?|schemas?|concurren\w*|races?|crypt\w*|contracts?|public\s+api)\b",
+        text,
+        re.I,
+    ):
         return "strong"
+    if is_fast_task(task, metadata):
+        return "fast"
     return "standard"
 
 
@@ -358,7 +343,7 @@ def cmd_packet(args) -> None:
     if not task:
         raise SystemExit("runtime-state: task '%s' not present in %s" % (args.task, args.tasks))
 
-    metadata = parse_metadata(task.get("description") or "")
+    metadata = parse_task_metadata(task.get("description"), task.get("title"))
     profile = model_profile(task, metadata)
     key = safe_key(args.task)
     artifact_dir = workspace / "artifacts" / key / ("attempt-%s" % args.attempt)
