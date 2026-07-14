@@ -1,7 +1,9 @@
 # Autonomous safety guardrails
 
-Apply this policy to every role, script, hook, and adapter. Unknown actions,
-targets, parsers, environments, or authorization state are denied.
+Every component must honor this policy, but enforcement is layered: agent sandboxes
+constrain ordinary roles, tracker/integration brokers constrain workflow writes, and the
+release policy gate constrains digest-pinned production hooks. Unknown actions, targets,
+parsers, environments, or authorization state are denied.
 
 ## Authority model
 
@@ -19,11 +21,9 @@ Silence never approves. An `[escalation]` involving a sensitive action must use
 
 ## Denied-action documentation
 
-Every **DENY** hit while an agentic team or a dedicated agent acts on behalf of a
-[task] must be documented at the ticket level. The enforcing component (supervisor,
-dispatcher, or release executor — never the denied agent itself) posts one
-idempotent `[DENIED ACTION]` comment via `bin/tracker-ops.sh record-denial`,
-carrying:
+The release executor automatically documents a **DENY** from the normalized
+production-plan gate at `[task]` level. It posts one idempotent `[DENIED ACTION]`
+comment via `bin/tracker-ops.sh record-denial`, carrying:
 
 - `denial-id` — the idempotency token, so retries never duplicate the record;
 - `actor` — which agent or team role attempted the action;
@@ -35,7 +35,10 @@ carrying:
 This record is audit evidence, not a workflow signal: it never changes the
 [task] status, never grants authority, and never softens the denial. Failing to
 post it is an andon for the enforcing component, but the denial stands whether
-or not the comment lands.
+or not the comment lands. Generic launcher, sandbox, path, actor, and broker
+preflight refusals occur before a safe authenticated `[task]` projection is always
+available; they stay in protected runtime logs unless an owning deterministic
+component explicitly records them. Do not claim blanket tracker coverage.
 
 ## Always denied to autonomous agents
 
@@ -44,7 +47,7 @@ or not the comment lands.
   raw device, partition, or filesystem commands; mutation of `.git`, another
   attempt, audit logs, policy, broker, approval store, or production credentials.
 - **Databases/data:** `DROP DATABASE`/`DROP SCHEMA`, `TRUNCATE`, uncontrolled
-  bulk mutation, destructive restore/down migration, disabling constraints,
+  table/object drops, bulk mutation, destructive restore/down migration, disabling constraints,
   backups, replication, or audit, and access to direct production credentials.
 - **Infrastructure:** destroy-all; deletion/termination of production instances,
   clusters, databases, volumes, state, keys, backups, logging, networks, DNS, or
@@ -65,21 +68,23 @@ or not the comment lands.
   privileged executor, editing this policy to weaken it, forging actors or
   approvals, or disabling the supervisor/audit trail.
 
+`DELETE`, `REPLACE`, destructive migrations/data effects, resource termination, and
+arbitrary rollback are break-glass actions outside Startup Factory. A human approval
+cannot turn an always-denied action into an allowed agent action.
+
 ## Human approval required
 
 - Any production infrastructure, IAM, network, DNS, certificate, billing,
   region, capacity, schema, backfill, or data mutation.
-- Any plan containing a replacement or deletion, even when a provider calls it
-  an update.
-- An arbitrary rollback, failover, traffic shift, disaster-recovery action, or
-  destructive migration step.
+- A non-destructive failover or traffic shift with a predeclared bounded target and
+  recovery path. Arbitrary rollback and destructive disaster-recovery steps remain denied.
 - Cost or scale changes above configured zero-default thresholds.
 - External communication beyond scoped project-management and repository
   collaboration records.
 
-An approval binds the exact action digest, environment, target, [feature],
-commit, artifact, plan digest, approver, expiration, and one-use nonce. A normal
-project-management comment is not authorization.
+An approval binds the exact action digest, hook argv/executable digests, environment,
+target, [feature], commit, artifact, plan digest, approver, expiration, and one-use nonce.
+A normal project-management comment is not authorization.
 
 ## Autonomously allowed
 
@@ -89,21 +94,103 @@ project-management comment is not authorization.
   commits on task branches; controlled integration through the integrator.
 - Production release of the exact reviewed immutable artifact only when the
   trusted deployment configuration explicitly selects `automatic`, the
-  normalized plan contains no denied/approval-only change, and independent
-  verification succeeds.
+  normalized plan contains no denied/approval-only change, a protected external
+  `verifyDelivery` attestor proves OS role isolation, protected planning
+  isolation, and approval authenticity
+  for the exact feature commit, `integrationEvidenceDigest`, and
+  `productAcceptanceDigest`, and independent production verification succeeds.
 - Automatic rollback only to the transaction's immediately previous immutable
   artifact, when the trusted plan declares it safe and an objective health check
   failed.
 
 ## Enforcement boundaries
 
-`bin/policy-check.py` is a mandatory fail-closed gate for structured production
-hooks. Its built-in baseline cannot be weakened by project config. It rejects
-shell syntax and known destructive operations before a subprocess starts.
+Pre-integration launch and workspace handling are also fail closed:
 
-This repository policy is defense in depth, not an operating-system security
-boundary. Run ordinary agents without production credentials; give the release
-executor a separate short-lived, target-scoped identity via
-`credentialEnvFile`; enforce no-delete/no-DDL/no-admin privileges in the cloud,
-database, secret store, and CI runner; sandbox agent write access to its worktree.
-No prompt or regular expression can compensate for an over-privileged identity.
+- `TEAMWORK_ROOT` must be repository-relative, cannot contain `..`, and every
+  managed child path is resolved before a read, directory creation, or write.
+  Absolute roots and every existing symlink component are rejected, including a
+  link from one in-repository team workspace to another. This is defense in
+  depth; the OS sandbox must still prevent races and writes outside the assigned
+  worktree.
+- LLM processes start under `env -i`. Only names in `AGENT_ENV_ALLOWLIST`, fixed
+  `STARTUP_FACTORY_*` role metadata, a short-lived per-instance outbox signing
+  capability, and
+  `AWS_EC2_METADATA_DISABLED=true` are passed through. Never add a secret,
+  production credential, deploy token, SSH agent socket, or privileged runtime
+  endpoint to that allowlist. Known cloud/release variables are refused by the
+  launcher; tracker credentials are also refused in `broker`/`lead` mode. The
+  shipped default omits `HOME` so ambient credential stores are not exposed. If a
+  model CLI requires `HOME`, point it at a dedicated, minimally populated sandbox
+  home before explicitly adding the name to the allowlist.
+  `env -i` does not block network traffic or filesystem reads by itself. The
+  required OS/container/CI sandbox and identity policy must deny metadata-service
+  routes, host sockets, undeclared egress, and paths outside the assigned mount.
+- The release executor uses three additional positive environment allowlists:
+  non-secret planning/attestation/approval variables, minimum tracker-broker
+  variables, and the non-secret release-hook base. Credential-file names require
+  a fourth explicit credential-name allowlist; they are never inherited by
+  planning or agent processes. It also supplies fixed operational values: a
+  `PATH` fallback, canonical `TRACKER_PROJECT_ROOT`, and
+  `STARTUP_FACTORY_RELEASE_EXECUTOR=1`; none carries a secret.
+
+`bin/policy-check.py` is a mandatory fail-closed gate for structured, externally
+installed production hooks. Its built-in baseline cannot be weakened by project config.
+It rejects shell syntax and known destructive operations before a subprocess starts.
+The release executor also requires external protected config/state, exact file and hook
+digests, an OS lock, canonical plan effects, and structured status/verification evidence.
+Privileged hooks are dedicated pinned executables—generic interpreters are
+rejected—and cannot receive the agent repository path or run from it.
+The source-consuming `plan` wrapper is also dedicated and pinned, but it must
+cross a stronger OS boundary: a separate identity/container/VM/remote CI
+workload with the credential file and protected state unmounted and no production
+egress. The protected `planningIsolation` config is mandatory in both modes;
+automatic delivery additionally requires its external attestor to confirm the
+same provider. The apply wrapper receives the exact earliest authorization
+expiry and must enforce it with a trusted provider-side clock immediately before
+mutation.
+
+Tracker markers, names in tracker signatures, and comments are workflow routing
+evidence, not authenticated security principals. They cannot grant gate or
+production authority. Automatic production requires the external delivery
+attestation; approval-required production requires the external exact-manifest
+verifier. Task-mode outbox writes remain bound to the canonical execution
+record. Protocol gate markers additionally require a valid HMAC capability for
+the exact launcher-created role instance; the broker derives the effective actor
+from its protected verifier record, never from producer JSON or tracker text.
+Capabilities bind the canonical repository/workspace, team, feature, role,
+execution kind, instance, and expiry. A newer launch of the same instance
+supersedes the old capability. A tracker signature alone never satisfies that
+boundary.
+
+Verifier records live below the Git common directory, outside linked task
+worktrees, with owner-only modes. That placement and file mode are defense in
+depth, not same-UID isolation: the required OS/container sandbox must make the
+broker capability directory unreadable and unwritable to every agent process
+while allowing only the deterministic launcher/broker to access it. It must also
+prevent an agent from inspecting another process's environment or command line.
+If this separation is unavailable, gate-marker authentication is not safe; do
+not run autonomous gate publication.
+
+Repository code and prompts are defense in depth, not an operating-system security
+boundary. In broker mode no LLM—including the team lead or integrator—receives tracker
+credentials. Run every agent in a worktree-scoped sandbox that cannot access protected
+broker/release files or undeclared network targets. Give the release executor a separate
+short-lived, target-scoped identity via `credentialEnvFile` that is not shared
+with ordinary agents; enforce no-delete/no-DDL/
+no-admin privileges in the cloud, database, secret store, and CI runner. No prompt,
+sandbox configuration flag, or regular expression can compensate for an
+over-privileged runner or identity.
+Enforce protected branches, no force-push, required review, and trusted CI in the
+git host. `trustedBaseRef` verifies integration-chain provenance but is not a
+substitute for those operator-owned controls.
+
+Process lifecycle authority follows the same boundary. The deterministic launcher
+stores authenticated PID, process start identity, launch token, and (when used) tmux
+pane identity below the external mode-0700 `BROKER_LIFECYCLE_ROOT`. Every parent path
+is ownership/mode checked and symlinks are refused. Agent sandboxes must be unable to
+read or write that root. `.teamwork/<team>/pids` contains logs and non-authoritative
+markers only: its contents are never passed to `kill`, `kill -0`, or tmux. A missing,
+modified, unauthenticated, or process-identity-mismatched protected record fails closed
+without signalling. If protected lifecycle state is not configured, manual launches
+remain unmanaged and `stop` deliberately refuses to signal processes.

@@ -8,6 +8,7 @@ performant service boundary.
 ```
 ROSTER=principal-backend-architect senior-technical-product-manager senior-staff-engineer senior-qa-engineer integrator
 PROTOCOL_TEAM_LEAD=principal-backend-architect
+PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-backend-architect
 PROTOCOL_REVIEWER=senior-qa-engineer
 PROTOCOL_QA=senior-qa-engineer

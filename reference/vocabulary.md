@@ -85,9 +85,13 @@ workflow — only the adapter knows the shape.
 
 ## Comment markers
 
-Kept in sync with `reference/orchestration.md` → *Structured comments* — that table is authoritative for authorship and required content.
+Kept in sync with `reference/orchestration.md` → *Structured comments* — that
+table is authoritative for workflow role routing and required content. Claimed
+tracker authorship is not security authentication or production authorization.
 
-Markers are the machine-readable protocol prefixes that begin every coordination comment. The full authorship rules and required content live in `reference/orchestration.md` → *Structured comments*. Vocabulary-level meanings:
+Markers are the machine-readable protocol prefixes that begin every coordination
+comment. The full workflow-role rules and required content live in
+`reference/orchestration.md` → *Structured comments*. Vocabulary-level meanings:
 
 | Marker | One-line meaning |
 |---|---|

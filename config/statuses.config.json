@@ -10,7 +10,7 @@
         "transitions": ["Resolved"],
         "tool": { "Linear": "In Progress", "Jira": "In Progress", "GitHubIssues": "milestone open, >=1 task active (derived)", "Markdown": "[Active]" } },
       { "name": "Resolved", "kind": "completed", "terminal": true,
-        "owner": { "role": "team-lead" },
+        "owner": { "role": "release-executor" },
         "transitions": [],
         "tool": { "Linear": "Completed", "Jira": "Done", "GitHubIssues": "milestone closed", "Markdown": "[Resolved]" } }
     ]
@@ -45,7 +45,9 @@
     "architecture-approval": { "authorizedRoles": ["principal-architect"] },
     "review-approval":       { "authorizedRoles": ["reviewer", "qa"] },
     "review-findings":       { "authorizedRoles": ["reviewer", "qa", "principal-architect"] },
-    "product-approval":      { "authorizedRoles": ["team-lead", "senior-technical-product-manager"] },
-    "product-pushback":      { "authorizedRoles": ["team-lead", "senior-technical-product-manager"] }
+    "product-approval":      { "authorizedRoles": ["product-manager", "team-lead", "senior-technical-product-manager"] },
+    "product-pushback":      { "authorizedRoles": ["product-manager", "team-lead", "senior-technical-product-manager"] },
+    "production-approval":   { "authorizedRoles": ["human"] },
+    "deployment":            { "authorizedRoles": ["release-executor"] }
   }
 }

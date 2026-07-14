@@ -1,32 +1,58 @@
 # Startup Factory
 
-**Ship faster with an AI engineering squad you can see, steer, and trust.**
+> **Turn your product board into a governed software delivery system.**
 
-Startup Factory turns Linear, Jira, GitHub Issues, or local Markdown into the
-control plane for agentic development. Give the squad a feature and it plans,
-designs, implements, reviews, validates, and integrates the work while your
-project-management tool remains the single source of truth.
+**Startup Factory is an agentic orchestration framework for end-to-end product
+delivery.** Connect the project-management tool your team already loves—Linear,
+Jira, GitHub Issues, local Markdown, or your own adapter—and make it the durable
+control plane for a cross-functional team of AI agents.
 
-You get the speed of task-level parallelism without giving up control. Safe work
-runs concurrently; architecture, QA, and integration stay behind explicit
-gates. Plans, ownership, progress, decisions, evidence, blockers, and delivery
-state remain visible where your team already manages the project.
+Put an opted-in `[task]` in a queued or blocked state—Todo or Blocked on the
+shipped Linear mapping. When automation is enabled and scheduled, the
+deterministic PM supervisor checks the board every three minutes by default,
+routes work by its explicit team preset (or your configured default), and drives
+it through architecture, implementation, review, QA, and integration. When your
+release policy and exact approval allow it, a separate credential-isolated
+executor deploys the reviewed immutable artifact, verifies the target, and only
+then closes the parent `[feature]`.
+
+Bring your own models, repository, stack, tracker, and infrastructure.
+Provider-neutral structured hooks can target production in any cloud,
+platform, cluster, datacenter, or internal environment that can implement the
+plan/apply/status/verify contract. Startup Factory supplies the delivery
+protocol, team topology, deterministic runtime, recovery model, and safety
+boundaries around them.
+
+**Project-management native · Multi-model · Cloud agnostic · Fail closed ·
+Auditable**
+
+This is not a hidden chatbot loop. Plans, ownership, progress, decisions,
+evidence, blockers, approvals, policy denials, and deployment state remain
+visible in the same board where your team manages the product. Tracker text and
+claimed authorship are workflow evidence, never security authentication or
+production authority.
 
 ![Startup Factory demo](exports/execmatchai-issues-57s-70s.gif)
 
 ```text
-[feature] -> design gate -> safe parallel [tasks] -> review -> QA -> validated integration -> [Ready to deploy]
+Todo / Blocked -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
 ```
 
-## The security gateway for AI builders
+> **Safe by default:** board automation and production delivery both ship
+> disabled. Ordinary agents never receive production credentials; enabling a
+> release requires protected external configuration, hooks, identities, and
+> verification.
 
-Autonomous agents are only as useful as the boundaries around them. If you are
-building with AI teams, Startup Factory's strongest argument is not the speed —
-it is the **fail-closed security gateway** that stands between every agent and
-anything destructive:
+## Layered safety boundaries for AI builders
 
-- **A code-owned policy gate.** `bin/policy-check.py` screens every privileged
-  structured command and release plan before a subprocess starts. Its deny
+Autonomous agents are only as useful as the boundaries around them. Startup
+Factory supplies fail-closed workflow and release controls, but repository code
+is not an operating-system security boundary. Ordinary agents still require a
+real worktree-scoped sandbox and least-privilege identity:
+
+- **A code-owned production policy gate.** `bin/policy-check.py` screens every
+  privileged release-hook command and normalized production plan before that
+  subprocess starts. Its deny
   baseline — shell composition, privilege escalation, filesystem/database/
   infrastructure destruction, secret dumping, metadata-credential access,
   encoded-command bypasses — is owned by the code: project configuration can
@@ -35,17 +61,17 @@ anything destructive:
   **REQUIRE HUMAN APPROVAL**, or **ALLOW** (`reference/guardrails.md`).
   Approvals bind exact digests, environments, targets, expirations, and one-use
   nonces. Silence never approves; unknown anything is denied.
-- **A ticket-level audit trail for blocked actions.** When an agentic team or a
-  dedicated agent attempts a denied action, the enforcing component documents
-  it on the ticket as an idempotent `[DENIED ACTION]` comment
-  (`bin/tracker-ops.sh record-denial`): which agent acted, a full sanitized
-  description of what it tried to do, why the policy gate refused, and the
-  explicit statement that the action was prevented and never executed. Your
-  tracker shows not only what agents did — but what they were stopped from doing.
-- **Least-privilege agent sandboxes.** LLM processes start under `env -i` with a
-  positive environment allowlist; secrets, cloud credentials, deploy tokens, and
-  metadata endpoints are refused. In broker mode no LLM — including the team
-  lead — ever holds tracker credentials.
+- **A `[task]`-level release-denial trail.** A normalized production-plan denial
+  is projected idempotently as `[DENIED ACTION]` through
+  `bin/tracker-ops.sh record-denial`. Other launcher, path, queue, and identity
+  preflight refusals fail before mutation and remain in protected runtime logs;
+  they are not falsely advertised as tracker records.
+- **Least-privilege agent sandboxes.** In enforced mode every LLM process and
+  `WORKTREE_SETUP` runs as `AGENT_SANDBOX_RUNNER --workdir <absolute> --
+  /usr/bin/env -i ...`. The launcher accepts only a protected executable outside
+  the repository; that runner must enforce filesystem, process, network, and IAM
+  isolation. In broker mode no LLM—including the team lead—receives tracker
+  credentials.
 - **Contained workspaces.** Every implementer is isolated in its own git
   worktree; tracker file paths are symlink-safe and confined to their configured
   root; integration and terminal transitions are serialized, verified by
@@ -54,9 +80,22 @@ anything destructive:
   deterministic (not an LLM), disabled until explicitly enabled, and stops the
   pass rather than fabricating state when anything is malformed.
 
-The result: you can hand real delivery work to AI agents and still answer, from
-your own tracker, the questions an auditor would ask — who did what, who
-approved what, and what was denied.
+The built-in authority policy is intentionally simple:
+
+| Decision | Representative actions | Who can authorize it |
+|---|---|---|
+| **Always deny** | Path escape or recursive/bulk deletion outside disposable task scope; database/schema drops or truncation; production instance, cluster, storage, network, DNS, certificate, key, backup, or log deletion; secret extraction; privilege escalation; wildcard IAM; force-push/history rewrite; sandbox or policy bypasses | Nobody inside Startup Factory. Use a separate human-operated break-glass process. |
+| **Require exact human approval** | Non-destructive production infrastructure, IAM, network, DNS, certificate, capacity, schema, backfill, traffic, cost, or scale changes; external communication | A protected verifier must authorize the exact manifest, target, commit, artifact, digests, expiry, and one-use nonce. A tracker comment is not approval. |
+| **Allow within scope** | Read-only inspection, plans, tests, builds, linting, worktree-local edits, task-branch checkpoints, brokered integration, health checks, and a policy-clean immutable-artifact release | The assigned role or deterministic executor, within its path, identity, target, quota, and lifecycle boundaries. |
+
+The full non-bypassable list and enforcement boundary are in
+[`reference/guardrails.md`](reference/guardrails.md).
+
+The result: you can hand real delivery work to AI agents and inspect, from your
+tracker, the workflow actor, workflow approvals, production approval ID, and
+policy denials for each delivery. Authenticated production approver identity
+remains in protected transaction state; tracker authorship is never treated as
+authentication.
 
 ## Why Startup Factory
 
@@ -68,6 +107,8 @@ approved what, and what was denied.
 | **Keep quality gates explicit** | Architecture approval precedes implementation. Review uses an exact package, QA re-runs required checks, and the integrator runs your build, test, and lint commands before merging. |
 | **Recover instead of restarting** | Immutable task packets, durable events, checkpoint branches, an idempotent outbox, and attempt-aware relaunches make interrupted work inspectable and recoverable. |
 | **Keep your stack and your tracker** | The same workflow runs across languages, frameworks, LLMs, and project-management tools. Start offline with Markdown and switch adapters without rewriting the process. |
+| **Turn the board into a safe delivery queue** | A deterministic cron/service pass discovers semantic queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only when action is required. |
+| **Keep dangerous authority out of agents** | One deny/approval/allow contract governs every role. The code gate blocks dangerous privileged release hooks and plans; your required OS sandbox and least-privilege identities enforce ordinary-agent filesystem, network, process, and IAM boundaries. |
 
 ## Full transparency in your tracker
 
@@ -83,30 +124,47 @@ projected back into the configured tool.
 | Live progress | A mechanically updated `[progress]` record on every task and a compact `[digest]` across the feature |
 | Validation and review | Evidence records, changed-file lists, review findings, exact artifact paths, and explicit `NOT validated` declarations |
 | Blockers and human decisions | Proven `blocked-by` relationships plus escalations with a question, options, and a default if you are unavailable |
-| Denied actions | Idempotent `[DENIED ACTION]` audit comments: which agent attempted a forbidden action, what it tried to do, why the policy gate refused, and that it was never executed |
-| Delivery | The integrated commit, completed validation gates, and the final move to `[Ready to deploy]` |
+| Release-policy denials | Idempotent `[DENIED ACTION]` audit comments for normalized production plans; other preflight refusals remain in protected runtime logs |
+| Delivery | The integrated commit, completed validation gates, `[Ready to deploy]`, and an idempotent `[deployment]` projection through verified production |
 
 Use as much of the system as your project needs:
 
 | Layer | What it gives you | Where |
 |---|---|---|
-| **1. PM port** | One AI agent creates/tracks/completes `[features]` and `[tasks]` in any tracker through one tool-agnostic workflow. | `SKILL.md`, `reference/`, `adapters/` |
+| **1. PM port** | One AI agent creates/tracks/completes `[features]` and `[tasks]` in any configured tracker through one tool-agnostic workflow. | `SKILL.md`, `reference/`, `adapters/` |
 | **2. Governed squad** | A lead coordinates, an architect gates design, specialists implement, QA verifies, and an integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
 | **3. Task-driven runtime** | Event-driven dispatch, bounded parallel waves, model routing, exact review packages, durable handoffs, and recoverable integration. | `bin/dispatch.sh`, `bin/runtime-state.py`, `bin/integrate-task.sh` |
-| **4. Preset teams** | Five ready-made rosters for full-stack, backend, frontend, security, and infrastructure work, launchable with one command. | `teams/`, `bin/launch-team.sh` |
+| **4. Preset teams** | Five ready-made rosters for full-stack, backend, frontend, security, and infrastructure work, all resolved through the same team launcher. | `teams/`, `bin/launch-team.sh` |
+| **5. Portfolio automation** | One bounded cron/service pass scans generic queued/blocked statuses, bootstraps isolated feature runs, and reconciles comments, blockers, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
+| **6. Safe production delivery** | Structured provider-neutral plan/apply/status/verify hooks, hard guardrails, isolated credentials, crash recovery, and bounded rollback. | `bin/release-feature.py`, `bin/policy-check.py`, `reference/deployment.md` |
 
 Everything is inspectable: plain Markdown, shell scripts, small Python utilities,
-and git. There is no coordinator service or database to host. The system is
-**language-, framework-, tracker-, and LLM-agnostic** because it manages the
-delivery contract around the code rather than assuming anything about the stack.
+and git. There is no application server or coordinator database to host;
+schedulers invoke bounded scripts, and `--watch` is an optional foreground
+clock owner. The system is **language-, framework-, tracker-, and LLM-agnostic**
+because it manages the delivery contract around the code rather than assuming
+anything about the stack.
+
+## Choose your operating mode
+
+Adopt only the layers you need; each mode keeps the same vocabulary and tracker
+history.
+
+| Your goal | Runtime shape | Start here |
+|---|---|---|
+| **Give one agent a reliable PM workflow** | Your existing agent reads `SKILL.md`; no daemon, external tracker, or team launcher is required. | [Two-minute offline quick start](#quick-start-2-minutes-no-accounts) |
+| **Launch a governed specialist team** | The launcher and dispatcher coordinate task-scoped workers, gate roles, isolated worktrees, and serialized integration. | [Run a whole team](#a-whole-team) |
+| **Continuously pull work from the board** | Cron, a service timer, or a hosted scheduler invokes one bounded deterministic `pm-agent.py --once` pass. | [Automate the board](#automate-the-board-and-production-delivery) |
+| **Deploy approved work to a production target** | A protected deterministic executor runs digest-pinned provider hooks with isolated credentials and independent verification. | [Configure production delivery](#production-delivery-configuration) |
 
 ---
 
 ## Table of contents
 
-- [The security gateway for AI builders](#the-security-gateway-for-ai-builders)
+- [Layered safety boundaries for AI builders](#layered-safety-boundaries-for-ai-builders)
 - [Why Startup Factory](#why-startup-factory)
 - [Full transparency in your tracker](#full-transparency-in-your-tracker)
+- [Choose your operating mode](#choose-your-operating-mode)
 - [Requirements](#requirements)
 - [Quick Start (2 minutes, no accounts)](#quick-start-2-minutes-no-accounts)
 - [Install into your repository](#install-into-your-repository)
@@ -114,8 +172,10 @@ delivery contract around the code rather than assuming anything about the stack.
 - [Connect your tracker](#connect-your-tracker)
 - [Configure](#configure)
 - [Use it](#use-it)
+- [Automate the board and production delivery](#automate-the-board-and-production-delivery)
 - [The five preset teams](#the-five-preset-teams)
 - [How it works](#how-it-works)
+- [Documentation map](#documentation-map)
 - [Directory map](#directory-map)
 - [Extend it](#extend-it)
 - [Troubleshooting](#troubleshooting)
@@ -131,11 +191,23 @@ Cursor, Windsurf, Cline, …).
 **For multi-agent teams, additionally:** the launcher (`bin/launch-team.sh`) needs
 `bash` + `git`; every implementation task uses a task branch and isolated
 worktree. `tmux` is optional but recommended — without it, agents run as
-background processes.
+background processes. Autonomous protocol gates additionally require a real
+OS/container sandbox that hides Git-common-dir broker capability state and other
+process environments from agent roles; Unix file modes alone do not isolate
+same-UID processes. Configure that protected external executable as
+`AGENT_SANDBOX_RUNNER` before enabling autonomous execution.
 
 **Tracker access is optional.** The default `Markdown` tracker stores everything
 in local files, so you can run the whole thing offline. Connect Linear/Jira/GitHub
-when you're ready — via MCP **or** a plain REST API key.
+when you're ready—via MCP, REST, or the `gh` CLI, depending on the adapter.
+
+**For cron/service automation:** use one scheduler instance and a scriptable,
+explicitly scoped adapter (REST/CLI/files; a cron process cannot invoke an MCP
+client). The queued/blocked scan discovers new work; registered runs are
+re-authorized on every pass through an exhaustive per-feature export. Production
+delivery additionally needs protected external structured hooks/config/state,
+an external identity/isolation attestor for automatic mode, and a separate
+short-lived credential environment that ordinary agents never inherit.
 
 ---
 
@@ -212,6 +284,9 @@ default:
 - `config/project-management.config.md`
 - `config/team.config.md`
 - `config/statuses.config.json`
+- `config/automation.config.json`
+- `config/deployment.config.json`
+- `config/guardrails.config.json`
 
 To replace those config files with upstream defaults too:
 
@@ -225,9 +300,25 @@ To install or update a non-default location:
 bash /path/to/startup-factory/bin/update-installed-skill.sh --install-dir .codex/pm
 ```
 
-Multi-agent teams work on a git branch and use a task branch plus **git
-worktree** for every implementation attempt, so the bundle must live inside a
-git repository. `.teamwork/` and `.workspace/` are already git-ignored.
+The updater requires `git` and `rsync`. Its full operator options are:
+
+| Option | Purpose |
+|---|---|
+| `--install-dir PATH` | Override installation autodetection. |
+| `--remote-url URL` | Fetch a different reviewed upstream (`STARTUP_FACTORY_REMOTE_URL`). |
+| `--ref REF` | Select a branch or tag (`STARTUP_FACTORY_REF`, default `main`). |
+| `--overwrite-config` | Replace all six preserved project configuration files. |
+| `--dry-run` | Show the `rsync` change set without writing it. |
+
+`STARTUP_FACTORY_SKILL_NAME` overrides the installation directory name used for
+autodetection.
+
+Multi-agent teams require the **target project** to be a git repository because
+every implementation attempt receives a task branch and git worktree. The skill
+bundle may live inside that repository for interactive/manual use; autonomous
+automation instead requires a protected external installation. Add `.teamwork/`
+and `.workspace/` to the target repository's root `.gitignore`—ignore rules
+inside a nested skill installation do not cover project-root runtime paths.
 
 Two execution modes (`config/team.config.md` → `EXECUTION`) share the same
 task-branch/worktree isolation: **`sequential`** runs one task worker at a time;
@@ -314,22 +405,31 @@ Then wire its access (skip entirely for `Markdown`):
 |---|---|---|
 | **Markdown** | none — local files | `MARKDOWN_ROOT` (default `.workspace/task-manager`) |
 | **Linear** | MCP **or** REST API key | `LINEAR_ACCESS=mcp\|rest`; for `rest`, export `LINEAR_API_KEY` |
-| **Jira** | MCP **or** REST API token | `JIRA_ACCESS=mcp\|rest`, `JIRA_PROJECT_KEY`; for `rest`, export `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` |
-| **GitHub Issues** | `gh` CLI **or** GitHub MCP | `GITHUB_REPO` (or infer from git remote), `GITHUB_USE_MCP` |
+| **Jira** | MCP **or** REST API token | `JIRA_ACCESS=mcp\|rest`, exact `JIRA_PROJECT_KEY` and child `JIRA_TASK_ISSUE_TYPE`; for `rest`, export `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` |
+| **GitHub Issues** | `gh` CLI **or** GitHub MCP | `GITHUB_REPO` (explicitly required for automation; interactive use may infer from git remote), `GITHUB_USE_MCP` |
 
 The **REST/API-key** paths mean harnesses without an MCP client (Codex, Aider,
 plain scripts) are first-class. Each `adapters/<Tool>.md` has an *Access
-mechanisms* section with the exact setup (MCP config block or `curl` templates).
+mechanisms* section with the exact setup (MCP, REST/`curl`, `gh`, or local-file
+instructions as appropriate).
+Scriptable remote operations have a 60-second inner deadline by default;
+operators may set `TRACKER_OPERATION_TIMEOUT_SECONDS` to an integer from 1
+through 300, while automation's `operationTimeoutSeconds` remains the outer
+process-group bound.
 
-**Credentials live in environment variables, never in the config files.** Switching
-trackers later is a one-line change to `PRODUCT_MANAGEMENT_TOOL` — no workflow,
-prompt, or role brief mentions a tracker by name.
+**Credentials live in environment variables, never in the config files.** Once
+access is configured, switching among shipped adapters is a one-line change to
+`PRODUCT_MANAGEMENT_TOOL`; no workflow, prompt, or role brief mentions a tracker
+by name. A new tool also needs its adapter contract and deterministic
+`tracker-ops.sh` backend before unattended dispatch or automation can use it.
 
 ---
 
 ## Configure
 
-Two files, each the "one file you edit per project" for its layer.
+Core team operation uses two files. Autonomous operation adds three fail-closed
+JSON templates. Project policy stays versioned; an enabled deployment config is
+instead copied to operator-protected storage outside agent mounts.
 
 ### `config/project-management.config.md` — the tracker
 
@@ -344,13 +444,17 @@ Two files, each the "one file you edit per project" for its layer.
 
 ### Configure your board
 
-`config/statuses.config.json` defines the kanban board: every status, its legal
-`transitions`, its `owner` (the team or single agent that works items in that status),
-and per-tracker `tool` mappings. Default board: `Planned → Active → Review → Ready to
-deploy`, with `Blocked` as the parking status for stuck work. Add, rename, or remove
-statuses by editing the JSON — then run `bin/launch-team.sh validate-board` to check it.
-Make sure your tracker has a matching state for every status (the Markdown tracker
-needs nothing).
+`config/statuses.config.json` defines both state machines: every status, legal
+`transitions`, owner, and per-tracker `tool` mapping. The shipped task flow is
+`Planned → Active → Review → Ready to deploy`, with `Blocked` as the
+parking/rework state. The shipped feature flow is
+`Planned → Active → Resolved`. Add, rename, or remove
+statuses by editing the JSON, then run `bin/launch-team.sh validate-board` to
+check the structural graph, reachability, owners, and marker roles. Separately
+verify that your active adapter maps every status to a real tracker state (the
+Markdown tracker needs nothing).
+On the shipped board, only the deterministic `release-executor` owns terminal
+feature status `Resolved`; disabled or unverified delivery remains non-terminal.
 
 ### `config/team.config.md` — the team (only for multi-agent)
 
@@ -358,12 +462,146 @@ needs nothing).
 |---|---|---|
 | Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
 | Task model routing | `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, `TASK_STRONG_CMD` | Optional task-level command overrides selected from packet metadata and conservative risk classification; each falls back to the role command |
-| Coordination | `TEAMWORK_ROOT` (`.teamwork`), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`all`), `EXECUTION` (`sequential`), `MAX_ACTIVE_IMPLEMENTERS` (`null`) | Event-driven supervision with polling fallback; `TRACKER_WRITERS=lead` enables a durable single-writer outbox; `sequential` allows one task worker and `parallel` schedules dependency/resource-safe waves (unset cap defaults to 2) |
-| Validation | `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_SCRIPT` | Your stack's commands; the integrator runs them before every merge (`null` = skip). `VALIDATE_SCRIPT` replaces the three with one repo-owned script that receives the changed-file list |
+| Coordination | `TEAMWORK_ROOT` (`.teamwork`), `AGENT_ENV_ALLOWLIST` (non-secret minimum), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`broker`), `EXECUTION` (`sequential`), `MAX_ACTIVE_IMPLEMENTERS` (`null`) | Canonical symlink-free workspace paths; LLMs start with `env -i`; deterministic broker keeps tracker credentials out of every LLM role; event-driven supervision with polling fallback; bounded sequential/parallel scheduling |
+| Worktree provisioning | `WORKTREE_SETUP` | Non-empty setup command run once inside every fresh task worktree through the same sandbox boundary; autonomous mode rejects null/no-op provisioning. |
+| Agent isolation | `AGENT_SANDBOX_RUNNER`, `AGENT_SANDBOX_ENFORCED` | Protected external `runner --workdir ABSOLUTE -- /usr/bin/env -i …` boundary. The runner, not Startup Factory code, must enforce filesystem, process, network, and identity isolation. |
+| Lifecycle authority | `BROKER_LIFECYCLE_ROOT` | Absolute protected external mode-0700 root for HMAC-authenticated PID/start/tmux identities. Without it, manual processes are unmanaged and `stop` refuses to signal. |
+| Validation | `VALIDATE_BUILD`, `VALIDATE_TEST`, `VALIDATE_LINT`, `VALIDATE_FORMAT`, `VALIDATE_SCRIPT` | Your stack's commands; the integrator runs them before every merge (`null` = skip). `VALIDATE_SCRIPT` replaces all four with one repo-owned script that receives the changed-file list |
 
 Point the `VALIDATE_*` commands at your real build/test/lint (e.g.
 `VALIDATE_TEST="pytest"`) — this is the only place the framework-agnostic
 integrator learns about your stack.
+
+### Automation, deployment, and guardrails
+
+| File | Purpose | Safe default |
+|---|---|---|
+| `config/automation.config.json` | Scan cadence, queued/blocked semantic kinds, run cap, branch/worktree root, allowed/default team presets | `enabled: false` |
+| `config/deployment.config.json` | Disabled template for protected external target/state paths, trusted base, code/hook pins, four positive environment boundaries, attestation/approval hooks, and timeouts | `enabled: false`, `approval-required` |
+| `config/guardrails.config.json` | Project additions to the built-in immutable deny policy and automatic cost/change limits | Zero cost delta; cannot weaken built-ins |
+
+#### Board automation configuration
+
+Copy [`config/automation.config.json`](config/automation.config.json) to
+protected external storage before enabling it. The scheduler reads these keys:
+
+| Key | Shipped value | Meaning |
+|---|---:|---|
+| `schemaVersion` | `1` | Configuration schema; unknown versions fail closed. |
+| `enabled` | `false` | Master switch. A disabled pass launches nothing. |
+| `trustedPath` | `/usr/bin:/bin` | Absolute protected command-search directories used by the scheduler. |
+| `scanIntervalMinutes` | `3` | Board scan interval, from 1 through 1440 minutes. Omit it to retain the three-minute default. Legacy `pollSeconds` is accepted only when this key is absent. |
+| `leaseSeconds` | `900` | Single-host pass lease and bounded stale-recovery window; integer 5–86400. |
+| `operationTimeoutSeconds` | `120` | Outer deadline for each adapter, launcher, and dispatcher child process; integer 5–3600. |
+| `releaseTimeoutSeconds` | `7200` | Separate outer deadline for the complete release transaction; integer 60–86400 and at least the conservative full hook-path bound. |
+| `maxFeaturesPerPass` | `2` | Maximum new feature runs bootstrapped in one pass, from 1–1000; existing runs reconcile first. The omission fallback is 1. |
+| `requireAgentSandbox` | `true` | Mandatory invariant; `false` or missing is rejected. |
+| `requireSingleTrackerWriter` | `true` | Mandatory invariant requiring deterministic broker writes. |
+| `scanStatusKinds` | `queued`, `blocked` | Adapter-neutral task kinds to discover. The shipped Linear mapping is Todo and Blocked. |
+| `reconcileRegisteredRuns` | `true` | Re-export and re-authorize every unfinished registered feature on each pass. |
+| `baseRef` | `main` | Feature-run starting ref whose resolved base commit is recorded immutably. Production provenance is anchored separately by deployment `trustedBaseRef`. |
+| `branchPrefix` | `factory-` | Prefix for generated feature branches. External IDs are hashed before use in paths or refs. |
+| `workspaceRoot` | `.teamwork/pm-agent` | Repository-relative supervisor workspace and registry root. |
+| `defaultTeamPreset` | `full-stack` | Team used when eligible metadata contains no explicit preset. |
+| `allowedTeamPresets` | all five shipped presets | Exact routing allowlist. Unknown or changed routing pauses the run. |
+| `requireMetadataOptIn` | `true` | Require an explicit latest `automation: enabled` marker before launch. |
+| `metadata.optInKey` | `automation` | Adapter-neutral description/comment key for enablement. |
+| `metadata.teamPresetKey` | `team-preset` | Adapter-neutral description/comment key for specialist-team routing. |
+
+`--print-cron` supports stable minute intervals that divide 60 and whole-hour
+intervals that divide 24. Use a service timer or hosted scheduler for other
+valid intervals, and configure its equivalent of “forbid overlapping runs.”
+The filesystem lease covers one host only.
+
+#### Production delivery configuration
+
+Start with the disabled
+[`config/deployment.production.approval-required.example.json`](config/deployment.production.approval-required.example.json),
+copy it outside the repository and every agent mount, then configure the exact
+target and protected hooks.
+
+```json
+{
+  "enabled": false,
+  "mode": "approval-required",
+  "environment": "production",
+  "target": {
+    "id": "payments-production",
+    "provider": "your-cloud-or-platform",
+    "region": "your-region-or-datacenter",
+    "service": "your-service-or-application"
+  }
+}
+```
+
+Keep `enabled` false until every required external path, digest, hook, identity,
+and verifier below is installed and tested.
+
+| Key group | What to configure |
+|---|---|
+| `enabled`, `mode`, `environment` | Keep disabled until the external trust boundary is ready. Choose `approval-required` or the stricter-attested `automatic` mode; the current executor requires `environment: production`. |
+| `trustedBaseRef` | Protected base ref from which the gap-free integration chain must descend. This does not replace branch protection. |
+| `target` | Set a stable non-secret `id`; add provider-neutral routing such as `provider`, `region`, `service`, account, namespace, or cluster fields needed by your hooks. |
+| `stateRoot`, `trustedPath` | Absolute external release transaction/state root and protected executable-search path. |
+| `gitLfsPolicy`, `maxSourceArchiveBytes`, `maxSourceBytes`, `maxSourceFiles` | Bound and validate the isolated source snapshot consumed by planning. |
+| `approvalTtlSeconds`, `deliveryAttestationTtlSeconds` | Maximum age of exact approval and automatic-delivery attestation evidence. |
+| `planningIsolation` | Declare the protected sandbox provider, separate identity, unmounted credential/state paths, and production-egress posture. Safe templates are intentionally incomplete. |
+| `credentialEnvFile`, `credentialEnvironmentAllowlist` | Mode-0600-or-stricter external credential source and the exact names the privileged hooks may receive. Ordinary agents and plan hooks never inherit it. |
+| `planningEnvironmentAllowlist`, `trackerEnvironmentAllowlist`, `environmentAllowlist` | Three independent positive allowlists for planning, tracker projection, and release hooks. |
+| `trustedCodeDigests`, `trustedHookDigests` | SHA-256 pins for the protected executor/helper set and every dedicated hook executable. |
+| `hooks.plan` | Produce a canonical structured plan from isolated source, binding the exact source archive and immutable `artifactDigest`. Required when delivery is enabled. |
+| `hooks.status`, `hooks.apply`, `hooks.verify` | Read current target state, apply the exact reviewed artifact, and independently prove the deployed version and health. |
+| `hooks.rollback` | Optional bounded recovery hook; automatic rollback may target only the immediately previous immutable artifact matching observed pre-apply status. |
+| `hooks.verifyApproval` | Required by `approval-required`; validate an external exact-manifest authorization. Tracker comments never satisfy it. |
+| `hooks.verifyDelivery` | Required by `automatic`; attest role isolation, planning isolation, and approval authenticity for the exact commit and evidence digests. |
+| `timeoutsSeconds` | Per-hook bounds for plan, status, apply, verify, rollback, approval, and attestation. Their conservative total must fit inside `releaseTimeoutSeconds`. |
+
+| Release mode | What can proceed |
+|---|---|
+| `approval-required` | Apply proceeds for a policy-clean manifest only after the protected `verifyApproval` hook confirms the exact target, commit, artifact, evidence digests, expiry, and nonce. |
+| `automatic` | Only a non-destructive, reversible immutable-artifact release with no approval-only effects and a valid protected `verifyDelivery` attestation. |
+
+The provider hooks are the production-target boundary. Startup Factory does not
+hard-code AWS, Azure, GCP, Kubernetes, VMs, bare metal, or a particular CI/CD
+service; each hook receives and returns the normalized contracts documented in
+[`reference/deployment.md`](reference/deployment.md).
+
+#### Project guardrail additions
+
+[`config/guardrails.config.json`](config/guardrails.config.json) cannot remove or
+override any built-in denial. Its pattern/action lists only add restrictions;
+its numeric keys set operator-owned bounds for otherwise policy-clean automatic
+plans:
+
+| Key | Safe default | Purpose |
+|---|---:|---|
+| `additionalDenyPatterns` | `[]` | Add project-specific forbidden patterns for privileged release-hook argv. |
+| `additionalApprovalRequiredActions` | `[]` | Add project-specific action classes that always need exact human approval. |
+| `maximumAutomaticPlanChanges` | `100` | Bound the number of normalized effects in an automatic release plan. |
+| `maximumAutomaticCostDelta` | `0` | With the zero default, a positive cost delta is denied in automatic mode and approval-only in approval-required mode. |
+| `allowAutomaticRollbackOnlyToPreviousArtifact` | `true` | Allow automatic rollback only to the immediately previous immutable artifact whose digest matches the objectively observed pre-apply state; `false` disables automatic rollback. |
+
+Never put production credentials, privileged hook argv, trust pins, or release
+state in repository config. (`config/team.config.md` intentionally contains
+ordinary agent CLI, setup, and validation commands.) When deployment is enabled,
+use a protected external config and state root, absolute digest-pinned hook
+executables outside the repository, and a credential file outside the repository with
+mode 0600 or stricter, exact credential-name allowlisting, executor/root
+ownership, and no symlink. Generic interpreters are rejected as privileged hook
+executables. The scheduler authenticates and snapshots the external release
+entrypoint/config before its first instruction and passes only positive
+environment allowlists; absent or disabled external trust starts no release
+executor. See `reference/deployment.md` for the exact trusted-code keys,
+environment boundaries, attestation, and hook contracts.
+
+Autonomous launch additionally refuses to start unless
+`TRACKER_WRITERS=broker`, `AGENT_SANDBOX_ENFORCED=true`, and a valid protected
+`AGENT_SANDBOX_RUNNER` are configured. The runner must be an absolute,
+non-symlink executable outside the repository, owned by the executor or root and
+not group/world-writable. Startup Factory validates and invokes that boundary;
+the runner implementation remains responsible for actual OS/container isolation.
+It also requires the external mode-0700 `BROKER_LIFECYCLE_ROOT`, kept outside
+every agent mount, for authenticated PID/start-time/tmux lifecycle authority.
 
 ---
 
@@ -380,38 +618,58 @@ Just talk to your agent in the generic vocabulary:
 
 ### A whole team
 
-1. Set `TEAM_MODE=true`, configure `config/team.config.md` (roles + `VALIDATE_*`).
+1. Set `TEAM_MODE=true`, configure role commands, `WORKTREE_SETUP`, and at least
+   one real `VALIDATE_*` command in `config/team.config.md`. Add `.teamwork/` and
+   `.workspace/` to the target repository's root `.gitignore`. Provision the
+   protected external mode-0700 `BROKER_LIFECYCLE_ROOT` for this
+   dispatcher-driven path; it supplies authoritative liveness, prevents
+   duplicate launches, and enables `status`/`stop`.
 2. Create a feature branch — its name **is** the team name:
+
    ```bash
    git checkout -b payments-revamp
    ```
-3. Launch a preset roster:
+3. Launch the preset's persistent supervision and gate roles:
+
    ```bash
-   bin/launch-team.sh team deep-backend payments-revamp ENG-100
-   #                        └ preset      └ branch/team    └ featureId
+   bin/launch-team.sh gate-team deep-backend payments-revamp ENG-100
+   #                             └ preset      └ branch/team    └ featureId
    ```
-4. Watch it work:
+4. Start the deterministic dispatcher in its own persistent shell. This process
+   owns task claims and launches fresh task-scoped workers:
+
    ```bash
-   tmux attach -t team-payments-revamp        # live agent windows
-   bin/launch-team.sh status payments-revamp  # role / state / heartbeat
+   bin/dispatch.sh payments-revamp ENG-100 --watch
    ```
+
+5. Watch the team:
+
+   ```bash
+   tmux attach -t team-payments-revamp         # live agent windows, when tmux is used
+   bin/launch-team.sh status payments-revamp   # protected process state + heartbeat
+   ```
+
    Progress lands in your tracker; anything needing you lands in
    `.teamwork/payments-revamp/ESCALATIONS.md`.
-5. Stop it:
+6. Stop the dispatcher with `Ctrl-C`, then stop the managed team:
+
    ```bash
    bin/launch-team.sh stop payments-revamp
    ```
 
+   If you intentionally experiment with unmanaged direct launches instead, do
+   not rely on dispatcher liveness, `status`, or `stop`; supervise the
+   tmux/background processes yourself.
+
 > The launcher path is relative to where you installed the bundle — e.g.
 > `.claude/skills/startup-factory/bin/launch-team.sh`.
-
-**All launcher subcommands:**
 
 **`bin/launch-team.sh` subcommands:**
 
 | Command | Purpose |
 |---|---|
 | `team <preset> <team> <featureId>` | Launch a whole preset roster |
+| `gate-team <preset> <team> <featureId>` | Launch only persistent supervision/review/integration gates; automation uses this and starts implementers per task |
 | `preflight <team> <featureId>` | Verify adapter access, workspace writability, and UTC pin — run once before any CLI team launch |
 | `start <team> <featureId> <role>…` | Launch specific roles (custom teams) |
 | `relaunch <team> <featureId> <role> [preset]` | Restart one crashed/wedged agent |
@@ -419,9 +677,10 @@ Just talk to your agent in the generic vocabulary:
 | `start-task <team> <featureId> <role> <taskId> [attempt] [preset]` | Generate a packet and launch one task-scoped worker in its worktree |
 | `compose-task <team> <featureId> <role> <taskId> [attempt] [preset]` | Generate a packet and lean startup prompt without spawning, for harness subagents |
 | `worktree <team> <role> <taskId> [attempt]` | Create an implementer's isolated task worktree |
-| `worktree-remove <team> <role> <taskId> [attempt]` | Remove a worktree and prune its registration |
-| `status <team>` | Show each agent's state + last heartbeat |
-| `stop <team>` | Stop the whole team |
+| `worktree-remove <team> <role> <taskId> [attempt]` | Remove a worktree only after protected lifecycle state proves its worker is stopped; unmanaged mode refuses |
+| `validate-board [config-path]` | Validate status structure, initial/terminal rules, transitions, reachability, owners, and marker-role references |
+| `status <team>` | Show authenticated process state plus last heartbeat when protected lifecycle authority is enabled; otherwise report that markers are non-authoritative |
+| `stop <team>` | Stop the managed team through authenticated lifecycle identities; unmanaged mode refuses to signal |
 
 **`bin/dispatch.sh` — the event loop:**
 
@@ -432,13 +691,29 @@ Just talk to your agent in the generic vocabulary:
 
 > **CLI dispatch requires scriptable tracker access.** Linear and Jira default to MCP; set `LINEAR_ACCESS=rest` or `JIRA_ACCESS=rest` in `config/project-management.config.md` before running `dispatch.sh --watch`. Harness mode (`launch-team.sh compose`) supports MCP natively.
 
-There is also `bin/tracker-ops.sh` — an ergonomic wrapper for the recurring
-tracker operations (`claim`, `state`, `comment` with the body from a file/stdin,
-`update-comment <id> <file>`, `upsert-progress`, `upsert-digest`,
-`record-denial` (idempotent `[DENIED ACTION]` audit records), `integrate
-<hash>`, `export`) over the scriptable access mechanisms (Linear/Jira REST,
-`gh`, Markdown files). The adapter docs remain the spec; MCP sessions use their
-native tools instead.
+**`bin/tracker-ops.sh` — normalized scriptable tracker operations:**
+
+| Command | Purpose |
+|---|---|
+| `state <taskId> <Status>` | Make and verify a legal generic `[task]` status write. |
+| `feature-state <featureId> <Status>` | Make and verify a legal generic `[feature]` status write. |
+| `feature-reopen <featureId> <Status>` | PM-supervisor-only terminal-to-queued reopen for a new delivery generation. |
+| `task-reopen <taskId> <Status>` | Integration-broker-only terminal-to-working reopen after late valid findings. |
+| `comment <taskId> [bodyfile]` | Add a comment, reading its body from a file or stdin. |
+| `comment-once <taskId> <deliveryId> <bodyfile>` | Deliver one idempotent comment for a durable outbox item. |
+| `update-comment <taskId> <commentId> [bodyfile]` | Edit an existing comment where the adapter supports it. |
+| `upsert-progress <taskId> [bodyfile]` | Create or update the task's single managed `[progress]` projection. |
+| `upsert-digest <featureId> [bodyfile]` | Create or update the feature's single managed `[digest]` projection. |
+| `upsert-deployment <featureId> [bodyfile]` | Create or update the feature's single managed `[deployment]` projection. |
+| `claim <taskId> <role> [--to <Status>]` | Conflict-check, idempotently record, transition, and read back an eligible work claim before launch. |
+| `record-denial <taskId> --actor AGENT --reason TEXT [--denial-id ID] [bodyfile]` | Idempotently record a sanitized normalized-plan `[DENIED ACTION]`; the required attempted-action body comes from `bodyfile` or stdin. |
+| `integrate <taskId> <hash> [bodyfile]` | Make the terminal task write and completion comment for a verified integration. |
+| `export <featureId> <outfile>` | Exhaustively export normalized feature/task state as JSON. |
+| `scan <outfile> --status <Status>…` | Discover normalized board work in explicitly requested statuses. |
+
+These commands use Linear/Jira REST, the `gh` CLI, or Markdown files. The
+adapter docs remain the operation contract; interactive MCP sessions use their
+native tools instead. Comment bodies are never shell arguments.
 
 **The flow every team follows:** the Principal Architect leads (plans with the
 Product Manager, gates each `[task]`'s design before any code, reviews
@@ -450,6 +725,192 @@ integrator validates and merges one task at a time, then idempotently marks it
 upserts. The lead detects stuck/conflicting/crashed agents and unblocks them —
 message → decide → reassign → relaunch — escalating to you only as a last
 resort.
+
+## Automate the board and production delivery
+
+`pm-agent.py` is a deterministic supervisor, despite the name: zero LLM calls
+when the board has nothing to do, no sleeping agent, and no hidden coordinator
+service.
+
+**Supervisor commands:**
+
+| Command | Use |
+|---|---|
+| `pm-agent.py --once [--dry-run]` | Run one bounded scan/reconcile pass; this is the scheduler primitive. Dry-run performs preflight and planning without launches or tracker mutations. |
+| `pm-agent.py --watch` | Keep one dedicated foreground process as the clock owner, sleeping for `scanIntervalMinutes` between bounded passes. |
+| `pm-agent.py --print-cron` | Print one credential-free cron line with protected paths, isolated Python flags, lifecycle root, lease, and logging. |
+
+Choose exactly one mode. `--dry-run` combines only with `--once`.
+
+On every pass the supervisor:
+
+1. authenticates the protected installation, configs, Python, Git, sandbox
+   runner, lifecycle authority, tracker scope, and single-writer mode;
+2. takes the single-host lease and discovers only configured semantic
+   `queued`/`blocked` work;
+3. exhaustively re-exports every unfinished registered `[feature]` so a local
+   registry entry never becomes standing authority;
+4. validates opt-in and exact preset routing, then bootstraps at most
+   `maxFeaturesPerPass` new isolated feature runs;
+5. launches persistent gate roles, invokes one deterministic dispatch pass,
+   reconciles blockers/comments/recovery, and starts fresh task-scoped workers
+   only when the state machine calls for them; and
+6. hands an all-integrated feature to the protected release executor, or leaves
+   it visibly awaiting delivery when deployment is disabled or authorization is
+   incomplete.
+
+Malformed state, an incomplete export, lost opt-in, conflicting metadata,
+preset drift, an expired capability, or a failed read-back pauses/stops work; it
+never falls through to a guessed action.
+
+1. Provision a real worktree-scoped OS sandbox and network/IAM restrictions for
+   every ordinary agent. Install its protected external entrypoint, configure its
+   absolute path as `AGENT_SANDBOX_RUNNER`, verify the `--workdir <absolute> --
+   <argv...>` contract, and set `AGENT_SANDBOX_ENFORCED=true`. Configure a
+   non-empty, non-no-op `WORKTREE_SETUP` and at
+   least one meaningful `VALIDATE_SCRIPT`, `VALIDATE_BUILD`, `VALIDATE_TEST`,
+   `VALIDATE_LINT`, or `VALIDATE_FORMAT` command in `config/team.config.md`.
+2. Set `TEAM_MODE=true`, `TRACKER_WRITERS=broker`, and a scriptable, explicit tracker
+   scope. Linear requires `LINEAR_ACCESS=rest` plus `LINEAR_DEFAULT_TEAM`; Jira requires
+   `JIRA_ACCESS=rest` plus an exact `JIRA_PROJECT_KEY` and `JIRA_TASK_ISSUE_TYPE`;
+   GitHub requires an explicit `GITHUB_REPO`.
+   Review `reference/guardrails.md`; ordinary agents must have no cloud/database
+   production credentials.
+3. Install the reviewed skill and Python outside the target checkout and all
+   agent mounts. Copy the automation/team/project-management configs there,
+   protect them from group/world writes, set an external protected
+   `trustedPath`, and configure automation. Provision a separate absolute
+   mode-0700 `BROKER_LIFECYCLE_ROOT` outside the checkout, installed skill, and
+   every agent sandbox mount; its parent chain must contain no symlinks or
+   group/world-writable directory (so do not place it below shared `/tmp`). The
+   safe default requires an
+   `automation: enabled` [task] metadata marker; then inspect a pass:
+
+   ```bash
+   STARTUP_FACTORY_PROJECT_ROOT=/absolute/target-checkout \
+   STARTUP_FACTORY_AUTOMATION_CONFIG=/protected/config/automation.json \
+     /protected/python/bin/python3 -I -S -E -s \
+     /protected/startup-factory/bin/pm-agent.py --once --dry-run
+   ```
+
+4. Set `scanIntervalMinutes` to the desired board-scan cadence (default `3`),
+   set `enabled: true`, and install exactly one cron entry:
+
+   ```bash
+   STARTUP_FACTORY_PROJECT_ROOT=/absolute/target-checkout \
+   STARTUP_FACTORY_AUTOMATION_CONFIG=/protected/config/automation.json \
+     /protected/python/bin/python3 -I -S -E -s \
+     /protected/startup-factory/bin/pm-agent.py --print-cron
+   ```
+
+   The explicit project root is established before `trustedPath` is consumed;
+   the supervisor then verifies it with protected Git. The supervisor refuses
+   its own executable, Python, or protected configs when they resolve inside the
+   target repository. Configure `trustedPath` with protected directories that
+   exist on the scheduler host (the portable template uses `/usr/bin:/bin`). A
+   root-owned OS alias such as usrmerge `/bin` is canonicalized and its target
+   chain is revalidated; user-owned symlinks are rejected. The printed line fixes the
+   protected `PATH` and uses Python `-I -S -E -s`, but intentionally embeds no
+   credentials. Inject tracker/deployment variables through the scheduler's
+   secret store, service definition, or a scheduler/root-owned wrapper that
+   preserves those flags; never put tokens in crontab.
+   The printer accepts only exact stable cron cadences: minute intervals that
+   divide 60 and whole-hour intervals that divide 24. Use a service timer or
+   hosted scheduler for intervals such as seven minutes.
+   Hosted schedulers should use their equivalent of “forbid overlapping runs.”
+   The built-in lease covers one host; multiple hosts require a distributed lock
+   or adapter-native compare-and-set. Each adapter, Git, launcher, and
+   dispatcher child operation has the bounded `operationTimeoutSeconds`
+   deadline; a production transaction uses
+   its separately bounded `releaseTimeoutSeconds`, which must cover the full
+   configured plan/attestation/status/apply/verify/rollback path. New
+   queued/blocked work on an already deployed feature opens a numbered
+   generation with a new run ID, team, and feature branch rooted at the exact
+   verified predecessor HEAD, while preserving the stable workspace and prior
+   release evidence.
+5. Put initial routing metadata in a [task] description:
+
+   ```text
+   automation: enabled
+   team-preset: deep-backend
+   ```
+
+   Treat descriptions as the baseline. Post every later routing change as a
+   timestamped/revisioned comment; generic record `updatedAt` does not prove a
+   description edit. Unordered or conflicting latest metadata pauses the run.
+
+6. For production, install a protected release executor/config/state root and
+   digest-pinned provider hooks as specified in `reference/deployment.md`. Choose
+   `automatic` only for a normalized reversible, non-destructive immutable-artifact
+   path **and** a pinned external `verifyDelivery` attestor that proves OS role
+   isolation, isolated source planning, and approval authenticity for the exact feature commit, integration
+   evidence, and product-acceptance digest. Otherwise retain `approval-required`
+   with an external exact-manifest verifier.
+   Set the scheduler environment variables `STARTUP_FACTORY_DEPLOYMENT_CONFIG`
+   to that external config path and `STARTUP_FACTORY_RELEASE_FEATURE` to the
+   absolute executor in the protected external skill installation. Enabled
+   production refuses the repository-local executor.
+
+   For the common “approved work deploys to one fixed production target” setup,
+   start from `config/deployment.production.approval-required.example.json` and
+   `config/pm-agent.production.env.example`. Copy both outside the checkout,
+   set `target.id` plus optional provider/region/service routing fields, install
+   the pinned hooks and digests, satisfy `planningIsolation`, and only then set
+   `enabled: true`. Only after every task is integrated and current commit-bound
+   product acceptance exists does the supervisor trigger the guarded release handoff;
+   `verifyApproval` authorizes the exact manifest, deployment and verification
+   run automatically, and the parent [feature] closes only after verification.
+   Ordinary tracker comments never satisfy production approval.
+
+**Scheduler environment:**
+
+| Variable | Required when | Meaning |
+|---|---|---|
+| `STARTUP_FACTORY_PROJECT_ROOT` | Always | Absolute exact root of the target git checkout. |
+| `STARTUP_FACTORY_AUTOMATION_CONFIG` | Always | Absolute protected external automation JSON. |
+| `STARTUP_FACTORY_LIFECYCLE_STATE_ROOT` | Autonomous operation | Absolute protected external lifecycle authority root; overrides `BROKER_LIFECYCLE_ROOT`. |
+| `STARTUP_FACTORY_DEPLOYMENT_CONFIG` | Production delivery | Absolute protected external deployment JSON. Omit it to keep release handoff disabled. |
+| `STARTUP_FACTORY_RELEASE_FEATURE` | Enabled production delivery | Absolute protected external `bin/release-feature.py`; a repository-local path is refused. |
+| Adapter credential variables | Remote tracker access | Inject only the names required by the selected scriptable adapter through the scheduler secret facility. |
+
+Install the operational PM configuration at
+`<protected-skill>/config/project-management.config.md`; the launcher and tracker
+broker read that exact location. Do not attempt to relocate it with a scheduler
+environment override.
+
+Use
+[`config/pm-agent.production.env.example`](config/pm-agent.production.env.example)
+as non-secret wiring, not as a credential file.
+
+**Protected executor entry points** (normally invoked by the supervisor, not by
+an LLM):
+
+| Command | Purpose |
+|---|---|
+| `release-feature.py --repository ROOT --workspace WORKTREE --team TEAM --feature ID --config DEPLOYMENT_JSON` | Resume or execute the durable production transaction. The supervisor also binds expected git/common-dir identities at handoff. |
+| `policy-check.py --config GUARDRAILS_JSON plan --mode MODE [--approved] PLAN_JSON` | Evaluate one canonical normalized release plan as `DENY`, `REQUIRE HUMAN APPROVAL`, or `ALLOW`. |
+| `policy-check.py --config GUARDRAILS_JSON command --action ACTION --environment production [--authorization-digest DIGEST] -- ARGV…` | Evaluate exact privileged hook argv before subprocess launch. |
+
+The release transaction requires the canonical symlink-free feature workspace,
+a gap-free integration chain rooted under `trustedBaseRef`, an exact
+commit/evidence-bound feature-level product acceptance marker, and current
+trusted code/hook/config bindings. Missing or stale product acceptance is routed
+back to the product role before any release plan or apply. The executor always
+queries current deployment state before apply,
+checks the artifact digest, independently verifies health/version, redacts loaded
+credentials from logs, and records success only after verification. The release
+executor alone performs the terminal [feature] transition; disabled or waiting
+delivery remains non-terminal. Disabled delivery creates no tracker deployment
+projection; the PM registry records local awaiting state. A safe rollback can
+target only the immediately previous immutable artifact matching the objectively
+observed pre-apply digest. Branch protection remains an operator-owned git-host
+control; `trustedBaseRef` does not configure it.
+
+Each run also records the exact initial `baseCommit`, refuses pre-positioned
+feature branches, and requires the branch/base ancestry to remain intact. Before
+handoff the supervisor captures the canonical Git common/worktree directory
+paths and device/inode identities; the release executor binds Git directly to
+those directories and rechecks their identity plus feature HEAD at apply.
 
 ---
 
@@ -472,45 +933,61 @@ and recoverable tracker finalization. Details in
 
 ## How it works
 
-The PM layer applies the **ports-and-adapters (hexagonal) pattern**: your
-workflows and agents speak one stable vocabulary; a one-line config selects which
-adapter translates it to a concrete tracker.
+The PM layer applies the **ports-and-adapters (hexagonal) pattern**: workflows
+and agents speak one stable vocabulary; one config selects the adapter that
+translates it to a concrete tracker. Teams, models, and deployment hooks never
+need tracker-specific workflow logic.
 
-```
-                    ┌─────────────────────────────────────────┐
-   Your agents  ───▶│            THE PORT (stable)             │
-   speak only this  │  vocabulary.md · lifecycle.md            │
-                    │  [feature] [task] [subtask]              │
-                    │  statuses from statuses.config.json      │
-                    └───────────────────┬─────────────────────┘
-                                        │  one config line selects the adapter
-                      ┌─────────────────┼──────────────────┐
-                      ▼                 ▼                  ▼
-              ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-              │ Linear.md    │  │ Jira.md      │  │ Markdown.md  │   ← swap freely
-              └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-                     ▼                 ▼                 ▼
-              Linear MCP/REST    Jira MCP/REST      local .md files
-```
+```mermaid
+flowchart LR
+    Board["Linear · Jira · GitHub Issues · Markdown"]
+    PM["Deterministic PM supervisor<br/>cron · timer · service"]
+    Route{"Opt-in and preset<br/>valid?"}
+    Gates["Lead · Product · Architect<br/>scope and design gates"]
+    Work["Task-scoped agents<br/>isolated Git worktrees"]
+    Review["Independent review · QA<br/>exact evidence"]
+    Integrate["Integrator<br/>serialized feature branch"]
+    Policy{"Release policy and<br/>exact authority pass?"}
+    Release["Credential-isolated<br/>release executor"]
+    Target["Verified production target"]
 
-Teams add an **orchestration layer** on top, and the tracker stays the single
-source of truth:
-
-```
-          PM tool (Linear/Jira/…) = single source of truth
- claims = locked transitions · progress = idempotent projected comments
-                       ▲ via the adapter port ▲
- architect (leads) ── product manager ── engineers ── QA (final gate) ── integrator (commits)
-                         └── one task packet + worktree per attempt ──┘
-                       ▼ optional low-latency transport ▼
- .teamwork/<team>/  events · outbox · mailboxes · heartbeats  (polling fallback)
+    Board --> PM --> Route
+    Route -->|yes| Gates --> Work --> Review --> Integrate --> Policy
+    Route -->|pause / escalate| Board
+    Policy -->|approved| Release --> Target --> Board
+    Policy -->|wait / deny| Board
 ```
 
 The dispatcher claims a `[task]` under a per-pass lock, generates its packet,
 and launches exactly one attempt. Design notes, approvals, findings, and
 escalations remain structured tracker comments. An append-only event journal
 wakes local coordination quickly; the durable outbox serializes tracker writes
-when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
+when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
+
+---
+
+## Documentation map
+
+| Read this | It answers… |
+|---|---|
+| [`SKILL.md`](SKILL.md) | What does an agent load, in what order, and which invariants must every workflow obey? |
+| [`reference/vocabulary.md`](reference/vocabulary.md) | What stable `[feature]`/`[task]` contract and status semantics do all adapters share? |
+| [`reference/lifecycle.md`](reference/lifecycle.md) | How does work move through planning, execution, review, blocking, automation, and production release? |
+| [`reference/team-roles.md`](reference/team-roles.md) | Which role owns each status and transition in team mode? |
+| [`reference/orchestration.md`](reference/orchestration.md) | How do roles coordinate, authenticate handoffs, review, integrate, recover, and pull the andon cord? |
+| [`reference/dispatch.md`](reference/dispatch.md) | Which deterministic event launches each next role action? |
+| [`reference/automation.md`](reference/automation.md) | How do protected cron/service scans, routing metadata, registration, generations, leases, and recovery work? |
+| [`reference/guardrails.md`](reference/guardrails.md) | Which actions are denied, approval-only, or autonomously allowed, and where are those boundaries enforced? |
+| [`reference/deployment.md`](reference/deployment.md) | What are the provider-neutral hook schemas, trust requirements, approvals, transaction phases, and rollback rules? |
+| [`teams/README.md`](teams/README.md) and [`teams/_PLAYBOOK.md`](teams/_PLAYBOOK.md) | Which preset should you choose and how does its shared delivery protocol operate? |
+
+| Tracker guide | Scriptable unattended access | Interactive access |
+|---|---|---|
+| [`adapters/Markdown.md`](adapters/Markdown.md) | Local files; zero credentials | Local files |
+| [`adapters/Linear.md`](adapters/Linear.md) | Scriptable GraphQL HTTP mode with exact team scope | MCP or the configured `rest` mode |
+| [`adapters/Jira.md`](adapters/Jira.md) | REST with exact project and child type | MCP or REST |
+| [`adapters/GitHubIssues.md`](adapters/GitHubIssues.md) | `gh` CLI with explicit repository | GitHub MCP or `gh` |
+| [`adapters/_TEMPLATE.md`](adapters/_TEMPLATE.md) | Contract for a new tool, including exhaustive pagination, normalized scan/export, idempotent writes, and read-back | Tool-specific |
 
 ---
 
@@ -521,12 +998,14 @@ when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
 ├── SKILL.md                          the operational skill your agent runs
 ├── config/
 │   ├── project-management.config.md  ← EDIT: pick tracker, TEAM_MODE, STRICT_STATUS
-│   └── team.config.md                ← EDIT (teams): role→CLI, timings, VALIDATE_*
+│   ├── team.config.md                ← EDIT (teams): role→CLI, timings, VALIDATE_*
+│   └── statuses · automation · deployment · guardrails configs
 ├── reference/
 │   ├── vocabulary.md                 the tool-agnostic contract (the port)
 │   ├── lifecycle.md                  the scenarios: plan → work → review → complete
 │   ├── team-roles.md                 status ownership across roles
-│   └── orchestration.md              the multi-agent protocol
+│   ├── orchestration.md              the multi-agent protocol
+│   └── automation · deployment · guardrails
 ├── adapters/
 │   ├── Markdown.md · Linear.md · Jira.md · GitHubIssues.md
 │   └── _TEMPLATE.md                  scaffold for a new tracker
@@ -538,12 +1017,16 @@ when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
 │   └── roles/                        14 specialized role briefs
 ├── bin/
 │   ├── launch-team.sh                role and task-instance launcher
+│   ├── process-lifecycle.py          authenticated external process/tmux authority
 │   ├── update-installed-skill.sh     refresh this skill from upstream
 │   ├── dispatch.sh · dispatch-plan.py deterministic bounded scheduler
 │   ├── runtime-state.py · task_metadata.py
 │   │                                  event journal, metadata/routing, task packets
 │   ├── submit-artifact.sh · process-outbox.sh
-│   ├── review-package.sh · integrate-task.sh
+│   ├── review-package.sh · review_evidence.py · integrate-task.sh · finalize-integrations.sh
+│   ├── teamwork-path.py · product_acceptance.py safety/path and product gates
+│   ├── pm-agent.py                   bounded portfolio scheduler pass
+│   ├── release-feature.py · policy-check.py
 │   └── tracker-ops.sh                idempotent tracker operations
 └── tests/                            offline smoke tests (no LLM calls)
     └── run-all.sh                    tracker, runtime, dispatch, launcher, integration
@@ -553,10 +1036,12 @@ when `TRACKER_WRITERS=lead`; polling remains the distributed fallback.
 
 ## Extend it
 
-Each extension is **one file**; nothing else changes.
+Team and role extensions are one file. A new tracker needs its adapter contract plus a
+scriptable `tracker-ops.sh` backend before deterministic dispatch/automation can use it.
 
 - **New tracker:** copy `adapters/_TEMPLATE.md` → `adapters/<YourTool>.md`, fill the
-  tables, set `PRODUCT_MANAGEMENT_TOOL=<YourTool>`.
+  tables, add its normalized operations backend, then set
+  `PRODUCT_MANAGEMENT_TOOL=<YourTool>`.
 - **New team:** copy any `teams/<preset>.md`, edit the charter, `ROSTER=` line, and
   review order. Include `integrator` in the roster.
 - **New role:** add `teams/roles/<kebab-name>.md` with the standard sections
@@ -564,7 +1049,7 @@ Each extension is **one file**; nothing else changes.
   deliverables, handoffs, "you never"). The launcher resolves any role that has a
   brief in `roles/` or `teams/roles/`.
 
-Keep the generic vocabulary (`[feature]`, `[task]`, the four statuses) and the
+Keep the generic vocabulary (`[feature]`, `[task]`, semantic status kinds) and the
 exact protocol markers — never invent new ones.
 
 ---
@@ -576,8 +1061,15 @@ exact protocol markers — never invent new ones.
 | Agent says the tracker is unavailable | Re-check the adapter's *Access mechanisms* (MCP block or exported API-key env vars); the agent stops rather than fabricating — that's by design |
 | `launch-team.sh` can't find a role | The role needs a brief in `roles/` or `teams/roles/`, and its `<ROLE>_CMD` (or `TEAM_DEFAULT_CMD`) must be set |
 | A role won't launch in a preset | It's likely `<ROLE>_CMD=null` (explicitly disabled). Remove the line to fall back to `TEAM_DEFAULT_CMD` |
-| No `tmux` | Agents run as background processes automatically; use `status`/`stop` and read logs under `.teamwork/<team>/pids/` |
-| Team seems stuck | `bin/launch-team.sh status <team>` shows heartbeats; the lead auto-unblocks, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md` |
+| No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
+| `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
+| Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead auto-unblocks, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md` |
+| An eligible queued/blocked task never launches | Confirm automation is enabled and scheduled, the scriptable adapter has an exact scope, the latest metadata says `automation: enabled`, and `team-preset` is absent or exactly one allowed preset; conflicting or unordered metadata deliberately pauses |
+| `--print-cron` rejects the scan interval | Conventional cron output supports minute divisors of 60 and whole-hour divisors of 24. Use a service timer or hosted scheduler for cadences such as seven minutes |
+| `another live pass owns the monitor lease` | One healthy pass is already running on this host. Do not start a second scheduler; multi-host operation needs a distributed lock or adapter-native compare-and-set |
+| Release waits for product acceptance | Publish a current feature-scope `[product-approval]` bound to the exact final feature HEAD and integration-evidence digest; stale or ambiguous evidence cannot release |
+| Release says it is awaiting authorization | In `approval-required` mode, have the protected `verifyApproval` system authorize the exact manifest before its expiry; a board comment is intentionally insufficient |
+| Release is fenced after an uncertain apply or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
 | Want to verify the plumbing | `bash tests/run-all.sh` → `ALL TESTS PASS` (stub agents + local files; no LLM, no cost) |
 
 ---

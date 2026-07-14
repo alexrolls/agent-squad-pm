@@ -94,24 +94,33 @@ Completed (Linear project states).
 | Lookup ids (teams, states, projects) | (implicit in MCP tools) | `lin '{"query":"{ teams { nodes { id name states { nodes { id name } } projects { nodes { id name } } } }"}'` — also look up project statuses: `lin '{"query":"{ projectStatuses { nodes { id name } } }"}'` (needed for `projectUpdate` `statusId`) |
 | Create `[feature]` | `create_project` | `lin '{"query":"mutation { projectCreate(input: {name: \"<name>\", teamIds: [\"<teamId>\"]}) { project { id } } }"}'` |
 | Create `[task]` under a feature | `create_issue` with `project` | `lin '{"query":"mutation { issueCreate(input: {title: \"<title>\", description: \"<md>\", teamId: \"<teamId>\", projectId: \"<featureId>\"}) { issue { id identifier } } }"}'` |
-| Read a `[task]` | `get_issue` | `lin '{"query":"{ issue(id: \"<taskId>\") { identifier title description state { name } assignee { name } comments { nodes { body createdAt } } } }"}'` |
+| Read a `[task]` | `get_issue` | `lin '{"query":"{ issue(id: \"<taskId>\") { identifier title description state { name } assignee { name } comments { nodes { body createdAt updatedAt } } } }"}'` |
 | List `[tasks]` in a feature | `list_issues` with `project` | `lin '{"query":"{ project(id: \"<featureId>\") { issues { nodes { identifier title state { name } assignee { name } } } } }"}'` |
 | Set `[task]` status | `update_issue` with mapped `state` | `lin '{"query":"mutation { issueUpdate(id: \"<taskId>\", input: {stateId: \"<stateId>\"}) { success } }"}'` |
 | Set `[task]` assignee | `update_issue` with `assignee` | `lin '{"query":"mutation { issueUpdate(id: \"<taskId>\", input: {assigneeId: \"<userId>\"}) { success } }"}'` |
 | Set `[feature]` status | `update_project` | `lin '{"query":"mutation { projectUpdate(id: \"<featureId>\", input: {statusId: \"<statusId>\"}) { success } }"}'` |
 | Add a comment to a `[task]` | `create_comment` | `lin '{"query":"mutation { commentCreate(input: {issueId: \"<taskId>\", body: \"<md>\"}) { success } }"}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via `list_issues` + `get_issue`, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| Scan `[tasks]` across the configured board scope | `list_issues` per mapped state (harness only) | `bin/tracker-ops.sh scan <outfile> --status Planned --status Blocked` paginates issues; unattended automation requires an explicit exact `LINEAR_DEFAULT_TEAM` |
 | update comment | `update_comment` MCP tool | GraphQL `commentUpdate(id: $commentId, input: {body: $body})`; or `bin/tracker-ops.sh update-comment <taskId> <commentId> <bodyfile>` |
 | Upsert task runtime progress | update the existing managed progress comment or create it | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` |
 | Upsert feature runtime digest | update the existing managed digest comment or create it | `bin/tracker-ops.sh upsert-digest <featureId> <bodyfile>` |
+| Upsert feature deployment state | update the managed project-description deployment block | `bin/tracker-ops.sh upsert-deployment <featureId> <bodyfile>` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state`, `comment` (body from a file or stdin, so no shell-quoting
 > of GraphQL payloads), `upsert-progress`, `upsert-digest`, idempotent `integrate
-> <hash>`, and `export`. This table remains the spec; the script is the ergonomic
+> <hash>`, `export`, paginated `scan`, `feature-state`, and
+> `upsert-deployment`. This table remains the spec; the script is the ergonomic
 > path. MCP sessions call the MCP tools directly instead.
 > The `export` output gives credential-less roles a stable read-only snapshot
 > (`<TEAMWORK_ROOT>/<team>/tasks.json` by convention — see `reference/orchestration.md`).
+> Unattended export reads the entire Linear project and then requires every
+> issue to belong to the exact configured `LINEAR_DEFAULT_TEAM`. A multi-team
+> project fails closed instead of silently omitting tasks; split automation
+> projects or implement an equally exhaustive custom feature boundary.
+> Feature export passes `includeArchived: true` and exhausts every issue page,
+> so an archived task cannot disappear from release authorization evidence.
 
 ## Rules
 
@@ -121,6 +130,14 @@ Completed (Linear project states).
 - Never skip status updates; move issues through Todo → In Progress → In Review → Done.
 - `featureId` is a Project id/name; `taskId` is an issue identifier like `PP-445`.
 - Query a feature's tasks with `list_issues` + `project`, never by guessing identifiers.
+- REST exports carry each comment's `createdAt`, `updatedAt`, and revision
+  (`updatedAt`) and order the normalized timeline by last modification. Editing an
+  older approval or pushback therefore makes that edited verdict fresh and forces
+  every authorization envelope to be revalidated.
+- Cron/service automation requires `LINEAR_ACCESS=rest` and a non-empty exact
+  `LINEAR_DEFAULT_TEAM` key/name; workspace-wide inference is refused. Generic `[Planned]` maps
+  to Linear `Todo` and `[Blocked]` maps to Linear `Blocked` through the board
+  config; the supervisor never hardcodes tool-side names.
 
 ## Initialization
 

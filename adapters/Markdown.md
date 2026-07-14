@@ -40,7 +40,7 @@ Shipped defaults: `[Planned]`, `[Active]`, `[Review]`, `[Blocked]`,
 | Generic ID | Markdown | Example |
 |---|---|---|
 | `featureId` | Path to the feature file | `.workspace/task-manager/2026-07-06-payments-revamp/feature.md` |
-| `taskId` | Task number within the file | `2` |
+| `taskId` | Compound `<featureId>#<number>`; the number is local to the file | `.workspace/task-manager/2026-07-06-payments-revamp/feature.md#2` |
 
 ## File Structure
 
@@ -91,13 +91,16 @@ Call the billing charge endpoint on submit.
 | Set `[feature]` status | Edit the `#` title line's trailing `[Status]` |
 | Add a comment to a `[task]` | Append a `> <marker> (yyyy-MM-dd): <content>` line under the task section, where `<marker>` is the exact orchestration marker (e.g. `[design-note]`, `[review-approval]`) or `note` for free-form comments |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| Scan `[tasks]` across the configured board scope | `bin/tracker-ops.sh scan <outfile> --status Planned --status Blocked` walks non-symlinked `feature.md` files below `MARKDOWN_ROOT` |
 | update comment | Structured protocol comments remain append-only. Post a new comment carrying `supersedes: <marker>-<round>`; readers treat the highest round as current. |
 | Upsert task runtime progress | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` replaces one managed HTML block in the task section |
 | Upsert feature runtime digest | `bin/tracker-ops.sh upsert-digest <featureId> <bodyfile>` replaces one managed HTML block in the feature file |
+| Upsert feature deployment state | `bin/tracker-ops.sh upsert-deployment <featureId> <bodyfile>` replaces one managed HTML block in the feature file |
 
 > **Helper script.** `bin/tracker-ops.sh` performs these edits mechanically — `claim`,
 > `state`, `comment` (body from a file or stdin), `upsert-progress`,
-> `upsert-digest`, idempotent `integrate <hash>`, and `export`. When
+> `upsert-digest`, `upsert-deployment`, idempotent `integrate <hash>`,
+> `feature-state`, `export`, and `scan`. When
 > using it, address a [task] as `<featureId>#<taskId>` (the feature file plus the task
 > number, e.g. `.workspace/task-manager/2026-07-06-payments/feature.md#2`), since a task
 > number alone doesn't name the file.
@@ -108,9 +111,18 @@ Call the billing charge endpoint on submit.
 - Task headers always carry a number **and** a status: `## 3 Title [Active]`.
 - Every task section has exactly one `**Assignee:**` line (value: a role name or `—` for unclaimed).
 - `**BlockedBy:** <n>[, <n>...]` — optional; task numbers in the same feature file. Read by `tracker-ops.sh export` into `blockedBy` (used by `bin/dispatch.sh` for unblock *suggestions* — Markdown is never auto-unblocked).
-- `featureId` is a file path; `taskId` is a task number (`1`, `2`, `3`).
+- `featureId` is a file path. The normalized/exported and CLI `taskId` is
+  `<featureId>#<number>`; task headers and `BlockedBy` use only the local number
+  (`1`, `2`, `3`).
 - Change status only by editing the bracket text — keep exactly one status per header.
 - Comment markers must be exact (e.g. `[design-note]`, `[review-approval]`) — never paraphrase them.
+- A task may contain at most one matched managed progress block. Duplicate or
+  half-written progress markers fail export and upsert closed; repair the file
+  instead of allowing two comments to share the managed progress identity.
+- `tracker-ops.sh` rejects `..` and every symlinked lexical component, including
+  symlinks that resolve back inside `MARKDOWN_ROOT`. Reads traverse directory
+  descriptors with no-follow semantics; writes use a no-follow, atomic replacement
+  in the already-open parent directory.
 - Editing files can't "fail" the way an API can, but a missing folder/file is still an
   andon-cord stop: create the structure, don't silently write to the wrong place.
 

@@ -33,7 +33,9 @@ Markers you are authorized to post: [design-approved], [design-pushback], [archi
    of approved file paths (must match the diff). If the `[review-request]`'s
    evidence record is complete and its commit equals the branch HEAD, inspect and
    spot-check — do not re-run suites blind; a stale or missing record means you
-   re-run (protocol: *Evidence and re-execution*).
+   re-run (protocol: *Evidence and re-execution*). Submit the verdict through
+   the outbox so the broker binds it to the exact current request/head/package;
+   a copied binding from another round is invalid.
 
 ## Your exclusive right: task descriptions
 

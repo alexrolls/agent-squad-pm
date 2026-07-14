@@ -21,7 +21,7 @@ below.
   touches scope or business rules, you answer it as a comment on the [task]; when
   the answer is not derivable from the approved [feature], escalate to the human.
 - Confirm the acceptance criteria hold at feature level before the [feature]
-  moves to `[Resolved]` (playbook stage 7).
+  is handed to the deterministic release executor (playbook stage 7).
 
 ## Decision authority
 
@@ -36,9 +36,15 @@ below.
 - The [feature] description (problem, scope, NOT-in-scope, dependencies).
 - Acceptance criteria inside every [task] description.
 - `[product-approval]` / `[product-pushback]` comments — your scope and
-  acceptance-criteria sign-offs, per [task] and at feature level before
-  `[Resolved]` (required content: scope ruling, acceptance-criteria verdict,
-  conditions). These are your markers in the protocol table; write no others.
+  acceptance-criteria sign-offs. For final feature closeout, read
+  `<TEAMWORK_ROOT>/<team>/product-acceptance-request.json`, re-run every
+  feature-level criterion against its exact integrated commit, and submit its
+  `canonicalBody` unchanged through the standard outbox on `anchorTaskId`. The
+  canonical envelope binds `scope`, `feature-id`, `anchor-task-id`, `commit`,
+  `integration-evidence-digest`, and `acceptance-criteria: passed`; never copy
+  those values from memory or a stale comment. A failed criterion is a later
+  `[product-pushback]`, which keeps release in retryable awaiting authorization.
+  These are your markers in the protocol table; write no others.
 - Scope rulings as comments; follow-up [tasks] (Scenario 6) for deferred scope.
 
 ## Handoffs
@@ -54,3 +60,5 @@ below.
   comments, plus description updates for *unstarted* [tasks] via the architect.
 - Let scope creep in through review findings: a finding that would alter agreed
   behaviour becomes a question to you, and then a decision on the record.
+- Forge, shorten, or edit the release executor's canonical feature-closeout
+  bindings, or treat a task-level scope approval as the final feature verdict.

@@ -26,6 +26,7 @@ heartbeat files, then acts top to bottom:
 | [Task](s) in `[Review]` missing `[review-approval]` / `[architecture-approval]` since the last `[review-request]` | Launch reviewer / principal-architect with the **whole** review queue |
 | [Task](s) in `[Review]` holding both approvals | Launch integrator with the merge queue in dependency order |
 | Dispatchable `[Planned]` [tasks] (design approved, blockers terminal, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
+| Valid `product-acceptance-request.json` after all integrations | Launch the configured product-manager role with the exact feature-level acceptance request; use team-lead only when no product role is mapped |
 | `[Planned]` task missing metadata/gate, resource conflict, stale/artifact-less-idle teammate | Launch team-lead with the whole exception queue |
 | Nothing actionable | Exit cleanly, print "nothing actionable" |
 
@@ -43,17 +44,26 @@ heartbeat files, then acts top to bottom:
   provisioned worktree, immutable task packet, report path, execution record,
   and task-scoped pid before starting the model. The task prompt does not inline
   the full orchestration reference.
+- **Adapter-neutral claim recovery:** before asking the tracker to claim a task,
+  dispatch writes a digest-bound durable claim record containing the exact
+  team/feature/task/attempt/role/status identity. On later passes the planner
+  cross-checks that record, the immutable execution record, and the exact tracker
+  claim receipt. This lets remote adapters that cannot persist a role in the
+  assignee field safely recover an active task; missing, ambiguous, or tampered
+  evidence fails closed rather than launching a guessed worker.
 - **End of turn = exit.** Role briefs contain no self-scheduling. An agent
   that finished its queue delivers its artifacts and exits; the next pass
   owns what happens next.
 - **Auto-unblock scope:** performed automatically only where the adapter's
-  `blockedBy` read is reliable (Linear, Jira). GitHubIssues and Markdown are
+  `blockedBy` read is reliable (Linear, Jira, and GitHubIssues). Markdown is
   **suggest-only** — the pass prints the suggestion and the team-lead
   confirms. Override per invocation with `--unblock=auto|suggest|off`.
   Auto-unblock writes only when the latest comment containing `blocked-by:`
-  also carries a legal `resume-status: <Status>` line (see lifecycle Scenario 7);
+  also carries `block-kind: dependency` and a legal
+  `resume-status: <Status>` line (see lifecycle Scenario 7);
   without one the pass prints a lead-actionable suggestion and routes to the
-  team-lead.
+  team-lead. `approval`, `policy`, `incident`, missing, and unknown block kinds
+  can never auto-resume, even when their referenced dependencies are terminal.
 - **Policy stays where it was:** the pipelined dispatch rules (independence,
   sweep gate, freeze protocol — `reference/orchestration.md` → *Execution
   modes*) are decisions the **team-lead** makes during its pass. The
@@ -73,3 +83,13 @@ heartbeat files, then acts top to bottom:
 - **Long features (harness):** past ~20 [tasks] the orchestrator should
   compress processed-event state between turns (its context is the loop
   state); the tracker remains the source of truth for anything dropped.
+
+## Board-wide clock owner
+
+`dispatch.sh` remains one-[feature]-at-a-time. Cron and service timers invoke
+`bin/pm-agent.py --once`, whose adapter-normalized `scan` discovers semantic
+`queued`/`blocked` [tasks]. For every registered in-flight [feature], it performs
+an exhaustive per-feature export before restoring authority, then creates one
+isolated integration worktree per [feature] and invokes this dispatcher. See
+`reference/automation.md`. The PM supervisor is deterministic and zero-LLM when
+nothing is actionable.

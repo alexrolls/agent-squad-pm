@@ -41,6 +41,9 @@ checklist item needs a `file:line` citation for the implementation AND a citatio
 for the test that proves it. Compare the final file list with the review package's
 changed set and confirm the package Head still equals the task branch HEAD. They must match.
 Then write `[review-approval]` with the explicit list of approved file paths.
+Submit it through the outbox; the credentialed broker adds the exact request
+digest, task-branch HEAD, and package digest. Never copy those bindings from an
+older round or type a substitute by hand.
 
 ## Anti-rationalization — reject all of these
 

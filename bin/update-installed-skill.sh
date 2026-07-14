@@ -114,7 +114,10 @@ if ! $overwrite_config && [ -d "$install_dir" ]; then
   for file in \
     config/project-management.config.md \
     config/team.config.md \
-    config/statuses.config.json
+    config/statuses.config.json \
+    config/automation.config.json \
+    config/deployment.config.json \
+    config/guardrails.config.json
   do
     if [ -f "$install_dir/$file" ]; then
       mkdir -p "$preserve/$(dirname "$file")"

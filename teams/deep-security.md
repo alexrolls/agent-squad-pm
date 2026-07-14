@@ -8,6 +8,7 @@ the codebase itself.
 ```
 ROSTER=principal-security-architect senior-technical-product-manager senior-security-engineer senior-penetration-tester senior-qa-engineer integrator
 PROTOCOL_TEAM_LEAD=principal-security-architect
+PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-security-architect
 PROTOCOL_REVIEWER=senior-qa-engineer
 PROTOCOL_QA=senior-qa-engineer

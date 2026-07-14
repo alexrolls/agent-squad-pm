@@ -75,15 +75,25 @@ MCP tool / CLI command / file edit.
 | Set `[task]` status | <...> |
 | Set `[feature]` status | <...> |
 | Add a comment to a `[task]` | <...> |
+| Add a comment once by delivery id | <how `comment-once` finds the exact `delivery-id:` token before creating a comment> |
+| Update a comment | <edit by stable comment id, or explicitly refuse if the tool cannot preserve the protocol> |
 | Export the `[tasks]` of a `[feature]` to a file | <how to dump id/title/status/assignee/description/comments as JSON — gives credential-less roles a read-only snapshot> |
-| update comment | <tool mechanism for editing an existing comment; optional — if the tool can't edit, document the append-a-superseding-comment degradation> |
+| Scan `[tasks]` across the configured board scope | <scriptable, paginated discovery using generic status inputs and the normalized schema in `reference/automation.md`> |
 | Upsert task runtime progress | <how to find and update one managed progress projection without duplicates> |
 | Upsert feature runtime digest | <how to find and update one managed digest projection without duplicates> |
+| Upsert feature deployment state | <how to find and update one managed `[deployment]` projection without duplicates> |
+| Record a policy denial once | <how `record-denial` keys the `[DENIED ACTION]` projection by denial id> |
+| Integrate a `[task]` once | <terminal transition plus exact commit comment, with read-back and duplicate suppression> |
+| Set/read `[feature]` status | <how `feature-state` resolves, transitions, and reads back the generic feature status> |
 
-> If the tool has a scriptable (non-MCP) mechanism, consider adding a backend for it to
-> `bin/tracker-ops.sh` so `claim` / `state` / `comment` / `upsert-progress` /
-> `upsert-digest` / `integrate` / `export` work
-> without hand-built API calls. The Operations table above remains the spec either way.
+> Unattended automation requires a registered deterministic backend in
+> `bin/tracker-ops.sh`; the prose adapter alone is not executable. Implement the
+> full port: `claim`, `state`, `feature-state`, `comment`, `comment-once`,
+> `update-comment` (or an explicit fail-closed refusal), `upsert-progress`,
+> `upsert-digest`, `upsert-deployment`, `record-denial`, `integrate`, `export`,
+> and `scan`, without hand-built API calls. Every mutation must be idempotent
+> where the port says it is and must read back the resulting state. The
+> Operations table above remains the spec either way.
 
 ## Rules
 
@@ -100,3 +110,45 @@ If it fails: stop, tell the user to fix `MCP / CLI Setup`, do not proceed.
 > Executed **once by `launch-team.sh preflight`** (automatic before `team`), not
 > per-agent. Agents receive the verified access mechanism (and, for MCP tools, the
 > verified tool prefix) in their startup prompt and must not re-derive it.
+
+## Automation contract
+
+Document whether board-wide `scan` is available from a non-interactive process,
+how it constrains scope, paginates, exposes revisions, and prevents duplicate
+claims. MCP-only access is not a cron backend. If scriptable discovery is not
+available, `pm-agent.py` must fail closed.
+
+Scriptable HTTP/CLI implementations must use bounded calls. The bundled broker
+honors `TRACKER_OPERATION_TIMEOUT_SECONDS` (1–300 seconds, default 60); custom
+adapter subprocesses must not disable that deadline.
+
+`export` must exhaust every [task] and every nested comment/label/dependency
+page and emit `{adapter, featureId, exportedAt, tasks}`. `featureId` must equal
+the requested identifier exactly. `tasks` must have unique, non-empty string
+`taskId` values and normalized `title`, generic `status`, raw status,
+`assignee`, `description`, `blockedBy`, `labels`, `updatedAt`, `revision`, and
+`comments`. `scan` must exhaust the explicitly configured board scope and emit
+schema-v1 `{adapter, scannedAt, statuses, items, orphans}` records; every item
+uses the same normalized fields plus an exact `featureId`. Never silently omit
+out-of-scope records from an allegedly exhaustive feature export—reject the
+feature instead.
+
+The normalized task shape is not best-effort. Reject an unknown/unmapped
+generic status, a missing required field, an empty or duplicate task identity,
+a non-list `blockedBy`/`labels`/`comments` value, or malformed nested values.
+For scans, task identities are unique across the complete snapshot (not merely
+within one feature). If the tool exposes a first-class dependency endpoint,
+paginate it for every returned task; an unavailable/unsupported/unauthorized
+endpoint is an andon, not an empty `blockedBy` fallback.
+
+Each comment must expose a stable `id`, `body`, author, and sortable `revision`;
+remote tools also expose `createdAt` and `updatedAt`. A file adapter may use
+null timestamps only when it supplies a monotonic exported revision. Sort
+comments oldest-first by effective last modification (`updatedAt`, else
+`createdAt`, else the adapter revision), then stable id. If exhaustive
+pagination or deterministic ordering cannot be proven, fail closed: gate logic
+treats the last comparable protocol comment as current.
+Stable comment ids must be non-empty and unique within a task. Reject duplicate
+ids, malformed timestamps/revisions, missing remote timestamps, and an input
+sequence that is not already in that deterministic order. A file adapter's
+documented null timestamps do not waive its sortable-revision requirement.

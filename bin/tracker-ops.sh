@@ -21,6 +21,8 @@
 #   tracker-ops.sh export         <featureId> <outfile>                     # read-side: dump the [feature]'s [tasks] as JSON
 #   tracker-ops.sh scan           <outfile> --status <Status>...            # board-wide normalized discovery
 #   tracker-ops.sh feature-state  <featureId> <Status>                      # set [feature] status (generic name)
+#   tracker-ops.sh feature-reopen <featureId> <Status>                      # PM-supervisor-only terminal→queued reopen
+#   tracker-ops.sh task-reopen    <taskId> <Status>                         # integration-broker-only terminal→working rework
 #   tracker-ops.sh upsert-deployment <featureId> [bodyfile]                 # one managed [deployment] projection
 #
 # Adapter comes from PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md
@@ -29,11 +31,22 @@
 # andon stop: non-zero exit, no fallback, no fabricated success.
 set -euo pipefail
 
-# The script rides on fd 3 so stdin stays free for comment bodies.
+# Preserve caller stdin on fd 4 for comment bodies, then feed the embedded
+# program through Python's portable `-` input. Apple's system Python silently
+# ignores /dev/fd/N as a script path, so the older fd-3 launcher could report
+# success without executing the broker.
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec python3 /dev/fd/3 "$SKILL_DIR" "$@" 3<<'PYEOF'
-import hashlib, json, os, re, subprocess, sys, urllib.request, urllib.error
+exec 4<&0
+exec python3 - "$SKILL_DIR" "$@" <<'PYEOF'
+import hashlib, json, os, re, stat, subprocess, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import date, datetime, timezone
+
+try:
+    sys.stdin = os.fdopen(4)
+except OSError:
+    # Offline unit tests execute the embedded definitions directly. The real
+    # shell entrypoint always preserves caller stdin on fd 4 above.
+    pass
 
 def die(msg):
     print("tracker-ops: %s" % msg, file=sys.stderr)
@@ -60,6 +73,12 @@ PM_CONFIG = read_config_keys(os.path.join(SKILL_DIR, 'config', 'project-manageme
 ADAPTER = os.environ.get('TRACKER_ADAPTER') or PM_CONFIG.get('PRODUCT_MANAGEMENT_TOOL')
 if not ADAPTER:
     die("no adapter: set PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md")
+try:
+    OPERATION_TIMEOUT = int(os.environ.get('TRACKER_OPERATION_TIMEOUT_SECONDS', '60'))
+except ValueError:
+    die("TRACKER_OPERATION_TIMEOUT_SECONDS must be an integer")
+if not 1 <= OPERATION_TIMEOUT <= 300:
+    die("TRACKER_OPERATION_TIMEOUT_SECONDS must be from 1 to 300")
 
 board_path = os.path.join(SKILL_DIR, PM_CONFIG.get('STATUS_CONFIG') or 'config/statuses.config.json')
 try:
@@ -146,9 +165,18 @@ def replace_managed_block(text, key, body):
     end = '<!-- agent-squad:%s:end -->' % key
     block = '%s\n%s\n%s' % (start, body.rstrip(), end)
     pattern = re.compile(re.escape(start) + r'.*?' + re.escape(end), re.S)
-    if pattern.search(text or ''):
+    text = text or ''
+    matches = list(pattern.finditer(text))
+    # A duplicate or half-written managed block is ambiguous: replacing only
+    # one copy would preserve conflicting protocol evidence. Refuse every
+    # managed projection until an operator repairs the source.
+    if text.count(start) != text.count(end) or len(matches) != text.count(start):
+        die("managed %s block has unmatched markers — andon" % key)
+    if len(matches) > 1:
+        die("managed %s block is duplicated — andon" % key)
+    if matches:
         return pattern.sub(lambda _m: block, text, count=1)
-    text = (text or '').rstrip()
+    text = text.rstrip()
     return (text + '\n\n' if text else '') + block + '\n'
 
 def adf_text(value):
@@ -168,6 +196,139 @@ def env(name):
         die("missing env var %s (see the %s adapter's access section)" % (name, ADAPTER))
     return v
 
+GENERIC_TASK_STATUSES = {status['name'] for status in TASK_STATUSES}
+NORMALIZED_TASK_FIELDS = {
+    'taskId', 'title', 'status', 'statusRaw', 'assignee', 'description',
+    'comments', 'blockedBy', 'labels', 'updatedAt', 'revision',
+}
+
+def sortable_value(value, context):
+    """Return a total-order key for a timestamp/revision or fail closed."""
+    if isinstance(value, bool) or value is None:
+        die("%s lacks a sortable revision — andon" % context)
+    if isinstance(value, (int, float)):
+        if not isinstance(value, int) and (value != value or value in (float('inf'), float('-inf'))):
+            die("%s has a non-finite revision — andon" % context)
+        return (0, value)
+    if not isinstance(value, str) or not value.strip():
+        die("%s has a malformed revision — andon" % context)
+    raw = value.strip()
+    markdown = re.fullmatch(r'markdown-offset:([0-9]+)', raw)
+    if markdown:
+        return (0, int(markdown.group(1)))
+    if re.fullmatch(r'[0-9]+', raw):
+        return (0, int(raw))
+    try:
+        stamp = datetime.fromisoformat(raw[:-1] + '+00:00' if raw.endswith('Z') else raw)
+    except ValueError:
+        die("%s has an unparseable timestamp/revision '%s' — andon" % (context, raw))
+    if stamp.tzinfo is None:
+        die("%s has a timezone-free timestamp/revision — andon" % context)
+    return (1, stamp.astimezone(timezone.utc))
+
+def normalize_string_list(value, field, context, allow_integer=False):
+    if not isinstance(value, list):
+        die("%s field '%s' must be a list — andon" % (context, field))
+    normalized, seen = [], set()
+    for raw in value:
+        allowed = isinstance(raw, str) or (allow_integer and isinstance(raw, int) and not isinstance(raw, bool))
+        if not allowed:
+            die("%s field '%s' contains a malformed identity — andon" % (context, field))
+        item = str(raw).strip()
+        if not item or item in seen:
+            die("%s field '%s' contains an empty or duplicate identity — andon" % (context, field))
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+def normalize_comments(value, context):
+    if not isinstance(value, list):
+        die("%s comments must be a list — andon" % context)
+    normalized, seen_ids, order = [], set(), []
+    for index, raw in enumerate(value):
+        cctx = "%s comment %d" % (context, index + 1)
+        if not isinstance(raw, dict):
+            die("%s is malformed — andon" % cctx)
+        required = {'id', 'body', 'createdAt', 'updatedAt', 'revision', 'author'}
+        if not required.issubset(raw):
+            die("%s omits normalized field(s): %s — andon" %
+                (cctx, ', '.join(sorted(required - set(raw)))))
+        comment = dict(raw)
+        if isinstance(comment['id'], bool) or not isinstance(comment['id'], (str, int)):
+            die("%s has a malformed stable id — andon" % cctx)
+        comment['id'] = str(comment['id']).strip()
+        if not comment['id'] or comment['id'] in seen_ids:
+            die("%s has an empty or duplicate stable id — andon" % cctx)
+        seen_ids.add(comment['id'])
+        if not isinstance(comment['body'], str):
+            die("%s body must be a string — andon" % cctx)
+        if comment['author'] is not None and not isinstance(comment['author'], str):
+            die("%s author must be a string or null — andon" % cctx)
+        for field in ('createdAt', 'updatedAt'):
+            if comment[field] is not None and not isinstance(comment[field], str):
+                die("%s %s must be a timestamp string or null — andon" % (cctx, field))
+        if ADAPTER == 'Markdown':
+            if comment['createdAt'] is not None or comment['updatedAt'] is not None:
+                die("%s Markdown timestamps must be null; use revision — andon" % cctx)
+        elif not comment['createdAt'] or not comment['updatedAt']:
+            die("%s remote comment omits createdAt/updatedAt — andon" % cctx)
+        effective = comment['updatedAt'] or comment['createdAt'] or comment['revision']
+        order.append((sortable_value(effective, cctx), comment['id']))
+        # revision is mandatory independently of the effective timestamp; it
+        # is consumed by gate logic and must never be an incidental null.
+        sortable_value(comment['revision'], cctx + ' revision')
+        normalized.append(comment)
+    if order != sorted(order):
+        die("%s comments are not deterministically oldest-first — andon" % context)
+    return normalized
+
+def normalize_task_record(raw, context, feature_field=False):
+    """Validate and canonicalize the adapter-neutral task wire shape."""
+    if not isinstance(raw, dict):
+        die("%s is not an object — andon" % context)
+    missing = NORMALIZED_TASK_FIELDS - set(raw)
+    if missing:
+        die("%s omits normalized field(s): %s — andon" %
+            (context, ', '.join(sorted(missing))))
+    value = dict(raw)
+    if isinstance(value['taskId'], bool) or not isinstance(value['taskId'], (str, int)):
+        die("%s has a malformed taskId — andon" % context)
+    value['taskId'] = str(value['taskId']).strip()
+    if not value['taskId']:
+        die("%s has an empty taskId — andon" % context)
+    if not isinstance(value['title'], str) or not value['title'].strip():
+        die("%s has an empty/malformed title — andon" % context)
+    if value['status'] not in GENERIC_TASK_STATUSES:
+        die("%s has unmapped/unknown generic status '%s' — andon" %
+            (context, value.get('status')))
+    if not isinstance(value['statusRaw'], str) or not value['statusRaw'].strip():
+        die("%s has an empty/malformed raw status — andon" % context)
+    for field in ('assignee', 'description'):
+        if value[field] is not None and not isinstance(value[field], str):
+            die("%s field '%s' must be a string or null — andon" % (context, field))
+    if not isinstance(value['updatedAt'], str) or not value['updatedAt'].strip():
+        die("%s has an empty/malformed updatedAt — andon" % context)
+    sortable_value(value['updatedAt'], context + ' updatedAt')
+    sortable_value(value['revision'], context + ' revision')
+    value['blockedBy'] = normalize_string_list(
+        value['blockedBy'], 'blockedBy', context, allow_integer=True)
+    value['labels'] = normalize_string_list(value['labels'], 'labels', context)
+    value['comments'] = normalize_comments(value['comments'], context)
+    if feature_field:
+        missing_feature = {'featureId', 'featureTitle'} - set(value)
+        if missing_feature:
+            die("%s omits normalized field(s): %s — andon" %
+                (context, ', '.join(sorted(missing_feature))))
+        if value['featureId'] is not None:
+            if isinstance(value['featureId'], bool) or not isinstance(value['featureId'], (str, int)):
+                die("%s has a malformed featureId — andon" % context)
+            value['featureId'] = str(value['featureId']).strip()
+            if not value['featureId']:
+                die("%s has an empty featureId — andon" % context)
+        if value.get('featureTitle') is not None and not isinstance(value.get('featureTitle'), str):
+            die("%s has a malformed featureTitle — andon" % context)
+    return value
+
 # ---- adapter backends --------------------------------------------------------
 def http_json(url, payload=None, headers=None, method=None):
     data = json.dumps(payload).encode() if payload is not None else None
@@ -176,13 +337,15 @@ def http_json(url, payload=None, headers=None, method=None):
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=OPERATION_TIMEOUT) as resp:
             raw = resp.read().decode()
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as e:
         die("HTTP %s from %s: %s" % (e.code, url, e.read().decode()[:500]))
     except urllib.error.URLError as e:
         die("request to %s failed: %s" % (url, e.reason))
+    except TimeoutError:
+        die("request to %s exceeded the %ss tracker operation deadline" % (url, OPERATION_TIMEOUT))
 
 class Linear:
     def __init__(self):
@@ -196,22 +359,140 @@ class Linear:
             die("Linear API error: %s" % out['errors'][0].get('message'))
         return out['data']
 
+    @staticmethod
+    def mutation_payload(data, key, action):
+        payload = data.get(key) if isinstance(data, dict) else None
+        if not isinstance(payload, dict) or payload.get('success') is not True:
+            die("Linear %s did not return success=true — andon" % action)
+        return payload
+
+    def paginate(self, fetch_page, context):
+        """Exhaust one Relay connection and fail closed on malformed/stalled cursors."""
+        after, nodes, seen = None, [], set()
+        while True:
+            connection = fetch_page(after)
+            if not isinstance(connection, dict) or not isinstance(connection.get('nodes'), list):
+                die("Linear %s returned a malformed connection — andon" % context)
+            nodes.extend(connection['nodes'])
+            page = connection.get('pageInfo')
+            if not isinstance(page, dict) or not isinstance(page.get('hasNextPage'), bool):
+                die("Linear %s returned malformed pageInfo — andon" % context)
+            if not page.get('hasNextPage'):
+                return nodes
+            after = page.get('endCursor')
+            if not after:
+                die("Linear %s said hasNextPage without an endCursor — andon" % context)
+            if after in seen:
+                die("Linear %s repeated pagination cursor '%s' — andon" % (context, after))
+            seen.add(after)
+
+    def issue_connection(self, issue_id, connection):
+        fields = {
+            'comments': 'id body createdAt updatedAt user { name email }',
+            'labels': 'name',
+            'inverseRelations': 'type issue { identifier }',
+        }
+        if connection not in fields:
+            die("internal error: unsupported Linear issue connection '%s'" % connection)
+        query = '''query($id: String!, $after: String) {
+          issue(id: $id) {
+            %s(first: 100, after: $after) {
+              nodes { %s }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }''' % (connection, fields[connection])
+
+        def fetch(after):
+            issue = self.gql(query, {'id': issue_id, 'after': after}).get('issue')
+            if not issue:
+                die("no Linear issue '%s'" % issue_id)
+            return issue.get(connection)
+
+        return self.paginate(fetch, "issue %s %s" % (issue_id, connection))
+
+    def team_states(self, team_id):
+        query = '''query($id: String!, $after: String) {
+          team(id: $id) {
+            states(first: 100, after: $after) {
+              nodes { id name }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }'''
+
+        def fetch(after):
+            team = self.gql(query, {'id': team_id, 'after': after}).get('team')
+            if not team:
+                die("no Linear team '%s'" % team_id)
+            return team.get('states')
+
+        return self.paginate(fetch, "team %s states" % team_id)
+
+    def resolve_team(self, scope):
+        # Resolve an exact key/name before scanning. This makes a typo an andon
+        # instead of a deceptively successful empty board scan.
+        query = '''query($after: String) {
+          teams(first: 100, after: $after) {
+            nodes { id key name }
+            pageInfo { hasNextPage endCursor }
+          }
+        }'''
+        rows = self.paginate(
+            lambda after: self.gql(query, {'after': after}).get('teams'),
+            "team lookup")
+        matches = {team.get('id'): team for team in rows
+                   if scope in (team.get('key'), team.get('name'))}
+        matches.pop(None, None)
+        if len(matches) != 1:
+            die("Linear team scope '%s': %d exact matches — fix LINEAR_DEFAULT_TEAM" % (scope, len(matches)))
+        return next(iter(matches.values()))
+
+    @staticmethod
+    def normalize_comments(comments):
+        rows = [{'id': c.get('id'), 'body': c.get('body'),
+                 'createdAt': c.get('createdAt'), 'updatedAt': c.get('updatedAt'),
+                 'revision': c.get('updatedAt'),
+                 'author': (c.get('user') or {}).get('email') or (c.get('user') or {}).get('name')}
+                for c in comments]
+        rows.sort(key=lambda c: (c.get('updatedAt') or c.get('createdAt') or '',
+                                 str(c.get('id') or '')))
+        return rows
+
+    def hydrate_issue(self, issue_id):
+        comments = self.issue_connection(issue_id, 'comments')
+        labels = self.issue_connection(issue_id, 'labels')
+        relations = self.issue_connection(issue_id, 'inverseRelations')
+        return {
+            'comments': self.normalize_comments(comments),
+            'labels': [item['name'] for item in labels],
+            'blockedBy': [item['issue']['identifier'] for item in relations
+                          if item.get('type') == 'blocks' and item.get('issue')],
+        }
+
     def issue(self, task_id):
-        d = self.gql('query($id: String!) { issue(id: $id) { id identifier team { id states { nodes { id name } } } } }',
+        d = self.gql('query($id: String!) { issue(id: $id) { id identifier team { id } } }',
                      {'id': task_id})
         if not d.get('issue'):
             die("no Linear issue '%s'" % task_id)
-        return d['issue']
+        issue = d['issue']
+        if not issue.get('team') or not issue['team'].get('id'):
+            die("Linear issue '%s' has no team — andon" % task_id)
+        return issue
 
     def set_state(self, task_id, status):
         want = tool_value(status)
         issue = self.issue(task_id)
-        states = issue['team']['states']['nodes']
+        states = self.team_states(issue['team']['id'])
         sid = next((s['id'] for s in states if s['name'] == want), None)
         if not sid:
             die("Linear team has no workflow state '%s' — andon (create it or fix the board mapping)" % want)
-        self.gql('mutation($id: String!, $sid: String!) { issueUpdate(id: $id, input: {stateId: $sid}) { success } }',
-                 {'id': issue['id'], 'sid': sid})
+        d = self.gql('mutation($id: String!, $sid: String!) { issueUpdate(id: $id, input: {stateId: $sid}) { success issue { state { name } } } }',
+                     {'id': issue['id'], 'sid': sid})
+        payload = self.mutation_payload(d, 'issueUpdate', 'issue state update')
+        observed = (((payload.get('issue') or {}).get('state') or {}).get('name'))
+        if observed != want:
+            die("Linear issue state mutation read back '%s', expected '%s' — andon" % (observed, want))
 
     def current_status(self, task_id):
         d = self.gql('query($id: String!) { issue(id: $id) { state { name } } }', {'id': task_id})
@@ -221,25 +502,33 @@ class Linear:
         return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
 
     def comment_exists(self, task_id, needle):
-        d = self.gql('query($id: String!) { issue(id: $id) { comments { nodes { body } } } }', {'id': task_id})
         return any(needle in (c.get('body') or '')
-                   for c in d['issue']['comments']['nodes'])
+                   for c in self.issue_connection(task_id, 'comments'))
 
     def comment(self, task_id, body):
         issue = self.issue(task_id)
-        d = self.gql('mutation($id: String!, $body: String!) { commentCreate(input: {issueId: $id, body: $body}) { success comment { id } } }',
+        d = self.gql('mutation($id: String!, $body: String!) { commentCreate(input: {issueId: $id, body: $body}) { success comment { id body } } }',
                      {'id': issue['id'], 'body': body})
-        return d['commentCreate']['comment']['id']
+        payload = self.mutation_payload(d, 'commentCreate', 'comment creation')
+        comment = payload.get('comment') or {}
+        if not comment.get('id'):
+            die("Linear comment creation returned no comment id — andon")
+        if comment.get('body') != body:
+            die("Linear comment creation did not read back the requested body — andon")
+        return comment['id']
 
     def update_comment(self, task_id, comment_id, body):
-        self.gql('mutation($cid: String!, $body: String!) { commentUpdate(id: $cid, input: {body: $body}) { success } }',
+        d = self.gql('mutation($cid: String!, $body: String!) { commentUpdate(id: $cid, input: {body: $body}) { success comment { id body } } }',
                      {'cid': comment_id, 'body': body})
+        payload = self.mutation_payload(d, 'commentUpdate', 'comment update')
+        comment = payload.get('comment') or {}
+        if str(comment.get('id')) != str(comment_id) or comment.get('body') != body:
+            die("Linear comment update did not read back the requested body — andon")
 
     def upsert_progress(self, task_id, body):
         issue = self.issue(task_id)
-        d = self.gql('query($id: String!) { issue(id: $id) { comments { nodes { id body } } } }',
-                     {'id': issue['id']})
-        current = next((c for c in d['issue']['comments']['nodes']
+        comments = self.issue_connection(issue['id'], 'comments')
+        current = next((c for c in comments
                         if (c.get('body') or '').lstrip().startswith('[progress]')), None)
         if current:
             self.update_comment(task_id, current['id'], body)
@@ -250,15 +539,21 @@ class Linear:
         pid = self.project_id(feature_id)
         d = self.gql('query($id: String!) { project(id: $id) { description } }', {'id': pid})
         description = replace_managed_block((d.get('project') or {}).get('description') or '', 'digest', body)
-        self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success } }',
-                 {'id': pid, 'description': description})
+        d = self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success project { description } } }',
+                     {'id': pid, 'description': description})
+        payload = self.mutation_payload(d, 'projectUpdate', 'project digest update')
+        if (payload.get('project') or {}).get('description') != description:
+            die("Linear project digest update did not read back the requested description — andon")
 
     def upsert_deployment(self, feature_id, body):
         pid = self.project_id(feature_id)
         d = self.gql('query($id: String!) { project(id: $id) { description } }', {'id': pid})
         description = replace_managed_block((d.get('project') or {}).get('description') or '', 'deployment', body)
-        self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success } }',
-                 {'id': pid, 'description': description})
+        d = self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success project { description } } }',
+                     {'id': pid, 'description': description})
+        payload = self.mutation_payload(d, 'projectUpdate', 'project deployment update')
+        if (payload.get('project') or {}).get('description') != description:
+            die("Linear project deployment update did not read back the requested description — andon")
 
     def current_feature_status(self, feature_id):
         d = self.gql('query($id: String!) { project(id: $id) { status { name } } }',
@@ -268,18 +563,31 @@ class Linear:
 
     def set_feature_state(self, feature_id, status):
         want = feature_tool_value(status)
-        d = self.gql('{ projectStatuses { nodes { id name } } }')
-        sid = next((s['id'] for s in d.get('projectStatuses', {}).get('nodes', []) if s.get('name') == want), None)
+        query = '''query($after: String) {
+          projectStatuses(first: 100, after: $after) {
+            nodes { id name }
+            pageInfo { hasNextPage endCursor }
+          }
+        }'''
+        statuses = self.paginate(
+            lambda after: self.gql(query, {'after': after}).get('projectStatuses'),
+            "project statuses",
+        )
+        sid = next((s['id'] for s in statuses if s.get('name') == want), None)
         if not sid:
             die("Linear workspace has no project status '%s' — andon" % want)
-        self.gql('mutation($id: String!, $sid: String!) { projectUpdate(id: $id, input: {statusId: $sid}) { success } }',
-                 {'id': self.project_id(feature_id), 'sid': sid})
+        d = self.gql('mutation($id: String!, $sid: String!) { projectUpdate(id: $id, input: {statusId: $sid}) { success project { status { name } } } }',
+                     {'id': self.project_id(feature_id), 'sid': sid})
+        payload = self.mutation_payload(d, 'projectUpdate', 'project state update')
+        observed = (((payload.get('project') or {}).get('status') or {}).get('name'))
+        if observed != want:
+            die("Linear project state mutation read back '%s', expected '%s' — andon" % (observed, want))
 
     def project_id(self, feature_id):
         # The adapter's ID mapping allows a project UUID or a project name.
         if re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', feature_id.lower()):
             return feature_id
-        d = self.gql('query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes { id name } } }',
+        d = self.gql('query($name: String!) { projects(first: 2, filter: {name: {eq: $name}}) { nodes { id name } } }',
                      {'name': feature_id})
         if not d.get('projects'):
             die("Linear returned no projects data for the name lookup — check LINEAR_API_KEY scope")
@@ -289,77 +597,112 @@ class Linear:
         return nodes[0]['id']
 
     def export(self, feature_id):
-        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description updatedAt state { name } assignee { name } labels { nodes { name } } comments { nodes { id body createdAt user { name email } } } inverseRelations { nodes { type issue { identifier } } } } } } }',
-                     {'id': self.project_id(feature_id)})
-        if not d.get('project'):
-            die("no Linear project '%s'" % feature_id)
-        tasks = []
-        for i in d['project']['issues']['nodes']:
-            raw = i['state']['name']
-            blocked_by = [r['issue']['identifier']
-                          for r in (i.get('inverseRelations') or {}).get('nodes', [])
-                          if r.get('type') == 'blocks' and r.get('issue')]
-            tasks.append({'taskId': i['identifier'], 'title': i['title'],
+        project_id, tasks = self.project_id(feature_id), []
+        team_scope = PM_CONFIG.get('LINEAR_DEFAULT_TEAM')
+        team = self.resolve_team(team_scope) if team_scope else None
+        # Read the entire project before enforcing team scope. Filtering here
+        # would silently make a multi-team project look exhaustive.
+        query = '''query($id: String!, $after: String) {
+          project(id: $id) {
+            issues(first: 100, after: $after, includeArchived: true) {
+              nodes {
+                id identifier title description updatedAt
+                state { name } assignee { name }
+                team { id key name }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }'''
+        variables = {'id': project_id}
+
+        def fetch(after):
+            page_variables = dict(variables)
+            page_variables['after'] = after
+            project = self.gql(query, page_variables).get('project')
+            if not project:
+                die("no Linear project '%s'" % feature_id)
+            return project.get('issues')
+
+        for issue in self.paginate(fetch, "project %s issues" % feature_id):
+            raw = (issue.get('state') or {}).get('name')
+            issue_team = issue.get('team') or {}
+            if team and issue_team.get('id') != team['id']:
+                die("Linear project export returned issue %s from outside configured team '%s' — andon"
+                    % (issue.get('identifier'), team_scope))
+            hydrated = self.hydrate_issue(issue['id'])
+            tasks.append({'taskId': issue['identifier'], 'title': issue['title'],
                           'status': generic_of(raw), 'statusRaw': raw,
-                          'assignee': (i.get('assignee') or {}).get('name'),
-                          'description': i.get('description'),
-                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c['createdAt'],
-                                        'author': (c.get('user') or {}).get('email') or (c.get('user') or {}).get('name')}
-                                       for c in i['comments']['nodes']],
-                          'blockedBy': blocked_by,
-                          'labels': [x['name'] for x in (i.get('labels') or {}).get('nodes', [])],
-                          'updatedAt': i.get('updatedAt'), 'revision': i.get('updatedAt')})
+                          'assignee': (issue.get('assignee') or {}).get('name'),
+                          'description': issue.get('description'),
+                          'comments': hydrated['comments'],
+                          'blockedBy': hydrated['blockedBy'],
+                          'labels': hydrated['labels'],
+                          'updatedAt': issue.get('updatedAt'), 'revision': issue.get('updatedAt')})
         return tasks
 
     def scan(self, statuses):
         wanted = {tool_value(status_by_name(name)) for name in statuses}
         team_scope = PM_CONFIG.get('LINEAR_DEFAULT_TEAM')
-        items, after = [], None
-        query = '''query($after: String) {
-          issues(first: 100, after: $after) {
-            nodes {
-              identifier title description updatedAt
-              state { name } assignee { name }
-              team { key name }
-              project { id name }
-              labels { nodes { name } }
-              comments { nodes { id body createdAt user { name email } } }
-              inverseRelations { nodes { type issue { identifier } } }
-            }
-            pageInfo { hasNextPage endCursor }
-          }
-        }'''
-        while True:
-            d = self.gql(query, {'after': after})['issues']
-            for i in d.get('nodes', []):
-                raw = (i.get('state') or {}).get('name')
-                team = i.get('team') or {}
-                if raw not in wanted:
-                    continue
-                if team_scope and team_scope not in {team.get('key'), team.get('name')}:
-                    continue
-                project = i.get('project') or {}
-                blocked_by = [r['issue']['identifier']
-                              for r in (i.get('inverseRelations') or {}).get('nodes', [])
-                              if r.get('type') == 'blocks' and r.get('issue')]
-                items.append({
-                    'featureId': project.get('id'), 'featureTitle': project.get('name'),
-                    'taskId': i['identifier'], 'title': i['title'],
-                    'status': generic_of(raw), 'statusRaw': raw,
-                    'assignee': (i.get('assignee') or {}).get('name'),
-                    'description': i.get('description'), 'blockedBy': blocked_by,
-                    'comments': [{'id': c.get('id'), 'body': c.get('body'), 'createdAt': c.get('createdAt'),
-                                  'author': (c.get('user') or {}).get('email') or (c.get('user') or {}).get('name')}
-                                 for c in (i.get('comments') or {}).get('nodes', [])],
-                    'labels': [x['name'] for x in (i.get('labels') or {}).get('nodes', [])],
-                    'updatedAt': i.get('updatedAt'), 'revision': i.get('updatedAt'),
-                })
-            page = d.get('pageInfo') or {}
-            if not page.get('hasNextPage'):
-                break
-            after = page.get('endCursor')
-            if not after:
-                die("Linear pagination said hasNextPage without an endCursor")
+        team = self.resolve_team(team_scope) if team_scope else None
+        if team:
+            available = {state.get('name') for state in self.team_states(team['id'])}
+            missing = sorted(wanted - available)
+            if missing:
+                die("Linear team '%s' has no mapped workflow state(s): %s — fix the board mapping"
+                    % (team_scope, ', '.join(missing)))
+            query = '''query($after: String, $teamId: ID!, $statuses: [String!]!) {
+              issues(first: 100, after: $after,
+                     filter: {team: {id: {eq: $teamId}}, state: {name: {in: $statuses}}}) {
+                nodes {
+                  id identifier title description updatedAt
+                  state { name } assignee { name }
+                  team { id key name }
+                  project { id name }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }'''
+            variables = {'teamId': team['id'], 'statuses': sorted(wanted)}
+        else:
+            query = '''query($after: String, $statuses: [String!]!) {
+              issues(first: 100, after: $after, filter: {state: {name: {in: $statuses}}}) {
+                nodes {
+                  id identifier title description updatedAt
+                  state { name } assignee { name }
+                  team { id key name }
+                  project { id name }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }'''
+            variables = {'statuses': sorted(wanted)}
+
+        def fetch(after):
+            page_vars = dict(variables)
+            page_vars['after'] = after
+            return self.gql(query, page_vars).get('issues')
+
+        items = []
+        for issue in self.paginate(fetch, "board issues"):
+            raw = (issue.get('state') or {}).get('name')
+            issue_team = issue.get('team') or {}
+            if raw not in wanted:
+                die("Linear server-side status filter returned out-of-scope state '%s' — andon" % raw)
+            if team and issue_team.get('id') != team['id']:
+                die("Linear server-side team filter returned issue %s from another team — andon"
+                    % issue.get('identifier'))
+            project = issue.get('project') or {}
+            hydrated = self.hydrate_issue(issue['id'])
+            items.append({
+                'featureId': project.get('id'), 'featureTitle': project.get('name'),
+                'taskId': issue['identifier'], 'title': issue['title'],
+                'status': generic_of(raw), 'statusRaw': raw,
+                'assignee': (issue.get('assignee') or {}).get('name'),
+                'description': issue.get('description'), 'blockedBy': hydrated['blockedBy'],
+                'comments': hydrated['comments'], 'labels': hydrated['labels'],
+                'updatedAt': issue.get('updatedAt'), 'revision': issue.get('updatedAt'),
+            })
         return items
 
 class Jira:
@@ -371,6 +714,117 @@ class Jira:
 
     def api(self, path, payload=None, method=None):
         return http_json(self.base + path, payload, self.headers, method)
+
+    @staticmethod
+    def config_scope_value(name):
+        value = PM_CONFIG.get(name)
+        if (not isinstance(value, str) or not value or value != value.strip() or
+                len(value) > 255 or any(ord(char) < 32 for char in value)):
+            die("Jira automation requires a non-empty, canonical %s — andon" % name)
+        return value
+
+    @staticmethod
+    def jql_string(value):
+        """Quote an operator- or tracker-provided identity as one JQL string."""
+        return '"%s"' % value.replace('\\', '\\\\').replace('"', '\\"')
+
+    def resolve_scope(self):
+        """Resolve the configured project exactly before any exhaustive read."""
+        project_key = self.config_scope_value('JIRA_PROJECT_KEY')
+        task_issue_type = self.config_scope_value('JIRA_TASK_ISSUE_TYPE')
+        if task_issue_type.casefold() == 'epic':
+            die("JIRA_TASK_ISSUE_TYPE must name a child task type, never Epic — andon")
+        project = self.api('/rest/api/3/project/%s' %
+                           urllib.parse.quote(project_key, safe=''))
+        if not isinstance(project, dict):
+            die("Jira project lookup returned a malformed project — andon")
+        observed = project.get('key')
+        if observed != project_key:
+            die("Jira project lookup resolved key '%s', expected exact key '%s' — andon"
+                % (observed, project_key))
+        return project_key, task_issue_type
+
+    @staticmethod
+    def scoped_issue_fields(issue, project_key, task_issue_type, context):
+        if not isinstance(issue, dict) or not isinstance(issue.get('fields'), dict):
+            die("%s returned a malformed Jira issue — andon" % context)
+        issue_key = issue.get('key')
+        if not isinstance(issue_key, str) or not issue_key:
+            die("%s returned a Jira issue without a key — andon" % context)
+        fields = issue['fields']
+        observed_project = ((fields.get('project') or {}).get('key')
+                            if isinstance(fields.get('project'), dict) else None)
+        if observed_project != project_key:
+            die("%s returned issue %s from project '%s', expected '%s' — andon"
+                % (context, issue_key, observed_project, project_key))
+        observed_type = ((fields.get('issuetype') or {}).get('name')
+                         if isinstance(fields.get('issuetype'), dict) else None)
+        if observed_type != task_issue_type:
+            die("%s returned issue %s with type '%s', expected child task type '%s' — andon"
+                % (context, issue_key, observed_type, task_issue_type))
+        return fields
+
+    def comments(self, task_id):
+        rows, start, page_size = [], 0, 100
+        while True:
+            path = ('/rest/api/3/issue/%s/comment?startAt=%d&maxResults=%d'
+                    % (urllib.request.quote(str(task_id), safe=''), start, page_size))
+            out = self.api(path)
+            page = out.get('comments')
+            if not isinstance(page, list):
+                die("Jira comments for %s returned a malformed page — andon" % task_id)
+            rows.extend(page)
+            start += len(page)
+            total = out.get('total')
+            if total is not None:
+                try:
+                    total = int(total)
+                except (TypeError, ValueError):
+                    die("Jira comments for %s returned an invalid total — andon" % task_id)
+                if start >= total:
+                    break
+                if not page:
+                    die("Jira comments for %s ended before total=%d — andon" % (task_id, total))
+            elif out.get('isLast') is True or len(page) < page_size:
+                break
+            elif not page:
+                die("Jira comments for %s stalled during pagination — andon" % task_id)
+        rows.sort(key=lambda c: (c.get('updated') or c.get('created') or '',
+                                 str(c.get('id') or '')))
+        return rows
+
+    def search_all(self, jql, fields):
+        # Jira's enhanced search is a scrolling/token API. The legacy
+        # /rest/api/3/search startAt endpoint is being removed and can produce
+        # inconsistent pages while issues move during a scan.
+        rows, token, seen_tokens, page_size = [], None, set(), 100
+        field_names = [field.strip() for field in fields.split(',') if field.strip()]
+        if not field_names:
+            die("Jira enhanced search requires at least one field — andon")
+        while True:
+            payload = {'jql': jql, 'fields': field_names, 'maxResults': page_size}
+            if token is not None:
+                payload['nextPageToken'] = token
+            out = self.api('/rest/api/3/search/jql', payload, method='POST')
+            page = out.get('issues')
+            if not isinstance(page, list):
+                die("Jira search returned a malformed issue page — andon")
+            if any(not isinstance(issue, dict) for issue in page):
+                die("Jira search returned a malformed issue record — andon")
+            rows.extend(page)
+            if not isinstance(out.get('isLast'), bool):
+                die("Jira enhanced search omitted boolean isLast — andon")
+            if out['isLast']:
+                return rows
+            next_token = out.get('nextPageToken')
+            if not isinstance(next_token, str) or not next_token:
+                die("Jira enhanced search is not last but omitted nextPageToken — andon")
+            if next_token in seen_tokens:
+                die("Jira enhanced search repeated nextPageToken — andon")
+            if not page:
+                die("Jira enhanced search stalled on an empty non-final page — andon")
+            seen_tokens.add(next_token)
+            token = next_token
 
     def set_state(self, task_id, status):
         want = tool_value(status)
@@ -389,9 +843,8 @@ class Jira:
         return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
 
     def comment_exists(self, task_id, needle):
-        issue = self.api('/rest/api/3/issue/%s?fields=comment' % task_id)
         return any(needle in adf_text(c.get('body'))
-                   for c in (issue.get('fields', {}).get('comment') or {}).get('comments', []))
+                   for c in self.comments(task_id))
 
     @staticmethod
     def adf(text):
@@ -401,15 +854,18 @@ class Jira:
 
     def comment(self, task_id, body):
         resp = self.api('/rest/api/3/issue/%s/comment' % task_id, {'body': self.adf(body)})
-        return resp.get('id')
+        if not resp.get('id'):
+            die("Jira comment creation returned no comment id — andon")
+        return resp['id']
 
     def update_comment(self, task_id, comment_id, body):
-        self.api('/rest/api/3/issue/%s/comment/%s' % (task_id, comment_id),
-                 {'body': self.adf(body)}, method='PUT')
+        resp = self.api('/rest/api/3/issue/%s/comment/%s' % (task_id, comment_id),
+                        {'body': self.adf(body)}, method='PUT')
+        if str(resp.get('id')) != str(comment_id):
+            die("Jira comment update did not read back comment %s — andon" % comment_id)
 
     def upsert_progress(self, task_id, body):
-        issue = self.api('/rest/api/3/issue/%s?fields=comment' % task_id)
-        comments = (issue.get('fields', {}).get('comment') or {}).get('comments', [])
+        comments = self.comments(task_id)
         current = next((c for c in comments
                         if adf_text(c.get('body')).lstrip().startswith('[progress]')), None)
         if current:
@@ -418,8 +874,7 @@ class Jira:
         return self.comment(task_id, body)
 
     def upsert_digest(self, feature_id, body):
-        issue = self.api('/rest/api/3/issue/%s?fields=comment' % feature_id)
-        comments = (issue.get('fields', {}).get('comment') or {}).get('comments', [])
+        comments = self.comments(feature_id)
         current = next((c for c in comments
                         if adf_text(c.get('body')).lstrip().startswith('[digest]')), None)
         if current:
@@ -428,8 +883,7 @@ class Jira:
             self.comment(feature_id, body)
 
     def upsert_deployment(self, feature_id, body):
-        issue = self.api('/rest/api/3/issue/%s?fields=comment' % feature_id)
-        comments = (issue.get('fields', {}).get('comment') or {}).get('comments', [])
+        comments = self.comments(feature_id)
         current = next((c for c in comments
                         if adf_text(c.get('body')).lstrip().startswith('[deployment]')), None)
         if current:
@@ -451,60 +905,74 @@ class Jira:
         self.api('/rest/api/3/issue/%s/transitions' % feature_id, {'transition': {'id': tid}})
 
     def export(self, feature_id):
-        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks,labels,updated&maxResults=100'
-                       % urllib.request.quote('parent=%s' % feature_id))
+        project_key, task_issue_type = self.resolve_scope()
+        jql = ' AND '.join([
+            'project = %s' % self.jql_string(project_key),
+            'issuetype = %s' % self.jql_string(task_issue_type),
+            'parent = %s' % self.jql_string(str(feature_id)),
+        ])
         tasks = []
-        for i in out.get('issues', []):
-            f = i['fields']
+        issues = self.search_all(
+            jql,
+            'summary,description,status,assignee,issuelinks,labels,updated,project,issuetype')
+        for i in issues:
+            f = self.scoped_issue_fields(
+                i, project_key, task_issue_type, "Jira feature export")
             raw = f['status']['name']
             blocked_by = [l['inwardIssue']['key'] for l in f.get('issuelinks', [])
                           if l.get('type', {}).get('name') == 'Blocks' and l.get('inwardIssue')]
+            comments = self.comments(i['key'])
             tasks.append({'taskId': i['key'], 'title': f['summary'],
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (f.get('assignee') or {}).get('displayName'),
                           'description': adf_text(f.get('description')),
-                          'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')), 'createdAt': c.get('created'),
+                          'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')),
+                                        'createdAt': c.get('created'), 'updatedAt': c.get('updated'),
+                                        'revision': c.get('updated'),
                                         'author': (c.get('author') or {}).get('accountId') or (c.get('author') or {}).get('displayName')}
-                                       for c in (f.get('comment') or {}).get('comments', [])],
+                                       for c in comments],
                           'blockedBy': blocked_by, 'labels': f.get('labels') or [],
                           'updatedAt': f.get('updated'), 'revision': f.get('updated')})
         return tasks
 
     def scan(self, statuses):
+        project_key, task_issue_type = self.resolve_scope()
         raw_statuses = [tool_value(status_by_name(name)) for name in statuses]
-        quoted = ','.join('"%s"' % value.replace('"', '\\"') for value in raw_statuses)
-        clauses = ['status in (%s)' % quoted]
-        if PM_CONFIG.get('JIRA_PROJECT_KEY'):
-            clauses.append('project = "%s"' % PM_CONFIG['JIRA_PROJECT_KEY'].replace('"', '\\"'))
+        quoted = ','.join(self.jql_string(value) for value in raw_statuses)
+        clauses = [
+            'project = %s' % self.jql_string(project_key),
+            'issuetype = %s' % self.jql_string(task_issue_type),
+            'status in (%s)' % quoted,
+        ]
         jql = ' AND '.join(clauses)
-        items, start = [], 0
-        while True:
-            path = ('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks,parent,labels,updated'
-                    '&startAt=%d&maxResults=100') % (urllib.request.quote(jql), start)
-            out = self.api(path)
-            rows = out.get('issues', [])
-            for i in rows:
-                f = i['fields']
-                raw = f['status']['name']
-                parent = f.get('parent') or {}
-                blocked_by = [l['inwardIssue']['key'] for l in f.get('issuelinks', [])
-                              if l.get('type', {}).get('name') == 'Blocks' and l.get('inwardIssue')]
-                items.append({
-                    'featureId': parent.get('key'),
-                    'featureTitle': ((parent.get('fields') or {}).get('summary') if isinstance(parent.get('fields'), dict) else None),
-                    'taskId': i['key'], 'title': f['summary'],
-                    'status': generic_of(raw), 'statusRaw': raw,
-                    'assignee': (f.get('assignee') or {}).get('displayName'),
-                    'description': adf_text(f.get('description')), 'blockedBy': blocked_by,
-                    'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')), 'createdAt': c.get('created'),
-                                  'author': (c.get('author') or {}).get('accountId') or (c.get('author') or {}).get('displayName')}
-                                 for c in (f.get('comment') or {}).get('comments', [])],
-                    'labels': f.get('labels') or [], 'updatedAt': f.get('updated'), 'revision': f.get('updated'),
-                })
-            start += len(rows)
-            total = int(out.get('total', start))
-            if not rows or start >= total:
-                break
+        items = []
+        rows = self.search_all(jql,
+                               'summary,description,status,assignee,issuelinks,parent,labels,updated,project,issuetype')
+        for i in rows:
+            f = self.scoped_issue_fields(
+                i, project_key, task_issue_type, "Jira board scan")
+            raw = f['status']['name']
+            if raw not in raw_statuses:
+                die("Jira server-side status filter returned issue %s in state '%s' — andon"
+                    % (i.get('key'), raw))
+            parent = f.get('parent') or {}
+            blocked_by = [l['inwardIssue']['key'] for l in f.get('issuelinks', [])
+                          if l.get('type', {}).get('name') == 'Blocks' and l.get('inwardIssue')]
+            comments = self.comments(i['key'])
+            items.append({
+                'featureId': parent.get('key'),
+                'featureTitle': ((parent.get('fields') or {}).get('summary') if isinstance(parent.get('fields'), dict) else None),
+                'taskId': i['key'], 'title': f['summary'],
+                'status': generic_of(raw), 'statusRaw': raw,
+                'assignee': (f.get('assignee') or {}).get('displayName'),
+                'description': adf_text(f.get('description')), 'blockedBy': blocked_by,
+                'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')),
+                              'createdAt': c.get('created'), 'updatedAt': c.get('updated'),
+                              'revision': c.get('updated'),
+                              'author': (c.get('author') or {}).get('accountId') or (c.get('author') or {}).get('displayName')}
+                             for c in comments],
+                'labels': f.get('labels') or [], 'updatedAt': f.get('updated'), 'revision': f.get('updated'),
+            })
         return items
 
 class GitHubIssues:
@@ -516,9 +984,12 @@ class GitHubIssues:
     def gh(self, *args, stdin=None):
         cmd = ['gh'] + list(args) + self.repo_args
         try:
-            r = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
+            r = subprocess.run(cmd, input=stdin, capture_output=True, text=True,
+                               timeout=OPERATION_TIMEOUT)
         except FileNotFoundError:
             die("gh CLI not found (see the GitHubIssues adapter's setup)")
+        except subprocess.TimeoutExpired:
+            die("gh exceeded the %ss tracker operation deadline" % OPERATION_TIMEOUT)
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
         return r.stdout
@@ -527,9 +998,12 @@ class GitHubIssues:
     def raw_gh(*args, stdin=None):
         cmd = ['gh'] + list(args)
         try:
-            r = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
+            r = subprocess.run(cmd, input=stdin, capture_output=True, text=True,
+                               timeout=OPERATION_TIMEOUT)
         except FileNotFoundError:
             die("gh CLI not found (see the GitHubIssues adapter's setup)")
+        except subprocess.TimeoutExpired:
+            die("gh exceeded the %ss tracker operation deadline" % OPERATION_TIMEOUT)
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
         return r.stdout
@@ -588,9 +1062,12 @@ class GitHubIssues:
         cmd = ['gh', 'api', '-X', 'PATCH', 'repos/%s/issues/comments/%s' % (repo, comment_id),
                '-f', 'body=%s' % body]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True)
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=OPERATION_TIMEOUT)
         except FileNotFoundError:
             die("gh CLI not found (see the GitHubIssues adapter's setup)")
+        except subprocess.TimeoutExpired:
+            die("gh exceeded the %ss tracker operation deadline" % OPERATION_TIMEOUT)
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
 
@@ -599,9 +1076,153 @@ class GitHubIssues:
             return PM_CONFIG['GITHUB_REPO']
         return json.loads(self.gh('repo', 'view', '--json', 'nameWithOwner'))['nameWithOwner']
 
+    @staticmethod
+    def endpoint(path, **params):
+        return path + (('?' + urllib.parse.urlencode(params)) if params else '')
+
+    def paginated_list(self, endpoint, resource):
+        """Read every REST page, refusing partial or structurally ambiguous data."""
+        raw = self.raw_gh('api', '--paginate', '--slurp', endpoint)
+        try:
+            pages = json.loads(raw)
+        except (TypeError, ValueError) as e:
+            die("GitHub %s pagination returned invalid JSON: %s — andon" % (resource, e))
+        if not isinstance(pages, list) or not pages:
+            die("GitHub %s pagination returned a malformed outer result — andon" % resource)
+        rows = []
+        for page_number, page in enumerate(pages, 1):
+            if not isinstance(page, list):
+                die("GitHub %s pagination returned malformed page %d — andon" %
+                    (resource, page_number))
+            if any(not isinstance(row, dict) for row in page):
+                die("GitHub %s pagination returned a malformed item on page %d — andon" %
+                    (resource, page_number))
+            rows.extend(page)
+        return rows
+
+    def milestones(self):
+        repo = self.repo_name()
+        rows = self.paginated_list(
+            self.endpoint('repos/%s/milestones' % repo, state='all', per_page=100),
+            'milestones')
+        if any('number' not in row or 'title' not in row or 'state' not in row for row in rows):
+            die("GitHub milestones response omitted required fields — andon")
+        return rows
+
+    def repository_issues(self, milestone_number=None):
+        repo = self.repo_name()
+        params = {'state': 'all', 'per_page': 100}
+        if milestone_number is not None:
+            params['milestone'] = str(milestone_number)
+        rows = self.paginated_list(
+            self.endpoint('repos/%s/issues' % repo, **params), 'issues')
+        # GitHub's repository issues REST endpoint deliberately includes pull
+        # requests. A pull_request key is the documented discriminator.
+        issues = [row for row in rows if 'pull_request' not in row]
+        required = ('number', 'title', 'state', 'labels', 'assignees', 'updated_at')
+        if any(any(field not in issue for field in required) for issue in issues):
+            die("GitHub issues response omitted required fields — andon")
+        if any(not isinstance(issue['labels'], list) or
+               not isinstance(issue['assignees'], list) or
+               (issue.get('milestone') is not None and
+                not isinstance(issue.get('milestone'), dict))
+               for issue in issues):
+            die("GitHub issues response contained malformed nested fields — andon")
+        return issues
+
+    @staticmethod
+    def issue_label_names(issue):
+        names = []
+        for label in issue['labels']:
+            if isinstance(label, str):
+                name = label
+            elif isinstance(label, dict):
+                name = label.get('name')
+            else:
+                name = None
+            if not isinstance(name, str) or not name:
+                die("GitHub issue %s has a malformed label — andon" % issue['number'])
+            names.append(name)
+        return names
+
+    @staticmethod
+    def primary_assignee(issue):
+        if not issue['assignees']:
+            return None
+        assignee = issue['assignees'][0]
+        if not isinstance(assignee, dict) or not isinstance(assignee.get('login'), str):
+            die("GitHub issue %s has a malformed assignee — andon" % issue['number'])
+        return assignee['login']
+
+    def generic_issue_status(self, issue, labels):
+        state = str(issue['state']).upper()
+        if state not in ('OPEN', 'CLOSED'):
+            die("GitHub issue %s has unknown state '%s' — andon" %
+                (issue['number'], issue['state']))
+        status_labels = [name for name in labels if name.startswith('status:')]
+        if state == 'OPEN' and len(status_labels) != 1:
+            die("GitHub open issue %s must have exactly one status:* label — andon" %
+                issue['number'])
+        label = status_labels[0] if status_labels else None
+        matches = []
+        for status in TASK_STATUSES:
+            closed, wanted = self.parse_tool_value(tool_value(status))
+            if (closed and state == 'CLOSED') or (not closed and wanted and wanted == label):
+                matches.append(status['name'])
+        if len(matches) != 1:
+            raw = 'closed' if state == 'CLOSED' else 'open + label %s' % (label or '?')
+            die("GitHub issue %s status '%s' has %d generic mappings — andon" %
+                (issue['number'], raw, len(matches)))
+        raw = 'closed' if state == 'CLOSED' else 'open + label %s' % label
+        return matches[0], raw
+
     def issue_comments(self, task_id):
         repo = self.repo_name()
-        return json.loads(self.raw_gh('api', 'repos/%s/issues/%s/comments?per_page=100' % (repo, task_id)))
+        comments = self.paginated_list(
+            self.endpoint('repos/%s/issues/%s/comments' % (repo, task_id), per_page=100),
+            'comments for issue %s' % task_id)
+        if any('id' not in comment or 'body' not in comment or
+               'created_at' not in comment or 'updated_at' not in comment
+               for comment in comments):
+            die("GitHub comments for issue %s omitted required fields — andon" % task_id)
+        if any(not isinstance(comment['created_at'], str) or
+               not isinstance(comment['updated_at'], str) or
+               (comment.get('user') is not None and not isinstance(comment.get('user'), dict))
+               for comment in comments):
+            die("GitHub comments for issue %s contained malformed fields — andon" % task_id)
+        # REST pages are an implementation detail. Return one deterministic,
+        # oldest-first modification timeline even if pages arrive out of order.
+        return sorted(comments, key=lambda comment:
+                      (comment['updated_at'], str(comment['id'])))
+
+    def issue_blocked_by(self, task_id):
+        """Exhaust GitHub's first-class issue-dependency connection."""
+        repo = self.repo_name()
+        endpoint = self.endpoint(
+            'repos/%s/issues/%s/dependencies/blocked_by' % (repo, task_id),
+            per_page=100)
+        try:
+            dependencies = self.paginated_list(
+                endpoint, 'blocked-by dependencies for issue %s' % task_id)
+        except SystemExit:
+            # Older GitHub Enterprise versions, disabled feature surfaces,
+            # missing token scopes, and partial pagination are all unsafe: an
+            # empty fallback would incorrectly auto-unblock work.
+            die("GitHub blocked_by dependency endpoint for issue %s is unavailable, "
+                "unsupported, unauthorized, or incomplete — andon" % task_id)
+        blocked_by, seen = [], set()
+        for dependency in dependencies:
+            number = dependency.get('number')
+            if isinstance(number, bool) or not isinstance(number, (str, int)):
+                die("GitHub blocked_by dependency for issue %s omitted a stable issue number — andon"
+                    % task_id)
+            number = str(number).strip()
+            if not number or number in seen:
+                die("GitHub blocked_by dependency for issue %s has an empty/duplicate issue number — andon"
+                    % task_id)
+            seen.add(number)
+            blocked_by.append(number)
+        return blocked_by
 
     def upsert_progress(self, task_id, body):
         current = next((c for c in self.issue_comments(task_id)
@@ -612,37 +1233,34 @@ class GitHubIssues:
         return self.comment(task_id, body)
 
     def upsert_digest(self, feature_id, body):
-        repo = self.repo_name()
-        milestones = json.loads(self.raw_gh('api', 'repos/%s/milestones?state=all&per_page=100' % repo))
-        current = next((m for m in milestones
-                        if str(m.get('number')) == str(feature_id) or m.get('title') == str(feature_id)), None)
-        if not current:
-            die("no GitHub milestone '%s' — andon" % feature_id)
+        repo, current = self.milestone(feature_id)
         description = replace_managed_block(current.get('description') or '', 'digest', body)
         cmd = ['gh', 'api', '-X', 'PATCH', 'repos/%s/milestones/%s' % (repo, current['number']),
                '-f', 'description=%s' % description]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=OPERATION_TIMEOUT)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            die("gh milestone update could not complete: %s" % exc)
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
 
     def upsert_deployment(self, feature_id, body):
-        repo = self.repo_name()
-        milestones = json.loads(self.raw_gh('api', 'repos/%s/milestones?state=all&per_page=100' % repo))
-        current = next((m for m in milestones
-                        if str(m.get('number')) == str(feature_id) or m.get('title') == str(feature_id)), None)
-        if not current:
-            die("no GitHub milestone '%s' — andon" % feature_id)
+        repo, current = self.milestone(feature_id)
         description = replace_managed_block(current.get('description') or '', 'deployment', body)
         cmd = ['gh', 'api', '-X', 'PATCH', 'repos/%s/milestones/%s' % (repo, current['number']),
                '-f', 'description=%s' % description]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=OPERATION_TIMEOUT)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            die("gh milestone update could not complete: %s" % exc)
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
 
     def milestone(self, feature_id):
         repo = self.repo_name()
-        milestones = json.loads(self.raw_gh('api', 'repos/%s/milestones?state=all&per_page=100' % repo))
-        current = next((m for m in milestones
+        current = next((m for m in self.milestones()
                         if str(m.get('number')) == str(feature_id) or m.get('title') == str(feature_id)), None)
         if not current:
             die("no GitHub milestone '%s' — andon" % feature_id)
@@ -667,55 +1285,48 @@ class GitHubIssues:
                     '-f', 'state=%s' % target)
 
     def export(self, feature_id):
-        raw = self.gh('issue', 'list', '--milestone', str(feature_id), '--state', 'all',
-                      '--json', 'number,title,body,state,labels,assignees')
+        _repo, milestone = self.milestone(feature_id)
         tasks = []
-        for i in json.loads(raw):
-            label = next((l['name'] for l in i['labels'] if l['name'].startswith('status:')), None)
-            raw_status = 'closed' if i['state'] == 'CLOSED' else 'open + label %s' % (label or '?')
-            generic = None
-            for s in TASK_STATUSES:
-                closed, lab = self.parse_tool_value(tool_value(s))
-                if (closed and i['state'] == 'CLOSED') or (not closed and lab and lab == label):
-                    generic = s['name']; break
-            comments = json.loads(self.gh('issue', 'view', str(i['number']), '--json', 'comments'))['comments']
+        for i in self.repository_issues(milestone['number']):
+            labels = self.issue_label_names(i)
+            generic, raw_status = self.generic_issue_status(i, labels)
+            comments = self.issue_comments(i['number'])
+            blocked_by = self.issue_blocked_by(i['number'])
             tasks.append({'taskId': i['number'], 'title': i['title'],
                           'status': generic, 'statusRaw': raw_status,
-                          'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
+                          'assignee': self.primary_assignee(i),
                           'description': i.get('body'),
-                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c.get('createdAt'),
-                                        'author': ((c.get('author') or {}).get('login') if isinstance(c.get('author'), dict) else c.get('author'))}
+                          'comments': [{'id': c.get('id'), 'body': c['body'],
+                                        'createdAt': c.get('created_at'), 'updatedAt': c.get('updated_at'),
+                                        'revision': c.get('updated_at'),
+                                        'author': (c.get('user') or {}).get('login')}
                                        for c in comments],
-                          'blockedBy': [], 'labels': [l['name'] for l in i['labels']],
-                          'updatedAt': i.get('updatedAt'), 'revision': i.get('updatedAt')})
+                          'blockedBy': blocked_by, 'labels': labels,
+                          'updatedAt': i.get('updated_at'), 'revision': i.get('updated_at')})
         return tasks
 
     def scan(self, statuses):
         wanted = set(statuses)
-        raw = self.gh('issue', 'list', '--state', 'all', '--limit', '1000',
-                      '--json', 'number,title,body,state,labels,assignees,milestone,updatedAt')
         items = []
-        for i in json.loads(raw):
-            label = next((l['name'] for l in i['labels'] if l['name'].startswith('status:')), None)
-            raw_status = 'closed' if i['state'] == 'CLOSED' else 'open + label %s' % (label or '?')
-            generic = None
-            for status in TASK_STATUSES:
-                closed, wanted_label = self.parse_tool_value(tool_value(status))
-                if (closed and i['state'] == 'CLOSED') or (not closed and wanted_label and wanted_label == label):
-                    generic = status['name']; break
+        for i in self.repository_issues():
+            labels = self.issue_label_names(i)
+            generic, raw_status = self.generic_issue_status(i, labels)
             if generic not in wanted:
                 continue
             milestone = i.get('milestone') or {}
             comments = self.issue_comments(i['number'])
+            blocked_by = self.issue_blocked_by(i['number'])
             items.append({
                 'featureId': milestone.get('number'), 'featureTitle': milestone.get('title'),
                 'taskId': i['number'], 'title': i['title'], 'status': generic, 'statusRaw': raw_status,
-                'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
-                'description': i.get('body'), 'blockedBy': [],
-                'comments': [{'id': c.get('id'), 'body': c.get('body'), 'createdAt': c.get('created_at'),
+                'assignee': self.primary_assignee(i),
+                'description': i.get('body'), 'blockedBy': blocked_by,
+                'comments': [{'id': c.get('id'), 'body': c.get('body'),
+                              'createdAt': c.get('created_at'), 'updatedAt': c.get('updated_at'),
+                              'revision': c.get('updated_at'),
                               'author': (c.get('user') or {}).get('login')} for c in comments],
-                'labels': [l['name'] for l in i['labels']], 'updatedAt': i.get('updatedAt'),
-                'revision': i.get('updatedAt'),
+                'labels': labels, 'updatedAt': i.get('updated_at'),
+                'revision': i.get('updated_at'),
             })
         return items
 
@@ -723,32 +1334,159 @@ class Markdown:
     def __init__(self):
         configured = PM_CONFIG.get('MARKDOWN_ROOT') or '.workspace/task-manager'
         project_root = os.environ.get('TRACKER_PROJECT_ROOT') or os.getcwd()
-        self.root = configured if os.path.isabs(configured) else os.path.join(project_root, configured)
+        self.root = os.path.abspath(
+            configured if os.path.isabs(configured) else os.path.join(project_root, configured))
+
+    @staticmethod
+    def lexical_components(path):
+        drive, tail = os.path.splitdrive(os.path.abspath(path))
+        anchor = drive + os.path.sep
+        return anchor, [part for part in tail.split(os.path.sep) if part]
+
+    def reject_symlink_components(self, path, feature_id):
+        current, parts = self.lexical_components(path)
+        for part in parts:
+            current = os.path.join(current, part)
+            try:
+                info = os.lstat(current)
+            except FileNotFoundError:
+                # The regular missing-file path produces the clearer andon in
+                # load/open. No later component can exist below a missing one.
+                break
+            except OSError as e:
+                die("cannot inspect Markdown feature path '%s': %s — andon" % (feature_id, e))
+            if stat.S_ISLNK(info.st_mode):
+                die("Markdown feature path contains a symlinked component: %s" % current)
+
+    @staticmethod
+    def has_parent_reference(path):
+        _drive, tail = os.path.splitdrive(str(path))
+        separators = re.escape(os.path.sep + (os.path.altsep or ''))
+        return any(part == '..' for part in re.split('[%s]' % separators, tail))
 
     def contained_path(self, feature_id):
-        root = os.path.realpath(self.root)
-        path = os.path.realpath(feature_id)
+        try:
+            feature_path = os.fspath(feature_id)
+        except TypeError:
+            die("invalid Markdown feature path")
+        if not isinstance(feature_path, str) or '\x00' in feature_path:
+            die("invalid Markdown feature path")
+        if self.has_parent_reference(feature_path):
+            die("Markdown feature path escapes MARKDOWN_ROOT: %s" % feature_id)
+        root = os.path.abspath(self.root)
+        path = os.path.abspath(feature_path)
         try:
             inside = os.path.commonpath([root, path]) == root
         except ValueError:
             inside = False
         if not inside:
             die("Markdown feature path escapes MARKDOWN_ROOT: %s" % feature_id)
+        # Check the lexical path before any resolution. A symlink that happens
+        # to point back inside MARKDOWN_ROOT is still untrusted indirection.
+        self.reject_symlink_components(root, feature_id)
+        self.reject_symlink_components(path, feature_id)
         return path
 
-    def load(self, feature_id):
+    @staticmethod
+    def open_directory_fd(path):
+        current_fd = None
+        anchor, parts = Markdown.lexical_components(path)
+        flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
         try:
-            with open(self.contained_path(feature_id)) as f:
+            current_fd = os.open(anchor, flags)
+            for part in parts:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except Exception:
+            if current_fd is not None:
+                os.close(current_fd)
+            raise
+
+    def parent_fd(self, feature_id):
+        path = self.contained_path(feature_id)
+        relative = os.path.relpath(path, self.root)
+        parts = relative.split(os.path.sep)
+        if relative == '.' or not parts[-1]:
+            die("Markdown feature path must name a regular file: %s" % feature_id)
+        directory_fd = self.open_directory_fd(self.root)
+        flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        try:
+            for part in parts[:-1]:
+                next_fd = os.open(part, flags, dir_fd=directory_fd)
+                os.close(directory_fd)
+                directory_fd = next_fd
+            return directory_fd, parts[-1], path
+        except Exception:
+            os.close(directory_fd)
+            raise
+
+    def load(self, feature_id):
+        directory_fd = file_fd = None
+        try:
+            directory_fd, leaf, _path = self.parent_fd(feature_id)
+            file_fd = os.open(
+                leaf, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) |
+                getattr(os, 'O_NOFOLLOW', 0), dir_fd=directory_fd)
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                die("Markdown feature is not a regular file: %s" % feature_id)
+            with os.fdopen(file_fd, encoding='utf-8') as f:
+                file_fd = None
                 return f.read()
         except OSError as e:
             die("cannot read feature file '%s': %s — andon" % (feature_id, e))
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            if directory_fd is not None:
+                os.close(directory_fd)
 
     def save(self, feature_id, text):
-        path = self.contained_path(feature_id)
-        if os.path.islink(path):
-            die("refusing to write a symlinked Markdown feature: %s" % feature_id)
-        with open(path, 'w') as f:
-            f.write(text)
+        directory_fd = temp_fd = None
+        temp_name = None
+        try:
+            directory_fd, leaf, _path = self.parent_fd(feature_id)
+            existing = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISLNK(existing.st_mode):
+                die("refusing to write a symlinked Markdown feature: %s" % feature_id)
+            if not stat.S_ISREG(existing.st_mode):
+                die("Markdown feature is not a regular file: %s" % feature_id)
+            mode = stat.S_IMODE(existing.st_mode)
+            flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, 'O_NOFOLLOW', 0))
+            for attempt in range(32):
+                candidate = '.agent-squad-%d-%d-%d.tmp' % (
+                    os.getpid(), time.time_ns(), attempt)
+                try:
+                    temp_fd = os.open(candidate, flags, 0o600, dir_fd=directory_fd)
+                    temp_name = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if temp_fd is None:
+                die("cannot allocate a private temporary Markdown feature file — andon")
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                temp_fd = None
+                f.write(text)
+                f.flush()
+                os.fchmod(f.fileno(), mode)
+                os.fsync(f.fileno())
+            os.replace(temp_name, leaf, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            temp_name = None
+            os.fsync(directory_fd)
+        except OSError as e:
+            die("cannot write feature file '%s': %s — andon" % (feature_id, e))
+        finally:
+            if temp_fd is not None:
+                os.close(temp_fd)
+            if temp_name is not None and directory_fd is not None:
+                try:
+                    os.unlink(temp_name, dir_fd=directory_fd)
+                except OSError:
+                    pass
+            if directory_fd is not None:
+                os.close(directory_fd)
 
     @staticmethod
     def split_task_id(task_id):  # "<feature.md path>#<n>" -> (path, n)
@@ -758,6 +1496,17 @@ class Markdown:
         if not num.isdigit():
             die("bad Markdown task number '%s'" % num)
         return path, num
+
+    @staticmethod
+    def progress_comment_id(path, num):
+        identity = '%s#%s' % (os.path.abspath(path), num)
+        return 'managed-progress-' + hashlib.sha256(identity.encode()).hexdigest()[:20]
+
+    @staticmethod
+    def next_comment_revision(text):
+        existing = [int(value) for value in re.findall(
+            r'<!-- agent-squad:comment-revision:([0-9]+) -->', text)]
+        return max([time.time_ns()] + [value + 1 for value in existing])
 
     def section_pattern(self, num):
         return re.compile(r'^(## %s .*?)\[([^\]]+)\][ \t]*$' % re.escape(num), re.M)
@@ -815,10 +1564,11 @@ class Markdown:
         marker = marker_m.group(1) if marker_m else 'note'
         content = body[len(marker):].lstrip(' :') if marker_m else body
         lines = content.split('\n')
-        if body.startswith('[DENIED ACTION]'):
-            # A denied-action audit record keeps its marker literal. Preserve the
-            # envelope byte-for-byte (apart from Markdown quote prefixes) instead
-            # of folding its first field into the legacy dated first line.
+        if marker in ('[product-approval]', '[product-pushback]') or body.startswith('[DENIED ACTION]'):
+            # The release gate parses an exact structured envelope, and a
+            # denied-action audit record must keep its marker literal. Preserve
+            # both byte-for-byte (apart from Markdown quote prefixes) instead of
+            # folding the first field into the legacy dated first line.
             quoted = '\n'.join('> %s' % line for line in body.split('\n'))
         else:
             quoted = '> %s (%s): %s' % (marker, date.today().isoformat(), lines[0])
@@ -827,7 +1577,8 @@ class Markdown:
         rest = text[m.end():]
         nxt = re.search(r'^## ', rest, re.M)
         insert_at = m.end() + (nxt.start() if nxt else len(rest))
-        block = text[:insert_at].rstrip('\n') + '\n\n' + quoted + '\n\n'
+        revision = '<!-- agent-squad:comment-revision:%d -->' % self.next_comment_revision(text)
+        block = text[:insert_at].rstrip('\n') + '\n\n' + revision + '\n' + quoted + '\n\n'
         self.save(path, block + text[insert_at:].lstrip('\n'))
 
     def update_comment(self, task_id, comment_id, body):
@@ -842,10 +1593,12 @@ class Markdown:
         rest = text[m.end():]
         nxt = re.search(r'^## ', rest, re.M)
         section = rest[:nxt.start()] if nxt else rest
-        quoted = '\n'.join('> ' + line for line in body.splitlines())
+        quoted = ('<!-- agent-squad:comment-revision:%d -->\n' %
+                  self.next_comment_revision(text))
+        quoted += '\n'.join('> ' + line for line in body.splitlines())
         updated = replace_managed_block(section, 'progress', quoted)
         self.save(path, text[:m.end()] + updated + (rest[nxt.start():] if nxt else ''))
-        return 'managed-progress-%s' % num
+        return self.progress_comment_id(path, num)
 
     def upsert_digest(self, feature_id, body):
         text = self.load(feature_id)
@@ -885,24 +1638,46 @@ class Markdown:
             rest = text[m.end():]
             nxt = re.search(r'^## ', rest, re.M)
             section = rest[:nxt.start()] if nxt else rest
+            progress_start = '<!-- agent-squad:progress:start -->'
+            progress_end = '<!-- agent-squad:progress:end -->'
+            progress_pattern = re.compile(
+                re.escape(progress_start) + r'.*?' + re.escape(progress_end), re.S)
+            progress_matches = list(progress_pattern.finditer(section))
+            if (section.count(progress_start) != section.count(progress_end) or
+                    len(progress_matches) != section.count(progress_start)):
+                die("Markdown task %s has unmatched managed progress markers — andon" % num)
+            if len(progress_matches) > 1:
+                die("Markdown task %s has duplicate managed progress blocks — andon" % num)
             am = re.search(r'^\*\*Assignee:\*\* (.*)$', section, re.M)
             bb = re.search(r'^\*\*BlockedBy:\*\* (.*)$', section, re.M)
             blocked_by = ['%s#%s' % (feature_id, n.strip().lstrip('#'))
                           for n in bb.group(1).split(',') if n.strip()] if bb else []
-            _blocks, _cur = [], []
-            for _l in section.split('\n'):
+            _blocks, _cur, _cur_revision, _offset = [], [], None, 0
+            for _raw_line in section.splitlines(keepends=True):
+                _l = _raw_line.rstrip('\r\n')
                 _q = re.match(r'^> (.*)$', _l)
                 if _q:
+                    if _cur_revision is None:
+                        # Markdown is append-only and has no authenticated edit
+                        # timestamp. Position inside the task section is therefore
+                        # its one authoritative total order. In particular, a manually
+                        # appended finding must remain newer than earlier
+                        # adapter-written comments whose private revision marker
+                        # may contain a much larger nanosecond value.
+                        _cur_revision = _offset
                     _cur.append(_q.group(1))
                 elif _cur:
                     _b = '\n'.join(_cur).strip()
-                    if _b: _blocks.append(_b)
-                    _cur = []
+                    if _b: _blocks.append((_b, _cur_revision))
+                    _cur, _cur_revision = [], None
+                _offset += len(_raw_line)
             if _cur:
                 _b = '\n'.join(_cur).strip()
-                if _b: _blocks.append(_b)
+                if _b: _blocks.append((_b, _cur_revision))
             description_lines, managed = [], False
             for _l in section.split('\n'):
+                if re.fullmatch(r'<!-- agent-squad:comment-revision:[0-9]+ -->', _l):
+                    continue
                 if _l.startswith('<!-- agent-squad:') and _l.endswith(':start -->'):
                     managed = True
                     continue
@@ -914,8 +1689,23 @@ class Markdown:
                     continue
                 description_lines.append(_l)
             description = re.sub(r'\n{3,}', '\n\n', '\n'.join(description_lines)).strip()
-            comments = [{'id': ('managed-progress-%s' % num if _b.startswith('[progress]') else None),
-                         'body': _b, 'createdAt': None, 'author': None} for _b in _blocks]
+            comments = []
+            for _comment_index, (_b, _revision) in enumerate(_blocks, start=1):
+                _comment_id = (
+                    self.progress_comment_id(feature_id, num) if _b.startswith('[progress]')
+                    else 'markdown-comment-%s-%d-%s' % (
+                        num, _comment_index, hashlib.sha256(_b.encode()).hexdigest()[:12]
+                    )
+                )
+                comments.append({
+                    'id': _comment_id, 'body': _b, 'createdAt': None,
+                    'updatedAt': None, 'revision': 'markdown-offset:%s' % _revision,
+                    'author': None,
+                })
+            comments.sort(key=lambda comment: (
+                sortable_value(comment['revision'],
+                               "Markdown task %s comment" % num),
+                comment['id']))
             tasks.append({'taskId': '%s#%s' % (feature_id, num), 'title': title,
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (am.group(1).strip() if am and am.group(1).strip() not in ('-', '—') else None),
@@ -975,6 +1765,8 @@ def op_feature_state(args):
         die("usage: feature-state <featureId> <Status>")
     feature_id, target_name = args
     target = feature_status_by_name(target_name)
+    if target.get('terminal') and os.environ.get('STARTUP_FACTORY_RELEASE_EXECUTOR') != '1':
+        die("terminal [feature] transition is reserved for the isolated release executor")
     current_name = backend.current_feature_status(feature_id)
     if current_name is None:
         die("cannot reverse-map the current [feature] status of %s — andon" % feature_id)
@@ -987,6 +1779,62 @@ def op_feature_state(args):
         if observed != target_name:
             die("[feature] status write did not read back as [%s] (observed: %s) — andon" % (target_name, observed))
     print("%s → [%s]" % (feature_id, target_name))
+
+def op_feature_reopen(args):
+    if len(args) != 2:
+        die("usage: feature-reopen <featureId> <Status>")
+    if os.environ.get('STARTUP_FACTORY_PM_SUPERVISOR') != '1':
+        die("feature-reopen is reserved for the deterministic PM supervisor")
+    feature_id, target_name = args
+    target = feature_status_by_name(target_name)
+    if target.get('terminal') or target.get('kind') not in ('queued', 'working'):
+        die("feature-reopen target must be a configured non-terminal queued/working status")
+    current_name = backend.current_feature_status(feature_id)
+    if current_name is None:
+        die("cannot reverse-map the current [feature] status of %s — andon" % feature_id)
+    if current_name == target_name:
+        print("%s already reopened → [%s]" % (feature_id, target_name))
+        return
+    current = feature_status_by_name(current_name)
+    if not current.get('terminal'):
+        die("feature-reopen requires a terminal source status, observed [%s] — andon" % current_name)
+    # This deliberately does not use the ordinary transition graph: completed
+    # containers often have no outbound edge. The narrow broker operation is the
+    # adapter-neutral reopen path, and the mutation is accepted only after an
+    # exact read-back of the configured generic target.
+    backend.set_feature_state(feature_id, target)
+    observed = backend.current_feature_status(feature_id)
+    if observed != target_name:
+        die("[feature] reopen did not read back as [%s] (observed: %s) — andon" %
+            (target_name, observed))
+    print("%s reopened [%s] → [%s]" % (feature_id, current_name, target_name))
+
+def op_task_reopen(args):
+    if len(args) != 2:
+        die("usage: task-reopen <taskId> <Status>")
+    if os.environ.get('STARTUP_FACTORY_INTEGRATION_BROKER') != '1':
+        die("task-reopen is reserved for the deterministic integration broker")
+    task_id, target_name = args
+    target = status_by_name(target_name)
+    if target.get('terminal') or target.get('kind') != 'working':
+        die("task-reopen target must be the configured non-terminal working status")
+    current_name = backend.current_status(task_id)
+    if current_name is None:
+        die("cannot reverse-map the current status of %s — andon" % task_id)
+    if current_name == target_name:
+        print("%s already reopened → [%s]" % (task_id, target_name))
+        return
+    current = status_by_name(current_name)
+    if not current.get('terminal') or not current.get('requiresCommit'):
+        die("task-reopen requires a commit-requiring terminal source status, observed [%s] — andon" % current_name)
+    # This is deliberately narrower than ordinary `state`: only the broker may
+    # reopen an integrated task after durable supersede/revert evidence exists.
+    backend.set_state(task_id, target)
+    observed = backend.current_status(task_id)
+    if observed != target_name:
+        die("[task] reopen did not read back as [%s] (observed: %s) — andon" %
+            (target_name, observed))
+    print("%s reopened [%s] → [%s]" % (task_id, current_name, target_name))
 
 def op_comment(args):
     if len(args) not in (1, 2):
@@ -1097,7 +1945,7 @@ def op_claim(args):
 
 def op_record_denial(args):
     # A guardrail DENY encountered while an agentic team or dedicated agent acts
-    # on a [task] must become ticket-level evidence: what was attempted, by whom,
+    # on a [task] must become task-level evidence: what was attempted, by whom,
     # and that the action was prevented. Documentation only — never authorization.
     actor = reason = denial_id = None
     for flag in ('--actor', '--reason', '--denial-id'):
@@ -1148,8 +1996,17 @@ def op_integrate(args):
     if extra:
         body += "\n\n" + extra
     body += "\n\n— integrator"
-    if backend.current_status(task_id) != term['name']:
+    current_name = backend.current_status(task_id)
+    if current_name is None:
+        die("cannot reverse-map the current status of %s — andon" % task_id)
+    if current_name != term['name']:
+        current = status_by_name(current_name)
+        if term['name'] not in current.get('transitions', []):
+            die("integration cannot skip [%s] → [%s] — andon" % (current_name, term['name']))
         backend.set_state(task_id, term)
+        observed = backend.current_status(task_id)
+        if observed != term['name']:
+            die("integration status did not read back as [%s] — andon" % term['name'])
     if not backend.integration_comment_exists(task_id, commit):
         backend.comment(task_id, body)
     print("%s → [%s] (commit %s)" % (task_id, term['name'], commit))
@@ -1159,6 +2016,18 @@ def op_export(args):
         die("usage: export <featureId> <outfile>")
     feature_id, outfile = args
     tasks = backend.export(feature_id)
+    if not isinstance(tasks, list):
+        die("adapter returned a malformed feature export — andon")
+    normalized, seen = [], set()
+    for index, task in enumerate(tasks):
+        value = normalize_task_record(
+            task, "feature export record %d" % (index + 1))
+        if value['taskId'] in seen:
+            die("adapter returned a duplicate task identity '%s' in feature export — andon"
+                % value['taskId'])
+        seen.add(value['taskId'])
+        normalized.append(value)
+    tasks = normalized
     payload = {'featureId': feature_id, 'adapter': ADAPTER,
                'exportedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
                'tasks': tasks}
@@ -1183,16 +2052,19 @@ def op_scan(args):
     if not statuses:
         die("scan has no statuses (pass --status or configure queued/blocked kinds)")
     items = backend.scan(statuses)
-    normalized, orphans = [], []
-    for item in items:
-        if not isinstance(item, dict) or item.get('taskId') is None:
-            die("adapter returned a malformed scan record — andon")
-        if item.get('status') not in statuses:
-            die("adapter returned an out-of-scope status '%s' for %s" % (item.get('status'), item.get('taskId')))
-        value = dict(item)
-        value['taskId'] = str(value['taskId'])
-        if value.get('featureId') is not None:
-            value['featureId'] = str(value['featureId'])
+    if not isinstance(items, list):
+        die("adapter returned a malformed board scan — andon")
+    normalized, orphans, seen = [], [], set()
+    for index, item in enumerate(items):
+        value = normalize_task_record(
+            item, "board scan record %d" % (index + 1), feature_field=True)
+        if value['status'] not in statuses:
+            die("adapter returned an out-of-scope status '%s' for %s"
+                % (value['status'], value['taskId']))
+        if value['taskId'] in seen:
+            die("adapter returned duplicate task identity '%s' in board scan — andon"
+                % value['taskId'])
+        seen.add(value['taskId'])
         value['routingHints'] = {'labels': list(value.get('labels') or []), 'teamPreset': None}
         (normalized if value.get('featureId') else orphans).append(value)
     payload = {
@@ -1215,9 +2087,10 @@ def op_scan(args):
 OPS = {'state': op_state, 'comment': op_comment, 'comment-once': op_comment_once, 'update-comment': op_update_comment,
        'upsert-progress': op_upsert_progress, 'upsert-digest': op_upsert_digest,
        'upsert-deployment': op_upsert_deployment, 'feature-state': op_feature_state,
+       'feature-reopen': op_feature_reopen, 'task-reopen': op_task_reopen,
        'claim': op_claim, 'record-denial': op_record_denial, 'integrate': op_integrate,
        'export': op_export, 'scan': op_scan}
 if not ARGS or ARGS[0] not in OPS:
-    die("usage: tracker-ops.sh {state|feature-state|comment|comment-once|update-comment|upsert-progress|upsert-digest|upsert-deployment|claim|record-denial|integrate|export|scan} ...")
+    die("usage: tracker-ops.sh {state|feature-state|feature-reopen|task-reopen|comment|comment-once|update-comment|upsert-progress|upsert-digest|upsert-deployment|claim|record-denial|integrate|export|scan} ...")
 OPS[ARGS[0]](ARGS[1:])
 PYEOF

@@ -336,6 +336,55 @@ def current_comments(task: dict) -> list[str]:
     return ordered + additive
 
 
+def deterministic_claim_id(
+    team: str, feature: str, task: str, role: str, attempt: int, target: str
+) -> str:
+    material = "\0".join((team, feature, task, role, str(attempt), target)).encode()
+    return "dispatch-" + hashlib.sha256(material).hexdigest()[:32]
+
+
+def cmd_claim(args) -> None:
+    if args.attempt < 1:
+        raise SystemExit("runtime-state: claim attempt must be positive")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,63}", args.team):
+        raise SystemExit("runtime-state: unsafe claim team")
+    if not re.fullmatch(r"[a-z0-9-]{1,63}", args.role):
+        raise SystemExit("runtime-state: unsafe claim role")
+    expected_id = deterministic_claim_id(
+        args.team, args.feature, args.task, args.role, args.attempt, args.target
+    )
+    if args.claim_id != expected_id:
+        raise SystemExit("runtime-state: claim id does not match its immutable identity")
+    workspace = Path(args.workspace).resolve()
+    key = safe_key(args.task)
+    identity = {
+        "schemaVersion": 1,
+        "team": args.team,
+        "featureId": args.feature,
+        "taskId": args.task,
+        "taskKey": key,
+        "attempt": args.attempt,
+        "role": args.role,
+        "claimId": args.claim_id,
+        "targetStatus": args.target,
+    }
+    digest = "sha256:" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    record = {**identity, "claimDigest": digest, "recordedAt": utc_now()}
+    path = workspace / "claims" / (key + ".json")
+    if path.is_symlink():
+        raise SystemExit("runtime-state: claim record must not be a symlink")
+    existing = read_json(path, {})
+    if existing:
+        if any(existing.get(name) != value for name, value in record.items() if name != "recordedAt"):
+            raise SystemExit("runtime-state: task already has a different durable claim identity")
+        print(json.dumps(existing, ensure_ascii=False))
+        return
+    write_json(path, record)
+    print(json.dumps(record, ensure_ascii=False))
+
+
 def cmd_packet(args) -> None:
     workspace = Path(args.workspace)
     payload = read_json(Path(args.tasks), {})
@@ -518,6 +567,17 @@ def build_parser() -> argparse.ArgumentParser:
     packet.add_argument("--contracts", required=True)
     packet.add_argument("--baseline", required=True)
     packet.set_defaults(func=cmd_packet)
+
+    claim = sub.add_parser("claim")
+    claim.add_argument("--workspace", required=True)
+    claim.add_argument("--team", required=True)
+    claim.add_argument("--feature", required=True)
+    claim.add_argument("--task", required=True)
+    claim.add_argument("--role", required=True)
+    claim.add_argument("--attempt", type=int, required=True)
+    claim.add_argument("--claim-id", required=True)
+    claim.add_argument("--target", required=True)
+    claim.set_defaults(func=cmd_claim)
     return parser
 
 

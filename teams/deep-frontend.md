@@ -9,6 +9,7 @@ be mocked until `[api-ready]` arrives.
 ```
 ROSTER=principal-frontend-architect senior-technical-product-manager senior-frontend-engineer senior-qa-engineer integrator
 PROTOCOL_TEAM_LEAD=principal-frontend-architect
+PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-frontend-architect
 PROTOCOL_REVIEWER=senior-qa-engineer
 PROTOCOL_QA=senior-qa-engineer
