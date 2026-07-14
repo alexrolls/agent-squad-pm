@@ -26,6 +26,7 @@ git commit -q -m init
 cat > .agent-squad/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
+MARKDOWN_ROOT=.
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF

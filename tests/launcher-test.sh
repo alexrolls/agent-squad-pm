@@ -208,6 +208,7 @@ sed -i '' '/^EXECUTION=parallel$/d;/^MAX_ACTIVE_IMPLEMENTERS=zero$/d' "$CFG"
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
+MARKDOWN_ROOT=.
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF
@@ -281,6 +282,7 @@ fi
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
+MARKDOWN_ROOT=.
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF

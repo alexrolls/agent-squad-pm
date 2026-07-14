@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "pollSeconds": 120,
+  "leaseSeconds": 900,
+  "maxFeaturesPerPass": 2,
+  "scanStatusKinds": ["queued", "blocked"],
+  "reconcileRegisteredRuns": true,
+  "baseRef": "main",
+  "branchPrefix": "factory-",
+  "workspaceRoot": ".teamwork/pm-agent",
+  "defaultTeamPreset": "full-stack",
+  "allowedTeamPresets": [
+    "full-stack",
+    "deep-backend",
+    "deep-frontend",
+    "deep-infra",
+    "deep-security"
+  ],
+  "requireMetadataOptIn": false,
+  "metadata": {
+    "optInKey": "automation",
+    "teamPresetKey": "team-preset"
+  }
+}

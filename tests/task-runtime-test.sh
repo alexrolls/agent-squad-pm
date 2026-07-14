@@ -18,6 +18,7 @@ cp "$SKILL_DIR/roles/backend.md" .agent-squad/roles/
 cat > .agent-squad/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
+MARKDOWN_ROOT=.
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "mode": "approval-required",
+  "environment": "production",
+  "credentialEnvFile": null,
+  "environmentAllowlist": ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"],
+  "hooks": {
+    "plan": null,
+    "apply": null,
+    "status": null,
+    "verify": null,
+    "rollback": null,
+    "verifyApproval": null
+  },
+  "timeoutsSeconds": {
+    "plan": 300,
+    "apply": 1800,
+    "status": 120,
+    "verify": 600,
+    "rollback": 900,
+    "verifyApproval": 60
+  }
+}
