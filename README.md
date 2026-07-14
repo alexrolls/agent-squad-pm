@@ -1,8 +1,8 @@
-# Agent Squad PM
+# Startup Factory
 
 **Ship faster with an AI engineering squad you can see, steer, and trust.**
 
-Agent Squad PM turns Linear, Jira, GitHub Issues, or local Markdown into the
+Startup Factory turns Linear, Jira, GitHub Issues, or local Markdown into the
 control plane for agentic development. Give the squad a feature and it plans,
 designs, implements, reviews, validates, and integrates the work while your
 project-management tool remains the single source of truth.
@@ -12,13 +12,13 @@ runs concurrently; architecture, QA, and integration stay behind explicit
 gates. Plans, ownership, progress, decisions, evidence, blockers, and delivery
 state remain visible where your team already manages the project.
 
-![Agent Squad PM demo](exports/execmatchai-issues-57s-70s.gif)
+![Startup Factory demo](exports/execmatchai-issues-57s-70s.gif)
 
 ```text
 [feature] -> design gate -> safe parallel [tasks] -> review -> QA -> validated integration -> [Ready to deploy]
 ```
 
-## Why Agent Squad PM
+## Why Startup Factory
 
 | Advantage | What it gives you |
 |---|---|
@@ -31,7 +31,7 @@ state remain visible where your team already manages the project.
 
 ## Full transparency in your tracker
 
-Agent Squad PM treats the tracker as the durable collaboration surface, not a
+Startup Factory treats the tracker as the durable collaboration surface, not a
 status board updated after the real work happened. The local runtime makes
 coordination fast, but the information a human needs to supervise delivery is
 projected back into the configured tool.
@@ -63,7 +63,7 @@ delivery contract around the code rather than assuming anything about the stack.
 
 ## Table of contents
 
-- [Why Agent Squad PM](#why-agent-squad-pm)
+- [Why Startup Factory](#why-startup-factory)
 - [Full transparency in your tracker](#full-transparency-in-your-tracker)
 - [Requirements](#requirements)
 - [Quick Start (2 minutes, no accounts)](#quick-start-2-minutes-no-accounts)
@@ -107,7 +107,7 @@ account, no API key, no config changes — `Markdown` is the default.
 
    ```bash
    mkdir -p .claude/skills
-   cp -R /path/to/this/bundle .claude/skills/agent_squad_pm
+   cp -R /path/to/this/bundle .claude/skills/startup-factory
    ```
 
 2. **Ask your agent, in plain language:**
@@ -141,7 +141,7 @@ anywhere and point the agent at `SKILL.md`.
 
 | Harness | Install location | How the agent picks it up |
 |---|---|---|
-| **Claude Code** | `.claude/skills/agent_squad_pm/` | Auto-loaded by the skill's description; just ask in natural language |
+| **Claude Code** | `.claude/skills/startup-factory/` | Auto-loaded by the skill's description; just ask in natural language |
 | **Codex CLI** | anywhere, e.g. `.codex/pm/` | `codex exec "Read .codex/pm/SKILL.md and plan a feature …"` |
 | **Aider** | anywhere | `aider --read pm/SKILL.md`, then instruct |
 | **Cursor / Windsurf / Cline** | the tool's rules dir | reference `SKILL.md` in chat |
@@ -153,18 +153,18 @@ From any repository where the skill is installed in Claude Code's default
 location, run:
 
 ```bash
-bash .claude/skills/agent_squad_pm/bin/update-installed-skill.sh
+bash .claude/skills/startup-factory/bin/update-installed-skill.sh
 ```
 
 Or ask Claude:
 
 ```
-Fetch latest Agent Squad PM skill.
+Fetch latest Startup Factory skill.
 ```
 
 The updater fetches `main` from
-`https://github.com/alexrolls/agent_squad_pm.git`, syncs the bundle into
-`.claude/skills/agent_squad_pm`, and preserves existing project config files by
+`https://github.com/alexrolls/startup-factory.git`, syncs the bundle into
+`.claude/skills/startup-factory`, and preserves existing project config files by
 default:
 
 - `config/project-management.config.md`
@@ -174,13 +174,13 @@ default:
 To replace those config files with upstream defaults too:
 
 ```bash
-bash .claude/skills/agent_squad_pm/bin/update-installed-skill.sh --overwrite-config
+bash .claude/skills/startup-factory/bin/update-installed-skill.sh --overwrite-config
 ```
 
 To install or update a non-default location:
 
 ```bash
-bash /path/to/agent_squad_pm/bin/update-installed-skill.sh --install-dir .codex/pm
+bash /path/to/startup-factory/bin/update-installed-skill.sh --install-dir .codex/pm
 ```
 
 Multi-agent teams work on a git branch and use a task branch plus **git
@@ -361,7 +361,7 @@ Just talk to your agent in the generic vocabulary:
    ```
 
 > The launcher path is relative to where you installed the bundle — e.g.
-> `.claude/skills/agent_squad_pm/bin/launch-team.sh`.
+> `.claude/skills/startup-factory/bin/launch-team.sh`.
 
 **All launcher subcommands:**
 

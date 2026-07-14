@@ -27,7 +27,7 @@
 - [ ] **Step 1: Branch**
 
 ```bash
-cd /Users/aischenko/Projects/agent_squad_pm
+cd /Users/aischenko/Projects/startup-factory
 git checkout -b feature/throughput-levers main
 ```
 

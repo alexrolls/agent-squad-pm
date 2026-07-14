@@ -1,6 +1,6 @@
 ---
-name: agent-squad-pm
-description: Create, track, and update [features] and [tasks] in any project-management tool — Linear, Jira, GitHub Issues, or a Markdown fallback — through one tool-agnostic workflow. Use when the user wants to plan a feature, break work into tasks, start/review/complete a task, change a [task]'s status, connect/switch the project-management tool, run a multi-agent team on a feature (orchestration with a team lead, principal architect, and cross-functional implementers), or fetch/update the latest Agent Squad PM skill itself. Language- and framework-agnostic.
+name: startup-factory
+description: Create, track, and update [features] and [tasks] in any project-management tool — Linear, Jira, GitHub Issues, or a Markdown fallback — through one tool-agnostic workflow. Use when the user wants to plan a feature, break work into tasks, start/review/complete a task, change a [task]'s status, connect/switch the project-management tool, run a multi-agent team on a feature (orchestration with a team lead, principal architect, and cross-functional implementers), or fetch/update the latest Startup Factory skill itself. Language- and framework-agnostic.
 ---
 
 # Project Management Workflow
@@ -32,14 +32,14 @@ skill's directory):
 
 ## Self-update request
 
-If the user asks to "fetch latest Agent Squad PM", "update agent_squad_pm skill",
+If the user asks to "fetch latest Startup Factory", "update startup-factory skill",
 "sync this skill from upstream", or equivalent, do this before the normal mandatory
 preparation:
 
 1. From the target repository, run:
 
    ```bash
-   bash .claude/skills/agent_squad_pm/bin/update-installed-skill.sh
+   bash .claude/skills/startup-factory/bin/update-installed-skill.sh
    ```
 
    If this skill is installed somewhere else, run the same script from this skill's

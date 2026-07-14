@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Durable event, projection, and task-packet primitives for Agent Squad PM."""
+"""Durable event, projection, and task-packet primitives for Startup Factory."""
 
 from __future__ import annotations
 

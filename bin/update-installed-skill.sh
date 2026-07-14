@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# update-installed-skill.sh — refresh an installed Agent Squad PM skill from GitHub.
+# update-installed-skill.sh — refresh an installed Startup Factory skill from GitHub.
 set -euo pipefail
 
-REMOTE_URL="${AGENT_SQUAD_PM_REMOTE_URL:-https://github.com/alexrolls/agent_squad_pm.git}"
-REMOTE_REF="${AGENT_SQUAD_PM_REF:-main}"
-SKILL_NAME="${AGENT_SQUAD_PM_SKILL_NAME:-agent_squad_pm}"
+REMOTE_URL="${STARTUP_FACTORY_REMOTE_URL:-https://github.com/alexrolls/startup-factory.git}"
+REMOTE_REF="${STARTUP_FACTORY_REF:-main}"
+SKILL_NAME="${STARTUP_FACTORY_SKILL_NAME:-startup-factory}"
 
 install_dir=""
 overwrite_config=false
@@ -19,8 +19,8 @@ usage() {
   cat <<EOF
 Usage: update-installed-skill.sh [options]
 
-Fetch the latest Agent Squad PM bundle and sync it into the current repository's
-.claude/skills/agent_squad_pm directory.
+Fetch the latest Startup Factory bundle and sync it into the current repository's
+.claude/skills/startup-factory directory.
 
 Options:
   --install-dir PATH     Update this skill directory instead of auto-detecting.
@@ -33,9 +33,9 @@ Options:
   -h, --help             Show this help.
 
 Environment overrides:
-  AGENT_SQUAD_PM_REMOTE_URL
-  AGENT_SQUAD_PM_REF
-  AGENT_SQUAD_PM_SKILL_NAME
+  STARTUP_FACTORY_REMOTE_URL
+  STARTUP_FACTORY_REF
+  STARTUP_FACTORY_SKILL_NAME
 EOF
 }
 
@@ -136,7 +136,7 @@ if ! $overwrite_config && ! $dry_run && [ -d "$preserve" ]; then
   rsync -a "$preserve"/ "$install_dir"/
 fi
 
-echo "Updated Agent Squad PM skill at: $install_dir"
+echo "Updated Startup Factory skill at: $install_dir"
 if ! $overwrite_config; then
   echo "Preserved existing local config files when present."
 fi
