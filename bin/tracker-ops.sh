@@ -17,6 +17,9 @@
 #   tracker-ops.sh claim          <taskId> <role> [--to <Status>]           # claim: initial→working status + claim comment
 #   tracker-ops.sh integrate      <taskId> <hash> [bodyfile]                # terminal move + completion comment citing <hash>
 #   tracker-ops.sh export         <featureId> <outfile>                     # read-side: dump the [feature]'s [tasks] as JSON
+#   tracker-ops.sh scan           <outfile> --status <Status>...            # board-wide normalized discovery
+#   tracker-ops.sh feature-state  <featureId> <Status>                      # set [feature] status (generic name)
+#   tracker-ops.sh upsert-deployment <featureId> [bodyfile]                 # one managed [deployment] projection
 #
 # Adapter comes from PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md
 # (override with TRACKER_ADAPTER=<Name>). Credentials come from the environment,
@@ -27,7 +30,7 @@ set -euo pipefail
 # The script rides on fd 3 so stdin stays free for comment bodies.
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 exec python3 /dev/fd/3 "$SKILL_DIR" "$@" 3<<'PYEOF'
-import json, os, re, subprocess, sys, urllib.request, urllib.error
+import hashlib, json, os, re, subprocess, sys, urllib.request, urllib.error
 from datetime import date, datetime, timezone
 
 def die(msg):
@@ -64,6 +67,7 @@ except (OSError, ValueError) as e:
     die("cannot load board config %s: %s" % (board_path, e))
 
 TASK_STATUSES = BOARD['tasks']['statuses']
+FEATURE_STATUSES = BOARD['features']['statuses']
 
 def status_by_name(name):
     for s in TASK_STATUSES:
@@ -71,10 +75,22 @@ def status_by_name(name):
             return s
     die("unknown [task] status '%s' (board: %s)" % (name, ', '.join(x['name'] for x in TASK_STATUSES)))
 
+def feature_status_by_name(name):
+    for s in FEATURE_STATUSES:
+        if s['name'] == name:
+            return s
+    die("unknown [feature] status '%s' (board: %s)" % (name, ', '.join(x['name'] for x in FEATURE_STATUSES)))
+
 def tool_value(status):
     v = status.get('tool', {}).get(ADAPTER)
     if v is None:
         die("status '%s' has no '%s' mapping in the board config — andon" % (status['name'], ADAPTER))
+    return v
+
+def feature_tool_value(status):
+    v = status.get('tool', {}).get(ADAPTER)
+    if v is None:
+        die("[feature] status '%s' has no '%s' mapping in the board config — andon" % (status['name'], ADAPTER))
     return v
 
 def initial_status():
@@ -91,6 +107,12 @@ def terminal_status():
 
 def generic_of(raw):  # reverse-map a tool-side status value to the generic name
     for s in TASK_STATUSES:
+        if s.get('tool', {}).get(ADAPTER) == raw:
+            return s['name']
+    return None
+
+def feature_generic_of(raw):
+    for s in FEATURE_STATUSES:
         if s.get('tool', {}).get(ADAPTER) == raw:
             return s['name']
     return None
@@ -222,6 +244,28 @@ class Linear:
         self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success } }',
                  {'id': pid, 'description': description})
 
+    def upsert_deployment(self, feature_id, body):
+        pid = self.project_id(feature_id)
+        d = self.gql('query($id: String!) { project(id: $id) { description } }', {'id': pid})
+        description = replace_managed_block((d.get('project') or {}).get('description') or '', 'deployment', body)
+        self.gql('mutation($id: String!, $description: String!) { projectUpdate(id: $id, input: {description: $description}) { success } }',
+                 {'id': pid, 'description': description})
+
+    def current_feature_status(self, feature_id):
+        d = self.gql('query($id: String!) { project(id: $id) { status { name } } }',
+                     {'id': self.project_id(feature_id)})
+        raw = ((d.get('project') or {}).get('status') or {}).get('name')
+        return feature_generic_of(raw)
+
+    def set_feature_state(self, feature_id, status):
+        want = feature_tool_value(status)
+        d = self.gql('{ projectStatuses { nodes { id name } } }')
+        sid = next((s['id'] for s in d.get('projectStatuses', {}).get('nodes', []) if s.get('name') == want), None)
+        if not sid:
+            die("Linear workspace has no project status '%s' — andon" % want)
+        self.gql('mutation($id: String!, $sid: String!) { projectUpdate(id: $id, input: {statusId: $sid}) { success } }',
+                 {'id': self.project_id(feature_id), 'sid': sid})
+
     def project_id(self, feature_id):
         # The adapter's ID mapping allows a project UUID or a project name.
         if re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', feature_id.lower()):
@@ -236,7 +280,7 @@ class Linear:
         return nodes[0]['id']
 
     def export(self, feature_id):
-        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description state { name } assignee { name } comments { nodes { id body createdAt } } inverseRelations { nodes { type issue { identifier } } } } } } }',
+        d = self.gql('query($id: String!) { project(id: $id) { name issues { nodes { identifier title description updatedAt state { name } assignee { name } labels { nodes { name } } comments { nodes { id body createdAt user { name email } } } inverseRelations { nodes { type issue { identifier } } } } } } }',
                      {'id': self.project_id(feature_id)})
         if not d.get('project'):
             die("no Linear project '%s'" % feature_id)
@@ -250,10 +294,64 @@ class Linear:
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (i.get('assignee') or {}).get('name'),
                           'description': i.get('description'),
-                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c['createdAt']}
+                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c['createdAt'],
+                                        'author': (c.get('user') or {}).get('email') or (c.get('user') or {}).get('name')}
                                        for c in i['comments']['nodes']],
-                          'blockedBy': blocked_by})
+                          'blockedBy': blocked_by,
+                          'labels': [x['name'] for x in (i.get('labels') or {}).get('nodes', [])],
+                          'updatedAt': i.get('updatedAt'), 'revision': i.get('updatedAt')})
         return tasks
+
+    def scan(self, statuses):
+        wanted = {tool_value(status_by_name(name)) for name in statuses}
+        team_scope = PM_CONFIG.get('LINEAR_DEFAULT_TEAM')
+        items, after = [], None
+        query = '''query($after: String) {
+          issues(first: 100, after: $after) {
+            nodes {
+              identifier title description updatedAt
+              state { name } assignee { name }
+              team { key name }
+              project { id name }
+              labels { nodes { name } }
+              comments { nodes { id body createdAt user { name email } } }
+              inverseRelations { nodes { type issue { identifier } } }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }'''
+        while True:
+            d = self.gql(query, {'after': after})['issues']
+            for i in d.get('nodes', []):
+                raw = (i.get('state') or {}).get('name')
+                team = i.get('team') or {}
+                if raw not in wanted:
+                    continue
+                if team_scope and team_scope not in {team.get('key'), team.get('name')}:
+                    continue
+                project = i.get('project') or {}
+                blocked_by = [r['issue']['identifier']
+                              for r in (i.get('inverseRelations') or {}).get('nodes', [])
+                              if r.get('type') == 'blocks' and r.get('issue')]
+                items.append({
+                    'featureId': project.get('id'), 'featureTitle': project.get('name'),
+                    'taskId': i['identifier'], 'title': i['title'],
+                    'status': generic_of(raw), 'statusRaw': raw,
+                    'assignee': (i.get('assignee') or {}).get('name'),
+                    'description': i.get('description'), 'blockedBy': blocked_by,
+                    'comments': [{'id': c.get('id'), 'body': c.get('body'), 'createdAt': c.get('createdAt'),
+                                  'author': (c.get('user') or {}).get('email') or (c.get('user') or {}).get('name')}
+                                 for c in (i.get('comments') or {}).get('nodes', [])],
+                    'labels': [x['name'] for x in (i.get('labels') or {}).get('nodes', [])],
+                    'updatedAt': i.get('updatedAt'), 'revision': i.get('updatedAt'),
+                })
+            page = d.get('pageInfo') or {}
+            if not page.get('hasNextPage'):
+                break
+            after = page.get('endCursor')
+            if not after:
+                die("Linear pagination said hasNextPage without an endCursor")
+        return items
 
 class Jira:
     def __init__(self):
@@ -320,8 +418,31 @@ class Jira:
         else:
             self.comment(feature_id, body)
 
+    def upsert_deployment(self, feature_id, body):
+        issue = self.api('/rest/api/3/issue/%s?fields=comment' % feature_id)
+        comments = (issue.get('fields', {}).get('comment') or {}).get('comments', [])
+        current = next((c for c in comments
+                        if adf_text(c.get('body')).lstrip().startswith('[deployment]')), None)
+        if current:
+            self.update_comment(feature_id, current['id'], body)
+        else:
+            self.comment(feature_id, body)
+
+    def current_feature_status(self, feature_id):
+        issue = self.api('/rest/api/3/issue/%s?fields=status' % feature_id)
+        return feature_generic_of(issue['fields']['status']['name'])
+
+    def set_feature_state(self, feature_id, status):
+        want = feature_tool_value(status)
+        trans = self.api('/rest/api/3/issue/%s/transitions' % feature_id).get('transitions', [])
+        tid = next((t['id'] for t in trans if t.get('to', {}).get('name') == want), None)
+        if not tid:
+            avail = ', '.join(t.get('to', {}).get('name', '?') for t in trans)
+            die("no Jira [feature] transition to '%s' (available: %s) — andon" % (want, avail))
+        self.api('/rest/api/3/issue/%s/transitions' % feature_id, {'transition': {'id': tid}})
+
     def export(self, feature_id):
-        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks&maxResults=100'
+        out = self.api('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks,labels,updated&maxResults=100'
                        % urllib.request.quote('parent=%s' % feature_id))
         tasks = []
         for i in out.get('issues', []):
@@ -332,11 +453,50 @@ class Jira:
             tasks.append({'taskId': i['key'], 'title': f['summary'],
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (f.get('assignee') or {}).get('displayName'),
-                          'description': f.get('description'),
-                          'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')), 'createdAt': c.get('created')}
+                          'description': adf_text(f.get('description')),
+                          'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')), 'createdAt': c.get('created'),
+                                        'author': (c.get('author') or {}).get('accountId') or (c.get('author') or {}).get('displayName')}
                                        for c in (f.get('comment') or {}).get('comments', [])],
-                          'blockedBy': blocked_by})
+                          'blockedBy': blocked_by, 'labels': f.get('labels') or [],
+                          'updatedAt': f.get('updated'), 'revision': f.get('updated')})
         return tasks
+
+    def scan(self, statuses):
+        raw_statuses = [tool_value(status_by_name(name)) for name in statuses]
+        quoted = ','.join('"%s"' % value.replace('"', '\\"') for value in raw_statuses)
+        clauses = ['status in (%s)' % quoted]
+        if PM_CONFIG.get('JIRA_PROJECT_KEY'):
+            clauses.append('project = "%s"' % PM_CONFIG['JIRA_PROJECT_KEY'].replace('"', '\\"'))
+        jql = ' AND '.join(clauses)
+        items, start = [], 0
+        while True:
+            path = ('/rest/api/3/search?jql=%s&fields=summary,description,status,assignee,comment,issuelinks,parent,labels,updated'
+                    '&startAt=%d&maxResults=100') % (urllib.request.quote(jql), start)
+            out = self.api(path)
+            rows = out.get('issues', [])
+            for i in rows:
+                f = i['fields']
+                raw = f['status']['name']
+                parent = f.get('parent') or {}
+                blocked_by = [l['inwardIssue']['key'] for l in f.get('issuelinks', [])
+                              if l.get('type', {}).get('name') == 'Blocks' and l.get('inwardIssue')]
+                items.append({
+                    'featureId': parent.get('key'),
+                    'featureTitle': ((parent.get('fields') or {}).get('summary') if isinstance(parent.get('fields'), dict) else None),
+                    'taskId': i['key'], 'title': f['summary'],
+                    'status': generic_of(raw), 'statusRaw': raw,
+                    'assignee': (f.get('assignee') or {}).get('displayName'),
+                    'description': adf_text(f.get('description')), 'blockedBy': blocked_by,
+                    'comments': [{'id': c.get('id'), 'body': adf_text(c.get('body')), 'createdAt': c.get('created'),
+                                  'author': (c.get('author') or {}).get('accountId') or (c.get('author') or {}).get('displayName')}
+                                 for c in (f.get('comment') or {}).get('comments', [])],
+                    'labels': f.get('labels') or [], 'updatedAt': f.get('updated'), 'revision': f.get('updated'),
+                })
+            start += len(rows)
+            total = int(out.get('total', start))
+            if not rows or start >= total:
+                break
+        return items
 
 class GitHubIssues:
     def __init__(self):
@@ -456,6 +616,47 @@ class GitHubIssues:
         if r.returncode != 0:
             die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
 
+    def upsert_deployment(self, feature_id, body):
+        repo = self.repo_name()
+        milestones = json.loads(self.raw_gh('api', 'repos/%s/milestones?state=all&per_page=100' % repo))
+        current = next((m for m in milestones
+                        if str(m.get('number')) == str(feature_id) or m.get('title') == str(feature_id)), None)
+        if not current:
+            die("no GitHub milestone '%s' — andon" % feature_id)
+        description = replace_managed_block(current.get('description') or '', 'deployment', body)
+        cmd = ['gh', 'api', '-X', 'PATCH', 'repos/%s/milestones/%s' % (repo, current['number']),
+               '-f', 'description=%s' % description]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            die("gh failed: %s\n%s" % (' '.join(cmd), r.stderr.strip()))
+
+    def milestone(self, feature_id):
+        repo = self.repo_name()
+        milestones = json.loads(self.raw_gh('api', 'repos/%s/milestones?state=all&per_page=100' % repo))
+        current = next((m for m in milestones
+                        if str(m.get('number')) == str(feature_id) or m.get('title') == str(feature_id)), None)
+        if not current:
+            die("no GitHub milestone '%s' — andon" % feature_id)
+        return repo, current
+
+    def current_feature_status(self, feature_id):
+        _repo, milestone = self.milestone(feature_id)
+        if milestone.get('state') == 'closed':
+            return next((s['name'] for s in FEATURE_STATUSES if 'closed' in feature_tool_value(s)), None)
+        tasks = self.export(feature_id)
+        initial = next(s['name'] for s in TASK_STATUSES if s.get('initial'))
+        if any(task.get('status') != initial for task in tasks):
+            return next((s['name'] for s in FEATURE_STATUSES if s.get('kind') == 'working'), None)
+        return next((s['name'] for s in FEATURE_STATUSES if s.get('initial')), None)
+
+    def set_feature_state(self, feature_id, status):
+        repo, milestone = self.milestone(feature_id)
+        target = 'closed' if 'closed' in feature_tool_value(status) else 'open'
+        if milestone.get('state') == target:
+            return
+        self.raw_gh('api', '-X', 'PATCH', 'repos/%s/milestones/%s' % (repo, milestone['number']),
+                    '-f', 'state=%s' % target)
+
     def export(self, feature_id):
         raw = self.gh('issue', 'list', '--milestone', str(feature_id), '--state', 'all',
                       '--json', 'number,title,body,state,labels,assignees')
@@ -473,23 +674,71 @@ class GitHubIssues:
                           'status': generic, 'statusRaw': raw_status,
                           'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
                           'description': i.get('body'),
-                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c.get('createdAt')} for c in comments],
-                          'blockedBy': []})
+                          'comments': [{'id': c.get('id'), 'body': c['body'], 'createdAt': c.get('createdAt'),
+                                        'author': ((c.get('author') or {}).get('login') if isinstance(c.get('author'), dict) else c.get('author'))}
+                                       for c in comments],
+                          'blockedBy': [], 'labels': [l['name'] for l in i['labels']],
+                          'updatedAt': i.get('updatedAt'), 'revision': i.get('updatedAt')})
         return tasks
+
+    def scan(self, statuses):
+        wanted = set(statuses)
+        raw = self.gh('issue', 'list', '--state', 'all', '--limit', '1000',
+                      '--json', 'number,title,body,state,labels,assignees,milestone,updatedAt')
+        items = []
+        for i in json.loads(raw):
+            label = next((l['name'] for l in i['labels'] if l['name'].startswith('status:')), None)
+            raw_status = 'closed' if i['state'] == 'CLOSED' else 'open + label %s' % (label or '?')
+            generic = None
+            for status in TASK_STATUSES:
+                closed, wanted_label = self.parse_tool_value(tool_value(status))
+                if (closed and i['state'] == 'CLOSED') or (not closed and wanted_label and wanted_label == label):
+                    generic = status['name']; break
+            if generic not in wanted:
+                continue
+            milestone = i.get('milestone') or {}
+            comments = self.issue_comments(i['number'])
+            items.append({
+                'featureId': milestone.get('number'), 'featureTitle': milestone.get('title'),
+                'taskId': i['number'], 'title': i['title'], 'status': generic, 'statusRaw': raw_status,
+                'assignee': (i['assignees'][0]['login'] if i['assignees'] else None),
+                'description': i.get('body'), 'blockedBy': [],
+                'comments': [{'id': c.get('id'), 'body': c.get('body'), 'createdAt': c.get('created_at'),
+                              'author': (c.get('user') or {}).get('login')} for c in comments],
+                'labels': [l['name'] for l in i['labels']], 'updatedAt': i.get('updatedAt'),
+                'revision': i.get('updatedAt'),
+            })
+        return items
 
 class Markdown:
     def __init__(self):
-        self.root = PM_CONFIG.get('MARKDOWN_ROOT') or '.workspace/task-manager'
+        configured = PM_CONFIG.get('MARKDOWN_ROOT') or '.workspace/task-manager'
+        project_root = os.environ.get('TRACKER_PROJECT_ROOT') or os.getcwd()
+        self.root = configured if os.path.isabs(configured) else os.path.join(project_root, configured)
+
+    def contained_path(self, feature_id):
+        root = os.path.realpath(self.root)
+        path = os.path.realpath(feature_id)
+        try:
+            inside = os.path.commonpath([root, path]) == root
+        except ValueError:
+            inside = False
+        if not inside:
+            die("Markdown feature path escapes MARKDOWN_ROOT: %s" % feature_id)
+        return path
 
     def load(self, feature_id):
         try:
-            with open(feature_id) as f:
+            with open(self.contained_path(feature_id)) as f:
                 return f.read()
         except OSError as e:
             die("cannot read feature file '%s': %s — andon" % (feature_id, e))
 
     def save(self, feature_id, text):
-        with open(feature_id, 'w') as f:
+        path = self.contained_path(feature_id)
+        if os.path.islink(path):
+            die("refusing to write a symlinked Markdown feature: %s" % feature_id)
+        with open(path, 'w') as f:
             f.write(text)
 
     @staticmethod
@@ -591,6 +840,28 @@ class Markdown:
         quoted = '\n'.join('> ' + line for line in body.splitlines())
         self.save(feature_id, replace_managed_block(head, 'digest', quoted).rstrip() + '\n\n' + tail.lstrip())
 
+    def upsert_deployment(self, feature_id, body):
+        text = self.load(feature_id)
+        first_task = re.search(r'^## ', text, re.M)
+        head = text[:first_task.start()] if first_task else text
+        tail = text[first_task.start():] if first_task else ''
+        quoted = '\n'.join('> ' + line for line in body.splitlines())
+        self.save(feature_id, replace_managed_block(head, 'deployment', quoted).rstrip() + '\n\n' + tail.lstrip())
+
+    def current_feature_status(self, feature_id):
+        match = re.search(r'^# .*?\[([^\]]+)\][ \t]*$', self.load(feature_id), re.M)
+        if not match:
+            die("Markdown feature has no bracketed status: %s" % feature_id)
+        return feature_generic_of('[%s]' % match.group(1))
+
+    def set_feature_state(self, feature_id, status):
+        text = self.load(feature_id)
+        pattern = re.compile(r'^(# .*?)\[([^\]]+)\][ \t]*$', re.M)
+        if not pattern.search(text):
+            die("Markdown feature has no bracketed status: %s" % feature_id)
+        raw = feature_tool_value(status).strip('[]')
+        self.save(feature_id, pattern.sub(lambda m: '%s[%s]' % (m.group(1), raw), text, count=1))
+
     def export(self, feature_id):
         text = self.load(feature_id)
         tasks = []
@@ -629,13 +900,37 @@ class Markdown:
                 description_lines.append(_l)
             description = re.sub(r'\n{3,}', '\n\n', '\n'.join(description_lines)).strip()
             comments = [{'id': ('managed-progress-%s' % num if _b.startswith('[progress]') else None),
-                         'body': _b, 'createdAt': None} for _b in _blocks]
+                         'body': _b, 'createdAt': None, 'author': None} for _b in _blocks]
             tasks.append({'taskId': '%s#%s' % (feature_id, num), 'title': title,
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (am.group(1).strip() if am and am.group(1).strip() not in ('-', '—') else None),
                           'description': description, 'comments': comments,
-                          'blockedBy': blocked_by})
+                          'blockedBy': blocked_by, 'labels': [],
+                          'updatedAt': datetime.fromtimestamp(os.path.getmtime(self.contained_path(feature_id)), timezone.utc).isoformat(),
+                          'revision': str(os.stat(self.contained_path(feature_id)).st_mtime_ns)})
         return tasks
+
+    def scan(self, statuses):
+        wanted = set(statuses)
+        root = self.contained_path(self.root)
+        if not os.path.isdir(root):
+            die("Markdown root does not exist: %s" % self.root)
+        items = []
+        for current, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(current, name))]
+            if 'feature.md' not in files:
+                continue
+            path = os.path.join(current, 'feature.md')
+            text = self.load(path)
+            title_match = re.search(r'^# (.*?)\s*\[[^\]]+\][ \t]*$', text, re.M)
+            feature_title = title_match.group(1).strip() if title_match else os.path.basename(current)
+            for task in self.export(path):
+                if task.get('status') not in wanted:
+                    continue
+                item = dict(task)
+                item.update({'featureId': path, 'featureTitle': feature_title})
+                items.append(item)
+        return items
 
 BACKENDS = {'Linear': Linear, 'Jira': Jira, 'GitHubIssues': GitHubIssues, 'Markdown': Markdown}
 if ADAPTER not in BACKENDS:
@@ -647,9 +942,36 @@ def op_state(args):
     if len(args) != 2:
         die("usage: state <taskId> <Status>")
     target = status_by_name(args[1])
-    if backend.current_status(args[0]) != target['name']:
+    current_name = backend.current_status(args[0])
+    if current_name is None:
+        die("cannot reverse-map the current status of %s — andon" % args[0])
+    if current_name != target['name']:
+        current = status_by_name(current_name)
+        if target['name'] not in current.get('transitions', []):
+            die("illegal [task] transition [%s] → [%s] — andon" % (current_name, target['name']))
         backend.set_state(args[0], target)
+        observed = backend.current_status(args[0])
+        if observed != target['name']:
+            die("status write did not read back as [%s] (observed: %s) — andon" % (target['name'], observed))
     print("%s → [%s]" % (args[0], args[1]))
+
+def op_feature_state(args):
+    if len(args) != 2:
+        die("usage: feature-state <featureId> <Status>")
+    feature_id, target_name = args
+    target = feature_status_by_name(target_name)
+    current_name = backend.current_feature_status(feature_id)
+    if current_name is None:
+        die("cannot reverse-map the current [feature] status of %s — andon" % feature_id)
+    if current_name != target_name:
+        current = feature_status_by_name(current_name)
+        if target_name not in current.get('transitions', []):
+            die("illegal [feature] transition [%s] → [%s] — andon" % (current_name, target_name))
+        backend.set_feature_state(feature_id, target)
+        observed = backend.current_feature_status(feature_id)
+        if observed != target_name:
+            die("[feature] status write did not read back as [%s] (observed: %s) — andon" % (target_name, observed))
+    print("%s → [%s]" % (feature_id, target_name))
 
 def op_comment(args):
     if len(args) not in (1, 2):
@@ -702,16 +1024,34 @@ def op_upsert_digest(args):
     backend.upsert_digest(args[0], body)
     print("digest updated on %s" % args[0])
 
+def op_upsert_deployment(args):
+    if len(args) not in (1, 2):
+        die("usage: upsert-deployment <featureId> [bodyfile]  (no file / '-' = stdin)")
+    body = read_body(args[1] if len(args) == 2 else None)
+    if not body.lstrip().startswith('[deployment]'):
+        die("upsert-deployment body must begin with [deployment]")
+    backend.upsert_deployment(args[0], body)
+    print("deployment updated on %s" % args[0])
+
 def op_claim(args):
     to = None
-    if '--to' in args:
-        i = args.index('--to')
-        to = args[i + 1] if i + 1 < len(args) else die("--to needs a status name")
-        args = args[:i] + args[i + 2:]
+    expected = None
+    claim_id = None
+    for flag in ('--to', '--expected', '--claim-id'):
+        if flag in args:
+            i = args.index(flag)
+            value = args[i + 1] if i + 1 < len(args) else die("%s needs a value" % flag)
+            args = args[:i] + args[i + 2:]
+            if flag == '--to': to = value
+            elif flag == '--expected': expected = value
+            else: claim_id = value
     if len(args) != 2:
         die("usage: claim <taskId> <role> [--to <Status>]")
     task_id, role = args
     init = initial_status()
+    expected = expected or init['name']
+    if expected != init['name']:
+        die("claim expected status must be the board's initial status [%s]" % init['name'])
     if to is None:
         if len(init['transitions']) != 1:
             die("initial status '%s' has %d outbound transitions — pass --to <Status>"
@@ -720,11 +1060,25 @@ def op_claim(args):
     target = status_by_name(to)
     if to not in init['transitions']:
         die("claim must follow the board: '%s' is not in %s.transitions — andon" % (to, init['name']))
+    claim_id = claim_id or ('claim-' + hashlib.sha256(('%s\0%s\0%s' % (task_id, role, to)).encode()).hexdigest()[:24])
+    if not re.fullmatch(r'[A-Za-z0-9._:-]{8,128}', claim_id):
+        die("invalid claim id '%s'" % claim_id)
+    token = "claim-id: %s" % claim_id
+    current = backend.current_status(task_id)
+    if current == to and backend.comment_exists(task_id, token):
+        print("%s claim %s already recorded → [%s]" % (task_id, claim_id, to))
+        return
+    if current != expected:
+        die("claim conflict: expected [%s], observed [%s] for %s — no launch" % (expected, current, task_id))
+    if not backend.comment_exists(task_id, token):
+        backend.comment(task_id, "[claim]\n%s\nrole: %s\ntarget-status: %s\n\n— dispatcher" % (token, role, to))
     if hasattr(backend, 'set_assignee'):
         backend.set_assignee(task_id, role)
     backend.set_state(task_id, target)
-    backend.comment(task_id, "Claimed — moving to [%s].\n\n— %s" % (to, role))
-    print("%s claimed by %s → [%s]" % (task_id, role, to))
+    observed = backend.current_status(task_id)
+    if observed != to:
+        die("claim write did not read back as [%s] (observed: %s) — no launch" % (to, observed))
+    print("%s claimed by %s → [%s] (claim-id: %s)" % (task_id, role, to, claim_id))
 
 def op_integrate(args):
     if len(args) not in (2, 3):
@@ -757,10 +1111,56 @@ def op_export(args):
         f.write('\n')
     print("exported %d [tasks] of %s to %s" % (len(tasks), feature_id, outfile))
 
+def op_scan(args):
+    if not args:
+        die("usage: scan <outfile> --status <Status>...")
+    outfile, rest = args[0], args[1:]
+    statuses = []
+    while rest:
+        if len(rest) < 2 or rest[0] != '--status':
+            die("usage: scan <outfile> --status <Status>...")
+        status_by_name(rest[1])
+        statuses.append(rest[1])
+        rest = rest[2:]
+    if not statuses:
+        statuses = [s['name'] for s in TASK_STATUSES if s.get('kind') in ('queued', 'blocked')]
+    if not statuses:
+        die("scan has no statuses (pass --status or configure queued/blocked kinds)")
+    items = backend.scan(statuses)
+    normalized, orphans = [], []
+    for item in items:
+        if not isinstance(item, dict) or item.get('taskId') is None:
+            die("adapter returned a malformed scan record — andon")
+        if item.get('status') not in statuses:
+            die("adapter returned an out-of-scope status '%s' for %s" % (item.get('status'), item.get('taskId')))
+        value = dict(item)
+        value['taskId'] = str(value['taskId'])
+        if value.get('featureId') is not None:
+            value['featureId'] = str(value['featureId'])
+        value['routingHints'] = {'labels': list(value.get('labels') or []), 'teamPreset': None}
+        (normalized if value.get('featureId') else orphans).append(value)
+    payload = {
+        'schemaVersion': 1, 'adapter': ADAPTER,
+        'scannedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'statuses': statuses, 'items': normalized, 'orphans': orphans,
+    }
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + '\n'
+    if outfile == '-':
+        sys.stdout.write(text)
+    else:
+        parent = os.path.dirname(os.path.abspath(outfile))
+        os.makedirs(parent, exist_ok=True)
+        temp = outfile + '.tmp.%d' % os.getpid()
+        with open(temp, 'w') as f:
+            f.write(text)
+        os.replace(temp, outfile)
+        print("scanned %d [tasks] (%d orphaned) to %s" % (len(normalized), len(orphans), outfile))
+
 OPS = {'state': op_state, 'comment': op_comment, 'comment-once': op_comment_once, 'update-comment': op_update_comment,
        'upsert-progress': op_upsert_progress, 'upsert-digest': op_upsert_digest,
-       'claim': op_claim, 'integrate': op_integrate, 'export': op_export}
+       'upsert-deployment': op_upsert_deployment, 'feature-state': op_feature_state,
+       'claim': op_claim, 'integrate': op_integrate, 'export': op_export, 'scan': op_scan}
 if not ARGS or ARGS[0] not in OPS:
-    die("usage: tracker-ops.sh {state|comment|comment-once|update-comment|upsert-progress|upsert-digest|claim|integrate|export} ...")
+    die("usage: tracker-ops.sh {state|feature-state|comment|comment-once|update-comment|upsert-progress|upsert-digest|upsert-deployment|claim|integrate|export|scan} ...")
 OPS[ARGS[0]](ARGS[1:])
 PYEOF

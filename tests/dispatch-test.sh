@@ -16,6 +16,7 @@ cp "$SKILL_DIR/config/statuses.config.json" .claude/skills/pm/config/
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
+MARKDOWN_ROOT=.
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF
@@ -336,6 +337,7 @@ fi
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
+MARKDOWN_ROOT=.
 STATUS_CONFIG=config/statuses.config.json
 ```
 EOF
