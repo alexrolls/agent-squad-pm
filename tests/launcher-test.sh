@@ -4,12 +4,35 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
 check() { # check <desc> <cmd...>
   local desc="$1"; shift
   if "$@" >/dev/null 2>&1; then echo "ok: $desc"; else echo "FAIL: $desc"; FAILURES=$((FAILURES+1)); fi
 }
+
+SANDBOX_RUNNER="$TMP/protected-agent-sandbox-runner"
+SANDBOX_RUNNER_LOG="$TMP/agent-sandbox-runner.log"
+cat > "$SANDBOX_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = "--workdir" ] && [ $# -ge 4 ] || exit 91
+workdir="$2"
+shift 2
+[ "${1:-}" = "--" ] || exit 92
+shift
+if [ -n "${SANDBOX_RUNNER_LOG:-}" ]; then
+  printf '%s|%s|%s\n' "$workdir" "${1:-}" "${2:-}" >> "$SANDBOX_RUNNER_LOG"
+fi
+cd "$workdir"
+exec "$@"
+EOF
+chmod 700 "$SANDBOX_RUNNER"
+export SANDBOX_RUNNER_LOG
+: > "$SANDBOX_RUNNER_LOG"
+LIFECYCLE_ROOT="$TMP/protected-lifecycle"
+mkdir -m 700 "$LIFECYCLE_ROOT"
 
 # -- fixture repo ------------------------------------------------------------
 cd "$TMP"
@@ -31,27 +54,155 @@ TEAM_DEFAULT_CMD="true"
 SENIOR_QA_ENGINEER_CMD="cat {prompt_file} > qa-received.txt"
 SENIOR_TECHNICAL_PRODUCT_MANAGER_CMD=null
 TEAMWORK_ROOT=.teamwork
+AGENT_ENV_ALLOWLIST="PATH TMPDIR LANG LC_ALL TERM SAFE_AGENT_FLAG"
 POLL_INTERVAL_SECONDS=1
 STUCK_AFTER_MINUTES=1
 ESCALATE_AFTER_ATTEMPTS=2
+TRACKER_WRITERS=broker
+AGENT_SANDBOX_RUNNER=__SANDBOX_RUNNER__
+AGENT_SANDBOX_ENFORCED=true
+BROKER_LIFECYCLE_ROOT=__LIFECYCLE_ROOT__
 VALIDATE_BUILD=null
 VALIDATE_TEST=null
 VALIDATE_LINT=null
 ```
 EOF
+sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$SANDBOX_RUNNER\"|" .claude/skills/pm/config/team.config.md
+sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
 LAUNCH=".claude/skills/pm/bin/launch-team.sh"
+
+printf 'TRACKER_WRITERS=all\n' >> .claude/skills/pm/config/team.config.md
+if "$LAUNCH" status test-feature >duplicate-config.out 2>&1; then
+  echo "FAIL: launcher accepted duplicate safety configuration"; FAILURES=$((FAILURES+1))
+elif grep -q 'duplicate configuration key TRACKER_WRITERS' duplicate-config.out; then
+  echo "ok: launcher rejects duplicate safety configuration"
+else
+  echo "FAIL: launcher reported wrong duplicate-key error"; FAILURES=$((FAILURES+1))
+fi
+sed -i '' '$d' .claude/skills/pm/config/team.config.md
+
+# -- enforced sandbox runner trust and direct-mode fallback -----------------
+CFG_SANDBOX=.claude/skills/pm/config/team.config.md
+expect_runner_refused() { # description value expected-error
+  local description="$1" value="$2" expected="$3" out
+  sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$value\"|" "$CFG_SANDBOX"
+  if out="$("$LAUNCH" status sandbox-check 2>&1)"; then
+    echo "FAIL: $description accepted"; FAILURES=$((FAILURES+1))
+  elif printf '%s' "$out" | grep -q "$expected"; then
+    echo "ok: $description refused"
+  else
+    echo "FAIL: $description wrong error: $out"; FAILURES=$((FAILURES+1))
+  fi
+}
+
+INSIDE_RUNNER="$PWD/repository-agent-runner"
+cp "$SANDBOX_RUNNER" "$INSIDE_RUNNER"
+chmod 700 "$INSIDE_RUNNER"
+SYMLINK_RUNNER="$TMP/symlink-agent-runner"
+ln -s "$SANDBOX_RUNNER" "$SYMLINK_RUNNER"
+WRITABLE_RUNNER="$TMP/writable-agent-runner"
+cp "$SANDBOX_RUNNER" "$WRITABLE_RUNNER"
+chmod 722 "$WRITABLE_RUNNER"
+NONEXEC_RUNNER="$TMP/nonexec-agent-runner"
+cp "$SANDBOX_RUNNER" "$NONEXEC_RUNNER"
+chmod 600 "$NONEXEC_RUNNER"
+
+expect_runner_refused "relative sandbox runner" "relative-runner" "path must be absolute"
+expect_runner_refused "repository-local sandbox runner" "$INSIDE_RUNNER" "external to the agent repository"
+expect_runner_refused "symlink sandbox runner" "$SYMLINK_RUNNER" "must not be a symlink"
+expect_runner_refused "directory sandbox runner" "$TMP" "regular file"
+expect_runner_refused "group/world-writable sandbox runner" "$WRITABLE_RUNNER" "group- or world-writable"
+expect_runner_refused "non-executable sandbox runner" "$NONEXEC_RUNNER" "must be executable"
+
+sed -i '' 's|^AGENT_SANDBOX_ENFORCED=.*|AGENT_SANDBOX_ENFORCED=false|' "$CFG_SANDBOX"
+sed -i '' 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER="relative-runner"|' "$CFG_SANDBOX"
+runner_lines_before="$(wc -l < "$SANDBOX_RUNNER_LOG" 2>/dev/null || printf '0')"
+TEAM_RUNNER=background "$LAUNCH" start manual-direct FEAT-DIRECT backend
+runner_lines_after="$(wc -l < "$SANDBOX_RUNNER_LOG" 2>/dev/null || printf '0')"
+check "manual non-enforced mode retains direct execution" test -f .teamwork/manual-direct/prompts/backend.md
+[ "$runner_lines_before" = "$runner_lines_after" ] \
+  && echo "ok: manual non-enforced mode does not invoke configured runner" \
+  || { echo "FAIL: manual non-enforced mode invoked sandbox runner"; FAILURES=$((FAILURES+1)); }
+sed -i '' 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER="'"$SANDBOX_RUNNER"'"|' "$CFG_SANDBOX"
+sed -i '' 's|^AGENT_SANDBOX_ENFORCED=.*|AGENT_SANDBOX_ENFORCED=true|' "$CFG_SANDBOX"
+: > "$SANDBOX_RUNNER_LOG"
 
 # -- start: composes prompt, runs stub in background mode ---------------------
 TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 backend
 check "prompt file composed"        test -f .teamwork/test-feature/prompts/backend.md
 check "prompt contains role brief"  grep -q "Role: backend" .teamwork/test-feature/prompts/backend.md
 check "prompt contains protocol"    grep -q "Orchestration — The Multi-Agent Protocol" .teamwork/test-feature/prompts/backend.md
+check "prompt contains safety policy" grep -q "Autonomous safety guardrails" .teamwork/test-feature/prompts/backend.md
 check "prompt contains featureId"   grep -q "FEAT-1" .teamwork/test-feature/prompts/backend.md
 check "prompt contains team config" grep -q "POLL_INTERVAL_SECONDS" .teamwork/test-feature/prompts/backend.md
 check "pid file written"            test -f .teamwork/test-feature/pids/backend.pid
-for i in $(seq 1 20); do [ -f backend-received.txt ] && break; sleep 0.1; done
+check "workspace process marker contains no PID" grep -qx managed .teamwork/test-feature/pids/backend.pid
+for i in $(seq 1 20); do
+  [ -f backend-received.txt ] && grep -Fq "$PWD|/usr/bin/env|-i" "$SANDBOX_RUNNER_LOG" && break
+  sleep 0.1
+done
+check "enforced gate launch uses protected runner argv" grep -Fq "$PWD|/usr/bin/env|-i" "$SANDBOX_RUNNER_LOG"
 check "stub agent ran with prompt"  grep -q "Role: backend" backend-received.txt
 check "mailbox dir created"         test -d .teamwork/test-feature/mailbox/backend
+
+# -- agent child environment strips tracker/cloud/host credentials ------------
+cat > env-probe.sh <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "${LINEAR_API_KEY-unset}" "${AWS_ACCESS_KEY_ID-unset}" "${KUBECONFIG-unset}" "${SSH_AUTH_SOCK-unset}" > agent-env.txt
+printf '%s|%s|%s|%s\n' "${SAFE_AGENT_FLAG-unset}" "${UNLISTED_AGENT_VALUE-unset}" "${STARTUP_FACTORY_ROLE-unset}" "${STARTUP_FACTORY_EXECUTION_KIND-unset}" >> agent-env.txt
+printf '%s\n' "${HOME-unset}" >> agent-env.txt
+case "${STARTUP_FACTORY_OUTBOX_CAPABILITY_ID-unset}|${STARTUP_FACTORY_OUTBOX_CAPABILITY_SECRET-unset}|${STARTUP_FACTORY_CANONICAL_REPO-unset}|${STARTUP_FACTORY_CANONICAL_WORKSPACE-unset}" in
+  cap-[0-9a-f][0-9a-f]*\|[0-9a-f][0-9a-f]*\|/*\|/*) echo capability-context-valid >> agent-env.txt ;;
+  *) echo capability-context-invalid >> agent-env.txt ;;
+esac
+EOF
+chmod +x env-probe.sh
+sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="./env-probe.sh {prompt_file}"|' .claude/skills/pm/config/team.config.md
+LINEAR_API_KEY=tracker-secret AWS_ACCESS_KEY_ID=cloud-secret KUBECONFIG=/secret/kube SSH_AUTH_SOCK=/secret/agent \
+  SAFE_AGENT_FLAG=allowed UNLISTED_AGENT_VALUE=must-not-leak \
+  TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 backend
+for i in $(seq 1 20); do [ -f agent-env.txt ] && break; sleep 0.1; done
+check "non-lead agent environment strips sensitive credentials" grep -q '^unset|unset|unset|unset$' agent-env.txt
+check "agent environment keeps explicitly allowlisted value" grep -q '^allowed|unset|backend|gate$' agent-env.txt
+check "agent environment omits ambient HOME by default" grep -q '^unset$' agent-env.txt
+check "launcher injects bounded outbox capability context" grep -q '^capability-context-valid$' agent-env.txt
+check "broker verifier state is outside linked task worktrees" python3 - <<'PY'
+import os,stat,subprocess
+common=subprocess.check_output(['git','rev-parse','--git-common-dir'],text=True).strip()
+if not os.path.isabs(common): common=os.path.join(os.getcwd(),common)
+root=os.path.realpath(os.path.join(common,'startup-factory-broker'))
+assert os.path.isdir(root)
+assert stat.S_IMODE(os.stat(root).st_mode) == 0o700
+records=os.path.join(root,'outbox-capabilities')
+assert any(name.endswith('.json') for name in os.listdir(records))
+assert all(stat.S_IMODE(os.stat(os.path.join(records,name)).st_mode) == 0o600 for name in os.listdir(records))
+PY
+
+sed -i '' 's|^AGENT_ENV_ALLOWLIST=.*|AGENT_ENV_ALLOWLIST="PATH LINEAR_API_KEY"|' .claude/skills/pm/config/team.config.md
+if LINEAR_API_KEY=tracker-secret TEAM_RUNNER=background "$LAUNCH" start blocked-env FEAT-ENV backend >/dev/null 2>&1; then
+  echo "FAIL: broker mode accepted a tracker credential in AGENT_ENV_ALLOWLIST"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: broker mode refuses tracker credentials in AGENT_ENV_ALLOWLIST"
+fi
+sed -i '' 's|^AGENT_ENV_ALLOWLIST=.*|AGENT_ENV_ALLOWLIST="PATH TMPDIR LANG LC_ALL TERM SAFE_AGENT_FLAG"|' .claude/skills/pm/config/team.config.md
+
+# Broker mode strips tracker credentials from the team lead too. The broker is
+# a deterministic process, not an LLM role with a privileged environment.
+cat > lead-env-probe.sh <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s\n' "${LINEAR_API_KEY-unset}" "${GH_TOKEN-unset}" > lead-agent-env.txt
+EOF
+chmod +x lead-env-probe.sh
+printf 'PRINCIPAL_SOFTWARE_ARCHITECT_CMD="./lead-env-probe.sh {prompt_file}"\n' >> .claude/skills/pm/config/team.config.md
+LINEAR_API_KEY=tracker-secret GH_TOKEN=github-secret SKIP_PREFLIGHT=1 TEAM_RUNNER=background \
+  "$LAUNCH" gate-team full-stack broker-gates FEAT-BROKER
+for i in $(seq 1 20); do [ -f lead-agent-env.txt ] && break; sleep 0.1; done
+check "broker mode strips tracker credentials from team lead" grep -q '^unset|unset$' lead-agent-env.txt
+check "gate-team launches team lead" test -f .teamwork/broker-gates/prompts/principal-software-architect.md
+check "gate-team launches reviewer gate" test -f .teamwork/broker-gates/prompts/senior-qa-engineer.md
+check "gate-team launches integration gate" test -f .teamwork/broker-gates/prompts/integrator.md
+check "gate-team does not launch long-lived implementer" test ! -f .teamwork/broker-gates/prompts/senior-full-stack-engineer.md
+check "gate-team skips explicitly disabled product-manager gate" test ! -f .teamwork/broker-gates/prompts/senior-technical-product-manager.md
 
 # -- start refuses an unknown role (no brief anywhere) ------------------------
 if TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 no-such-role 2>/dev/null; then
@@ -59,6 +210,66 @@ if TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 no-such-role 2>/de
 else
   echo "ok: unknown role refused"
 fi
+if TEAM_RUNNER=background "$LAUNCH" start '../escape' FEAT-1 backend 2>/dev/null; then
+  echo "FAIL: unsafe team id should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: unsafe team id refused"
+fi
+if "$LAUNCH" compose '.' FEAT-1 backend >/dev/null 2>&1; then
+  echo "FAIL: dot team id should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: dot team id refused"
+fi
+
+CFG_ROOT=.claude/skills/pm/config/team.config.md
+ABS_ESCAPE="$TMP/absolute-workspace"
+sed -i '' "s|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=$ABS_ESCAPE|" "$CFG_ROOT"
+if "$LAUNCH" compose absolute-root FEAT-ROOT backend >/dev/null 2>&1; then
+  echo "FAIL: absolute TEAMWORK_ROOT should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: absolute TEAMWORK_ROOT refused"
+fi
+check "absolute TEAMWORK_ROOT wrote nothing" test ! -e "$ABS_ESCAPE"
+sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=../traversal-workspace|' "$CFG_ROOT"
+if "$LAUNCH" compose traversal-root FEAT-ROOT backend >/dev/null 2>&1; then
+  echo "FAIL: traversing TEAMWORK_ROOT should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: traversing TEAMWORK_ROOT refused"
+fi
+check "traversing TEAMWORK_ROOT wrote nothing" test ! -e "$TMP/traversal-workspace"
+mkdir -p "$TMP/symlink-workspace"
+ln -s "$TMP/symlink-workspace" workspace-link
+sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=workspace-link|' "$CFG_ROOT"
+if "$LAUNCH" compose symlink-root FEAT-ROOT backend >/dev/null 2>&1; then
+  echo "FAIL: escaping TEAMWORK_ROOT symlink should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: escaping TEAMWORK_ROOT symlink refused"
+fi
+check "TEAMWORK_ROOT symlink escape wrote nothing" test -z "$(find "$TMP/symlink-workspace" -mindepth 1 -print -quit)"
+sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=.teamwork|' "$CFG_ROOT"
+mkdir -p .teamwork/other-team
+ln -s other-team .teamwork/cross-team
+if "$LAUNCH" compose cross-team FEAT-ROOT backend >/dev/null 2>&1; then
+  echo "FAIL: in-repository cross-team workspace symlink should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: in-repository cross-team workspace symlink refused"
+fi
+check "cross-team symlink wrote no prompt" test ! -e .teamwork/other-team/prompts/backend.md
+if "$LAUNCH" worktree test-feature '../escape-role' T-BAD >/dev/null 2>&1; then
+  echo "FAIL: unsafe role should be refused before worktree path use"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: unsafe role refused before worktree path use"
+fi
+cat > .claude/skills/pm/teams/unsafe-roster.md <<'EOF'
+ROSTER=../escape-role
+PROTOCOL_TEAM_LEAD=../escape-role
+EOF
+if SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" gate-team unsafe-roster unsafe-gate FEAT-BAD >/dev/null 2>&1; then
+  echo "FAIL: unsafe preset roster role should be refused"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: unsafe preset roster role refused before workspace creation"
+fi
+check "unsafe preset roster creates no workspace" test ! -e .teamwork/unsafe-gate
 
 # -- role with no _CMD key of its own falls back to TEAM_DEFAULT_CMD ----------
 TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 qa
@@ -77,7 +288,7 @@ T42_WT=".teamwork/test-feature/worktrees/backend#1-$T42_KEY"
 "$LAUNCH" worktree test-feature backend T-42
 check "worktree created"  test -d "$T42_WT"
 check "worktree branch"   git -C "$T42_WT" rev-parse --abbrev-ref HEAD
-[ "$(git -C "$T42_WT" rev-parse --abbrev-ref HEAD)" = "agent-task/$T42_KEY" ] \
+[ "$(git -C "$T42_WT" rev-parse --abbrev-ref HEAD)" = "agent-task/test-feature/$T42_KEY" ] \
   && echo "ok: collision-safe task branch" || { echo "FAIL: branch name"; FAILURES=$((FAILURES+1)); }
 
 # -- worktree re-add: remove the worktree dir but keep the branch, re-add should succeed --
@@ -87,12 +298,14 @@ check "worktree re-add with existing branch" test -d "$T42_WT"
 
 # -- worktree provisioning: WORKTREE_SETUP runs once, fail-loud -----------------
 CFG_WT=.claude/skills/pm/config/team.config.md
-printf 'WORKTREE_SETUP="touch provisioned.txt"\n' >> "$CFG_WT"
+printf 'WORKTREE_SETUP="! env | grep -q '\''^LINEAR_API_KEY='\'' && ! env | grep -q '\''^HOME='\'' && touch provisioned.txt"\n' >> "$CFG_WT"
 T77_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key T-77)"
 T78_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key T-78)"
-"$LAUNCH" worktree test-feature backend T-77
+LINEAR_API_KEY=must-not-leak HOME=/secret/home "$LAUNCH" worktree test-feature backend T-77
 check "WORKTREE_SETUP provisioned the tree" test -f ".teamwork/test-feature/worktrees/backend#1-$T77_KEY/provisioned.txt"
-sed -i '' '/^WORKTREE_SETUP="touch provisioned.txt"$/d' "$CFG_WT"
+check "WORKTREE_SETUP receives no scheduler credentials or ambient HOME" test -f ".teamwork/test-feature/worktrees/backend#1-$T77_KEY/provisioned.txt"
+check "WORKTREE_SETUP uses protected runner argv" grep -Fq "$PWD/.teamwork/test-feature/worktrees/backend#1-$T77_KEY|/usr/bin/env|-i" "$SANDBOX_RUNNER_LOG"
+sed -i '' '/^WORKTREE_SETUP=/d' "$CFG_WT"
 printf 'WORKTREE_SETUP="false"\n' >> "$CFG_WT"
 if "$LAUNCH" worktree test-feature backend T-78 >/dev/null 2>&1; then
   echo "FAIL: failing WORKTREE_SETUP should die"; FAILURES=$((FAILURES+1))
@@ -108,7 +321,7 @@ check "worktree-remove cleaned the dir" test ! -d ".teamwork/test-feature/worktr
 git worktree list | grep -q "backend#1-$T77_KEY" && { echo "FAIL: stale worktree registration"; FAILURES=$((FAILURES+1)); } || echo "ok: worktree pruned"
 "$LAUNCH" worktree test-feature backend T-77 2
 check "attempt 2 gets a fresh tree on the same branch" test -d ".teamwork/test-feature/worktrees/backend#2-$T77_KEY"
-[ "$(git -C ".teamwork/test-feature/worktrees/backend#2-$T77_KEY" rev-parse --abbrev-ref HEAD)" = "agent-task/$T77_KEY" ] \
+[ "$(git -C ".teamwork/test-feature/worktrees/backend#2-$T77_KEY" rev-parse --abbrev-ref HEAD)" = "agent-task/test-feature/$T77_KEY" ] \
   && echo "ok: attempt 2 reuses task branch" || { echo "FAIL: attempt-2 branch"; FAILURES=$((FAILURES+1)); }
 
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
@@ -288,7 +501,13 @@ STATUS_CONFIG=config/statuses.config.json
 EOF
 
 # -- tmux liveness: pid file removed on agent exit; dead pane never blocks relaunch ----
-if [ "${TEAM_RUNNER:-auto}" != "background" ] && command -v tmux >/dev/null 2>&1; then
+tmux_usable=no
+tmux_probe="startup-factory-probe-$$"
+if command -v tmux >/dev/null 2>&1 && tmux new-session -d -s "$tmux_probe" 'sleep 1' >/dev/null 2>&1; then
+  tmux_usable=yes
+  tmux kill-session -t "$tmux_probe" 2>/dev/null || true
+fi
+if [ "${TEAM_RUNNER:-auto}" != "background" ] && [ "$tmux_usable" = yes ]; then
   TL_TEAM="tmux-liveness"
   tmux kill-session -t "team-$TL_TEAM" 2>/dev/null || true
   rm -rf ".teamwork/$TL_TEAM"
@@ -314,8 +533,90 @@ if [ "${TEAM_RUNNER:-auto}" != "background" ] && command -v tmux >/dev/null 2>&1
     || { echo "FAIL: tmux: relaunch did not say launched — output: $relaunch_out"; FAILURES=$((FAILURES+1)); }
   tmux kill-session -t "team-$TL_TEAM" 2>/dev/null || true
 else
-  echo "skip: tmux tests (tmux unavailable or TEAM_RUNNER=background)"
+  echo "skip: tmux tests (tmux unavailable/unusable or TEAM_RUNNER=background)"
 fi
+
+# -- lifecycle authority is external; workspace/PID tampering never selects a signal target --
+CFG_LIFECYCLE=.claude/skills/pm/config/team.config.md
+sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="sleep 30"|' "$CFG_LIFECYCLE"
+
+record_for() { # team instance
+  python3 - "$LIFECYCLE_ROOT" "$1" "$2" <<'PY'
+import json, pathlib, sys
+root, team, instance = sys.argv[1:]
+matches = []
+for path in pathlib.Path(root, "records").glob("*.json"):
+    record = json.loads(path.read_text())
+    if record["team"] == team and record["instance"] == instance:
+        matches.append(path)
+assert len(matches) == 1, matches
+print(matches[0])
+PY
+}
+
+TEAM_RUNNER=background "$LAUNCH" start lifecycle-workspace FEAT-LIFE backend >/dev/null
+workspace_record="$(record_for lifecycle-workspace backend)"
+workspace_agent_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$workspace_record")"
+sleep 30 & workspace_victim_pid=$!
+printf '%s\n' "$workspace_victim_pid" > .teamwork/lifecycle-workspace/pids/backend.pid
+"$LAUNCH" stop lifecycle-workspace >/dev/null
+check "workspace PID tampering never signals unrelated process" kill -0 "$workspace_victim_pid"
+for _i in $(seq 1 20); do kill -0 "$workspace_agent_pid" 2>/dev/null || break; sleep 0.05; done
+check "stop signals the protected identity instead of workspace PID" bash -c "! kill -0 '$workspace_agent_pid' 2>/dev/null"
+kill "$workspace_victim_pid" 2>/dev/null || true
+wait "$workspace_victim_pid" 2>/dev/null || true
+
+TEAM_RUNNER=background "$LAUNCH" start lifecycle-auth FEAT-LIFE backend >/dev/null
+auth_record="$(record_for lifecycle-auth backend)"
+auth_agent_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$auth_record")"
+sleep 30 & auth_victim_pid=$!
+python3 - "$auth_record" "$auth_victim_pid" <<'PY'
+import json, sys
+path, victim = sys.argv[1:]
+record = json.load(open(path))
+record["pid"] = int(victim)
+open(path, "w").write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+if "$LAUNCH" stop lifecycle-auth >lifecycle-auth-stop.out 2>&1; then
+  echo "FAIL: unauthenticated protected lifecycle tampering was accepted"; FAILURES=$((FAILURES+1))
+elif grep -q 'authentication failed\|failed authentication' lifecycle-auth-stop.out; then
+  echo "ok: protected lifecycle record tampering fails closed"
+else
+  echo "FAIL: protected lifecycle tamper returned wrong error: $(cat lifecycle-auth-stop.out)"; FAILURES=$((FAILURES+1))
+fi
+check "tampered protected record does not signal original process" kill -0 "$auth_agent_pid"
+check "tampered protected record does not signal substituted process" kill -0 "$auth_victim_pid"
+kill "$auth_agent_pid" "$auth_victim_pid" 2>/dev/null || true
+wait "$auth_agent_pid" 2>/dev/null || true
+wait "$auth_victim_pid" 2>/dev/null || true
+rm -f "$auth_record"
+
+TEAM_RUNNER=background "$LAUNCH" start lifecycle-identity FEAT-LIFE backend >/dev/null
+identity_record="$(record_for lifecycle-identity backend)"
+identity_agent_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$identity_record")"
+python3 - "$identity_record" "$LIFECYCLE_ROOT/record-auth.key" <<'PY'
+import hashlib, hmac, json, sys
+record_path, key_path = sys.argv[1:]
+record = json.load(open(record_path))
+record["processIdentity"] = "forged-start-identity"
+record.pop("auth")
+payload = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+record["auth"] = hmac.new(open(key_path, "rb").read(), payload, hashlib.sha256).hexdigest()
+open(record_path, "w").write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+if "$LAUNCH" stop lifecycle-identity >lifecycle-identity-stop.out 2>&1; then
+  echo "FAIL: protected process identity mismatch was accepted"; FAILURES=$((FAILURES+1))
+elif grep -q 'identity mismatch' lifecycle-identity-stop.out; then
+  echo "ok: protected process identity mismatch fails closed"
+else
+  echo "FAIL: identity mismatch returned wrong error: $(cat lifecycle-identity-stop.out)"; FAILURES=$((FAILURES+1))
+fi
+check "identity mismatch never signals recorded PID" kill -0 "$identity_agent_pid"
+kill "$identity_agent_pid" 2>/dev/null || true
+wait "$identity_agent_pid" 2>/dev/null || true
+rm -f "$identity_record"
+
+sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="cat {prompt_file} > backend-received.txt"|' "$CFG_LIFECYCLE"
 
 # -- status + stop --------------------------------------------------------------
 # Capture first (grep -q closes the pipe early → SIGPIPE on the writer under pipefail).

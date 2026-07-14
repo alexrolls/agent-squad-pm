@@ -1,9 +1,14 @@
 {
   "schemaVersion": 1,
   "enabled": false,
-  "pollSeconds": 120,
+  "trustedPath": "/usr/bin:/bin",
+  "scanIntervalMinutes": 3,
   "leaseSeconds": 900,
+  "operationTimeoutSeconds": 120,
+  "releaseTimeoutSeconds": 7200,
   "maxFeaturesPerPass": 2,
+  "requireAgentSandbox": true,
+  "requireSingleTrackerWriter": true,
   "scanStatusKinds": ["queued", "blocked"],
   "reconcileRegisteredRuns": true,
   "baseRef": "main",
@@ -17,7 +22,7 @@
     "deep-infra",
     "deep-security"
   ],
-  "requireMetadataOptIn": false,
+  "requireMetadataOptIn": true,
   "metadata": {
     "optInKey": "automation",
     "teamPresetKey": "team-preset"

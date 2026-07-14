@@ -96,12 +96,19 @@ what the [task] asked):
 1. Confirm the [task] is in `[Review]`. If not, andon cord.
 2. The terminal status carries `requiresCommit: true`. The integrator runs
    `bin/integrate-task.sh`, which validates the task branch, merges and validates
-   the feature branch, commits, records the transaction, idempotently updates the
-   tracker, and removes the worktree last. Cite the feature-branch hash.
-3. If **all** [tasks] in the [feature] have reached the terminal status, move the
-   [feature] to `[Resolved]`.
+   the feature branch, commits, and records an exact broker request. In default
+   `TRACKER_WRITERS=broker` mode, the deterministic dispatcher verifies that request,
+   updates the tracker, removes the worktree last, and closes the transaction.
+3. If **all** [tasks] in the [feature] have reached the terminal status, leave the
+   [feature] visibly non-terminal and awaiting deployment. This is also the
+   behavior when production delivery is disabled or no external deployment
+   configuration is installed; the disabled executor creates no `[deployment]`
+   projection, while the PM registry records local awaiting state. Only Scenario 12's release executor may move the
+   [feature] to `[Resolved]`, and only after independent production verification.
 
-`[Ready to deploy]` means: reviewed, verified, committed — awaiting deployment by humans.
+`[Ready to deploy]` means: reviewed, verified, committed—awaiting a disabled,
+externally approved, or automatic release path. Disabled means visibly waiting,
+not implicitly delivered.
 **Never** move work there that was skipped, partially done, or has failing tests — see
 the fail-loud invariant.
 
@@ -127,10 +134,13 @@ external service — and it isn't a process failure (that's the andon cord, Scen
 
 1. **Add a comment** with the block metadata in this shape:
    ```
+   block-kind: dependency|approval|policy|incident
    blocked-by: <taskId> [<taskId2> ...]
    resume-status: <Status>
    reason: <what is blocking, what was tried, what would unblock>
    ```
+   `block-kind:` is required. Only `dependency` can auto-unblock;
+   approval, policy, and incident blocks always require an authorized decision.
    `blocked-by:` is required for the dispatcher to identify this as the current
    block event. `resume-status:` (a legal `[Blocked]` → `[Status]` transition) is
    required for the dispatcher to auto-unblock without team-lead confirmation;
@@ -163,10 +173,14 @@ the failure mode this whole design exists to prevent.
 ## Scenario 9 — Connect / switch tools
 
 1. Ensure `adapters/<Tool>.md` exists (copy `adapters/_TEMPLATE.md` for a new tool).
+   For unattended dispatch, also implement the deterministic backend contract in
+   `bin/tracker-ops.sh` (including exhaustive `scan`/`export`, idempotent writes,
+   read-backs, and pagination tests); prose alone does not register a backend.
 2. Set `PRODUCT_MANAGEMENT_TOOL=<Tool>` in `config/project-management.config.md`.
 3. Complete that adapter's *MCP / CLI Setup*, then run its *Initialization* check
    (usually a no-op read that proves auth works).
-4. Nothing else changes — every scenario above now targets the new tool.
+4. Once both the adapter guide and deterministic backend are registered and their
+   contract tests pass, every scenario above targets the new tool.
 
 ---
 
@@ -211,6 +225,70 @@ The per-[task] gate is unchanged — this scenario only moves *when* it runs.
 
 ---
 
+## Scenario 11 — Portfolio automation
+
+Run the adapter-neutral supervisor from one scheduler:
+
+1. Read `reference/automation.md`, `reference/guardrails.md`, and
+   `config/automation.config.json`.
+2. Configure a scriptable adapter and exact board scope. MCP-only sessions cannot
+   be called by cron.
+3. Set the absolute target checkout and protected config environment variables,
+   then use protected Python with `-I -S -E -s` to run the external
+   `pm-agent.py --once --dry-run`; inspect every route.
+4. Set `scanIntervalMinutes` (default `3`), set `enabled: true`, and use that same protected invocation for
+   `pm-agent.py --print-cron`, and install its output in
+   one scheduler, and configure overlap prevention there too.
+5. Each pass uses semantic `queued` and `blocked` status kinds only to discover
+   new work. It re-authorizes every registered unfinished [feature] through a
+   separate exhaustive feature export, bootstraps an isolated integration
+   worktree, launches only the selected preset's persistent gate/supervision
+   roles, then calls the existing per-[feature] dispatcher, which creates fresh
+   task-scoped implementers.
+6. A registered run pauses before dispatch or release when its authoritative
+   feature export is unreadable/empty, it loses opt-in, is disabled, conflicts
+   on routing, or changes preset. Moving from queued/blocked into working/review
+   status does not pause it. Unknown/
+   conflicting routing, orphaned [tasks], adapter errors, stale claims, or unsafe
+   identifiers fail closed and receive an idempotent escalation when appropriate.
+   They never become paths or commands.
+
+The PM supervisor is deterministic. A team-lead agent handles the judgment its
+snapshot exposes; no agent sleeps or owns a polling loop.
+
+---
+
+## Scenario 12 — Production release
+
+After every [task] is `[Ready to deploy]`, run the provider-neutral transaction
+from `reference/deployment.md`:
+
+1. Verify every [task] has exactly one completed integration transaction and
+   that all transactions form a gap-free chain from history under the protected
+   `trustedBaseRef` to the exact feature HEAD.
+2. Require the latest product verdict across the feature's tasks to be a
+   feature-scope `[product-approval]` on the portable anchor task, bound to the
+   exact feature id, final HEAD, integration-evidence digest,
+   and `acceptance-criteria: passed`. Missing, stale, ambiguous, or later-pushed-
+   back evidence emits a product-acceptance request and waits before planning.
+3. Generate a normalized plan bound to the exact branch commit and immutable
+   artifact digest.
+4. Pass the plan and every structured hook argv through `bin/policy-check.py`.
+   A denied operation stops permanently; an approval-only operation remains
+   blocked until the external exact-manifest verifier authorizes it.
+5. Query current release state before apply. After a crash or uncertain response,
+   query again; never blindly apply twice.
+6. Apply, independently verify production health and version, and record the
+   durable transaction. A command exit alone is not success.
+7. On objective verification failure, run only a predeclared safe rollback to
+   the immediately previous immutable artifact; otherwise escalate and remain
+   failed.
+8. Upsert the `[deployment]` feature projection. The release executor—and no
+   agent role—moves the [feature] to its terminal status only after verification
+   succeeds. Disabled delivery remains visibly awaiting deployment, not resolved.
+
+---
+
 ## Quick reference — status writes per scenario
 
 | Scenario | Writes |
@@ -219,8 +297,10 @@ The per-[task] gate is unchanged — this scenario only moves *when* it runs.
 | 2 Start | `[task]` → `[Active]` (feature → `[Active]` on first) |
 | 3 Diverge | comment only |
 | 4 Review | `[task]` → `[Review]` (or back to `[Active]` on rework) |
-| 5 Finalize | recoverable merge transaction + `[task]` → `[Ready to deploy]`; feature → `[Resolved]` when all done |
+| 5 Finalize | recoverable merge/broker transaction + `[task]` → `[Ready to deploy]`; feature remains non-terminal awaiting verified production delivery |
 | 6 New work | create `[task]` `[Planned]` |
 | 7 Block | comment + `[task]` → `[Blocked]`; owner routes it back when cleared |
 | 8 Andon | **no write** — stop and report |
 | 10 Pre-flight design pass | comments only — one `[design-note]` + verdict (+ scope sign-off) per [task] |
+| 11 Portfolio automation | board scan + durable run registry + bounded team/dispatcher launches |
+| 12 Production release | normalized plan + recoverable apply/verify transaction + `[deployment]`; feature terminal only on verified success |

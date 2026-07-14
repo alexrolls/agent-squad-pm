@@ -2,13 +2,15 @@
 # dispatch smoke test: offline, Markdown adapter, stub agent commands.
 set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
 check() { local desc="$1"; shift
   if "$@" >/dev/null 2>&1; then echo "ok: $desc"; else echo "FAIL: $desc"; FAILURES=$((FAILURES+1)); fi; }
 
 cd "$TMP"; git init -q repo && cd repo
 git commit -q --allow-empty -m init; git checkout -q -b feat-team
+LIFECYCLE_ROOT="$TMP/protected-lifecycle"
+mkdir -m 700 "$LIFECYCLE_ROOT"
 mkdir -p .claude/skills/pm
 cp -R "$SKILL_DIR/roles" "$SKILL_DIR/reference" "$SKILL_DIR/bin" "$SKILL_DIR/teams" .claude/skills/pm/
 mkdir -p .claude/skills/pm/config
@@ -24,6 +26,9 @@ cat > .claude/skills/pm/config/team.config.md <<'EOF'
 ```
 TEAM_DEFAULT_CMD="true"
 TEAMWORK_ROOT=.teamwork
+AGENT_ENV_ALLOWLIST="PATH TMPDIR LANG LC_ALL TERM"
+AGENT_SANDBOX_ENFORCED=false
+BROKER_LIFECYCLE_ROOT=__LIFECYCLE_ROOT__
 POLL_INTERVAL_SECONDS=1
 STUCK_AFTER_MINUTES=15
 EXECUTION=sequential
@@ -32,6 +37,7 @@ VALIDATE_TEST=null
 VALIDATE_LINT=null
 ```
 EOF
+sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
 DISPATCH=".claude/skills/pm/bin/dispatch.sh"
 
 mkdir -p feat
@@ -53,6 +59,7 @@ cat > feat/feature.md <<'EOF'
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Active
 
@@ -104,12 +111,13 @@ check "reviewer queue in mailbox"    grep -rq "$FID#3" .teamwork/feat-team/mailb
 check "PA queue in mailbox"          grep -rq "$FID#4" .teamwork/feat-team/mailbox/principal-architect/
 check "reviewer launched"            test -f .teamwork/feat-team/pids/reviewer.pid
 
-# -- dedup: a live pid suppresses relaunch -------------------------------------
+# -- agent-writable PID text is not a liveness authority -----------------------
 mkdir -p .teamwork/feat-team/pids
 echo $$ > .teamwork/feat-team/pids/reviewer.pid
 plan2="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
-echo "$plan2" | grep -q "launch reviewer.*skipped (live instance)" \
-  && echo "ok: dedup skips live reviewer" || { echo "FAIL: dedup"; FAILURES=$((FAILURES+1)); }
+echo "$plan2" | grep -q "launch reviewer" \
+  && echo "ok: workspace PID spoof cannot suppress protected liveness lookup" \
+  || { echo "FAIL: workspace PID spoof affected dedup"; FAILURES=$((FAILURES+1)); }
 
 # -- suggest mode: Markdown default never writes -------------------------------
 # (state resets between blocks use sed on the fixture file, never tracker ops)
@@ -150,6 +158,67 @@ EOF
 out="$("$DISPATCH" feat-team feat/quiet.md --once --dry-run)"
 echo "$out" | grep -q "nothing actionable" && echo "ok: clean exit" || { echo "FAIL: clean exit"; FAILURES=$((FAILURES+1)); }
 
+# -- all-terminal product closeout routes exact release request -----------------
+cat > feat/product-close.md <<'EOF'
+# Product Close [Active]
+
+## 1 Integrated [Ready to deploy]
+
+**Assignee:** backend
+EOF
+PRODUCT_FID="feat/product-close.md"
+PRODUCT_TEAM="feat-product-team"
+mkdir -p ".teamwork/$PRODUCT_TEAM"
+cat > ".teamwork/$PRODUCT_TEAM/preset.env" <<'EOF'
+PRESET=full-stack
+PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
+EOF
+python3 - "$PRODUCT_FID" ".teamwork/$PRODUCT_TEAM/product-acceptance-request.json" ".claude/skills/pm/bin" <<'PY'
+import json,sys
+sys.path.insert(0,sys.argv[3])
+from product_acceptance import request_payload
+fid,out=sys.argv[1:3]
+snapshot={'featureId':fid,'tasks':[{'taskId':fid+'#1','comments':[]}]}
+payload=request_payload(snapshot,feature_id=fid,commit='a'*40,
+                        integration_evidence_digest='sha256:'+'b'*64,reason='missing')
+json.dump(payload,open(out,'w'),indent=2)
+PY
+product_plan="$(TEAM_RUNNER=background "$DISPATCH" "$PRODUCT_TEAM" "$PRODUCT_FID" --once --dry-run)"
+echo "$product_plan" | grep -q "launch product-manager (→senior-technical-product-manager)" \
+  && echo "ok: product closeout routes configured product-manager" \
+  || { echo "FAIL: product closeout not routed: $product_plan"; FAILURES=$((FAILURES+1)); }
+python3 - "$PRODUCT_FID" ".teamwork/$PRODUCT_TEAM/product-acceptance-request.json" <<'PY'
+import json,sys
+path,request_path=sys.argv[1:]
+body=json.load(open(request_path))['canonicalBody']
+with open(path,'a') as handle:
+    handle.write('\n\n'+'\n'.join('> '+line for line in body.splitlines())+'\n')
+PY
+approved_plan="$(TEAM_RUNNER=background "$DISPATCH" "$PRODUCT_TEAM" "$PRODUCT_FID" --once --dry-run)"
+if echo "$approved_plan" | grep -q "launch product-manager"; then
+  echo "FAIL: exact product approval did not close queue"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: exact product approval closes product queue"
+fi
+cat >> "$PRODUCT_FID" <<'EOF'
+
+> [product-pushback]
+> reason: feature criterion regressed
+EOF
+pushback_plan="$(TEAM_RUNNER=background "$DISPATCH" "$PRODUCT_TEAM" "$PRODUCT_FID" --once --dry-run)"
+echo "$pushback_plan" | grep -q "launch product-manager" \
+  && echo "ok: later product pushback reopens closeout" \
+  || { echo "FAIL: later product pushback did not reopen closeout"; FAILURES=$((FAILURES+1)); }
+
+FALLBACK_TEAM="feat-product-fallback"
+mkdir -p ".teamwork/$FALLBACK_TEAM"
+cp ".teamwork/$PRODUCT_TEAM/product-acceptance-request.json" ".teamwork/$FALLBACK_TEAM/product-acceptance-request.json"
+fallback_plan="$(TEAM_RUNNER=background "$DISPATCH" "$FALLBACK_TEAM" "$PRODUCT_FID" --once --dry-run)"
+echo "$fallback_plan" | grep -q "launch team-lead" \
+  && echo "ok: no product role falls back to team-lead" \
+  || { echo "FAIL: missing product-role fallback: $fallback_plan"; FAILURES=$((FAILURES+1)); }
+
 # -- null-CMD: skips launch instead of dying, no mailbox written ---------------
 # Inject REVIEWER_CMD=null into the fixture config so the reviewer role is disabled.
 printf '\nREVIEWER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
@@ -180,6 +249,7 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Review
 
@@ -188,6 +258,7 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Planned
 
@@ -196,6 +267,7 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > reason: no resume-status here
 
@@ -204,6 +276,7 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Nonesuch
 EOF
@@ -252,9 +325,11 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Review
 
+> block-kind: dependency
 > blocked-by: 1
 > reason: second block
 
@@ -263,9 +338,11 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Review
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Nonesuch
 
@@ -274,9 +351,11 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Review
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Active
 
@@ -285,6 +364,7 @@ Done.
 **Assignee:** backend
 **BlockedBy:** 1
 
+> block-kind: dependency
 > blocked-by: 1
 > resume-status: Review
 > reason: waiting
@@ -620,6 +700,112 @@ check "conflicting task remains Planned" grep -q '^## 3 Conflicts with A \[Plann
 check "same role gets two isolated worktrees" test "$(find .teamwork/feat-team/worktrees -maxdepth 1 -type d -name 'backend#1-*' | wc -l | tr -d ' ')" -ge 2
 check "two execution records persisted" test "$(find .teamwork/feat-team/executions -type f -name '*.json' | wc -l | tr -d ' ')" -ge 2
 sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
+
+# -- a first successful claim advances the feature lifecycle -----------------
+cat > feat/activation-test.md <<'EOF'
+# Activation Test [Planned]
+
+## 1 First implementation [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: true
+files: src/activation.py
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+EOF
+ACT_FID=feat/activation-test.md
+git branch feat-activation-team
+TEAM_RUNNER=background "$DISPATCH" feat-activation-team "$ACT_FID" --once --unblock=off >/dev/null
+check "first claim moves queued feature to Active" grep -q '^# Activation Test \[Active\]$' "$ACT_FID"
+check "first claim still moves task to Active" grep -q '^## 1 First implementation \[Active\]$' "$ACT_FID"
+
+# -- planner never follows agent-controlled execution/heartbeat symlinks -----
+cat > feat/planner-path-test.md <<'EOF'
+# Planner Path Test [Active]
+
+## 1 Existing worker [Active]
+
+**Assignee:** backend
+EOF
+PATH_FID=feat/planner-path-test.md
+PATH_TEAM=feat-planner-path-team
+mkdir -p ".teamwork/$PATH_TEAM/executions" ".teamwork/$PATH_TEAM/heartbeats"
+PATH_TASK="$PATH_FID#1"
+PATH_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key "$PATH_TASK")"
+ln -s /etc/passwd ".teamwork/$PATH_TEAM/executions/$PATH_KEY.json"
+if path_out="$(TEAM_RUNNER=background "$DISPATCH" "$PATH_TEAM" "$PATH_FID" --once --dry-run 2>&1)"; then
+  echo "FAIL: planner followed or ignored a symlink execution record"; FAILURES=$((FAILURES+1))
+elif echo "$path_out" | grep -q 'cannot securely open task execution record'; then
+  echo "ok: planner rejects a symlink execution record"
+else
+  echo "FAIL: wrong execution-symlink failure: $path_out"; FAILURES=$((FAILURES+1))
+fi
+rm ".teamwork/$PATH_TEAM/executions/$PATH_KEY.json"
+ln -s /etc/passwd ".teamwork/$PATH_TEAM/heartbeats/forged"
+heartbeat_out="$(TEAM_RUNNER=background "$DISPATCH" "$PATH_TEAM" "$PATH_FID" --once --dry-run 2>&1)"
+echo "$heartbeat_out" | grep -q 'unsafe non-file heartbeat' \
+  && echo "ok: planner reports heartbeat symlinks without following them" \
+  || { echo "FAIL: heartbeat symlink was not surfaced: $heartbeat_out"; FAILURES=$((FAILURES+1)); }
+
+# -- remote adapters may not persist role names in the assignee field ---------
+cat > feat/remote-claim-test.md <<'EOF'
+# Remote Claim Recovery [Active]
+
+## 1 Claimed remotely [Active]
+
+**Assignee:** —
+EOF
+REMOTE_FID=feat/remote-claim-test.md
+REMOTE_TEAM=feat-remote-claim-team
+REMOTE_TASK="$REMOTE_FID#1"
+REMOTE_WORKSPACE="$(pwd)/.teamwork/$REMOTE_TEAM"
+REMOTE_CLAIM_ID="$(python3 - "$REMOTE_TEAM" "$REMOTE_FID" "$REMOTE_TASK" <<'PY'
+import hashlib,sys
+team,feature,task=sys.argv[1:]
+print('dispatch-' + hashlib.sha256('\0'.join(
+    (team,feature,task,'backend','1','Active')
+).encode()).hexdigest()[:32])
+PY
+)"
+python3 .claude/skills/pm/bin/runtime-state.py claim \
+  --workspace "$REMOTE_WORKSPACE" --team "$REMOTE_TEAM" --feature "$REMOTE_FID" \
+  --task "$REMOTE_TASK" --role backend --attempt 1 --claim-id "$REMOTE_CLAIM_ID" \
+  --target Active >/dev/null
+python3 - "$REMOTE_FID" "$REMOTE_CLAIM_ID" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+claim_id = sys.argv[2]
+body = (
+    f"[claim]\nclaim-id: {claim_id}\nrole: backend\n"
+    "target-status: Active\n\n— dispatcher"
+)
+with path.open("a", encoding="utf-8") as handle:
+    handle.write("\n\n" + "\n".join("> " + line for line in body.splitlines()) + "\n")
+PY
+remote_plan="$(TEAM_RUNNER=background "$DISPATCH" "$REMOTE_TEAM" "$REMOTE_FID" --once --dry-run --unblock=off)"
+echo "$remote_plan" | grep -q "launch task $REMOTE_TASK as backend (attempt 1)" \
+  && echo "ok: durable claim relaunches remote active task with null assignee" \
+  || { echo "FAIL: remote null-assignee claim was stranded: $remote_plan"; FAILURES=$((FAILURES+1)); }
+REMOTE_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key "$REMOTE_TASK")"
+python3 - "$REMOTE_WORKSPACE/claims/$REMOTE_KEY.json" <<'PY'
+import json,sys
+path=sys.argv[1]; value=json.load(open(path)); value['taskId']='forged-task'; json.dump(value,open(path,'w'))
+PY
+if forged_claim_out="$(TEAM_RUNNER=background "$DISPATCH" "$REMOTE_TEAM" "$REMOTE_FID" --once --dry-run --unblock=off 2>&1)"; then
+  echo "FAIL: planner accepted a forged durable claim binding"; FAILURES=$((FAILURES+1))
+elif echo "$forged_claim_out" | grep -q 'claim record does not match its team/feature/task/attempt binding'; then
+  echo "ok: durable claim fallback fails closed on identity tampering"
+else
+  echo "FAIL: forged durable claim produced wrong error: $forged_claim_out"; FAILURES=$((FAILURES+1))
+fi
 
 # -- read_key: inline comments stripped; quoted values with inner # untouched -----
 cat > feat/rk-test.md <<'EOF'

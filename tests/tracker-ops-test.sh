@@ -90,6 +90,32 @@ printf 'From a file.\n' > body.txt
 "$OPS" comment "$T#1" body.txt
 check "comment from file"         grep -q '> note (....-..-..): From a file\.' "$T"
 
+cat > product-body.txt <<'EOF'
+[product-approval]
+scope: feature
+feature-id: feat/feature.md
+anchor-task-id: feat/feature.md#1
+commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+integration-evidence-digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+acceptance-criteria: passed
+summary: exact round-trip fixture
+
+— product-manager (team-lead only when no product role exists)
+EOF
+"$OPS" comment "$T#1" product-body.txt
+check "structured product envelope stays byte-exact in Markdown" python3 - "$OPS" "$T" <<'PY'
+import json,subprocess,sys,tempfile
+ops,feature=sys.argv[1:]
+with tempfile.NamedTemporaryFile() as out:
+    subprocess.run([ops,'export',feature,out.name],check=True,stdout=subprocess.DEVNULL)
+    payload=json.load(open(out.name))
+comments=next(task for task in payload['tasks'] if task['taskId']==feature+'#1')['comments']
+comment=next(comment for comment in comments if comment['body'].startswith('[product-approval]'))
+assert comment['body']==open('product-body.txt').read().rstrip('\n')
+assert str(comment['revision']).startswith('markdown-offset:')
+assert str(comment['revision']).split(':',1)[1].isdigit()
+PY
+
 # -- comment-once: uncertain delivery retries stay idempotent ------------------
 printf '[review-request]\nFiles: a.py\n' > delivery.txt
 "$OPS" comment-once "$T#1" delivery-123 delivery.txt
@@ -150,6 +176,64 @@ assert byid['$T#2']['blockedBy'] == ['$T#1'], byid['$T#2'].get('blockedBy')
 assert byid['$T#1']['blockedBy'] == []
 "
 
+# -- board scan: generic statuses, parent grouping, routing inputs ---------------
+mkdir -p blocked
+cat > blocked/feature.md <<'EOF'
+# Operations guard [Active]
+
+## 1 Investigate dependency [Blocked]
+
+**Assignee:** —
+
+team-preset: deep-infra
+
+> [note] (2026-07-14): automation: enabled
+EOF
+"$OPS" scan scan.json --status Planned --status Blocked
+check "scan writes versioned normalized JSON" python3 -c "
+import json
+d=json.load(open('scan.json'))
+assert d['schemaVersion'] == 1 and d['adapter'] == 'Markdown'
+assert d['statuses'] == ['Planned', 'Blocked']
+assert len(d['items']) == 2, d['items']
+by_status={x['status']:x for x in d['items']}
+assert by_status['Planned']['taskId'].endswith('feat/feature.md#2')
+assert by_status['Blocked']['featureId'].endswith('blocked/feature.md')
+assert by_status['Blocked']['routingHints']['labels'] == []
+assert by_status['Blocked']['revision']
+assert d['orphans'] == []
+"
+
+# -- feature projection and state use their own configured state machine --------
+printf '[deployment]\nstate: verifying\n' | "$OPS" upsert-deployment "$T" -
+printf '[deployment]\nstate: succeeded\n' | "$OPS" upsert-deployment "$T" -
+check "deployment upsert keeps one managed block" test "$(grep -c 'agent-squad:deployment:start' "$T")" -eq 1
+check "deployment upsert replaces old content" grep -q '^> state: succeeded$' "$T"
+"$OPS" feature-state "$T" Active
+refuse "terminal feature transition requires release executor" "reserved for the isolated release executor" \
+  "$OPS" feature-state "$T" Resolved
+STARTUP_FACTORY_RELEASE_EXECUTOR=1 "$OPS" feature-state "$T" Resolved
+check "feature-state follows configured transitions" grep -q '^# Payments revamp \[Resolved\]$' "$T"
+refuse "illegal feature transition refused" "illegal \[feature\] transition" "$OPS" feature-state "$T" Active
+refuse "ordinary callers cannot reopen terminal features" "reserved for the deterministic PM supervisor" \
+  "$OPS" feature-reopen "$T" Planned
+STARTUP_FACTORY_PM_SUPERVISOR=1 "$OPS" feature-reopen "$T" Planned
+check "PM supervisor deliberately reopens terminal feature to queued" grep -q '^# Payments revamp \[Planned\]$' "$T"
+refuse "feature reopen refuses a non-terminal source" "requires a terminal source" \
+  env STARTUP_FACTORY_PM_SUPERVISOR=1 "$OPS" feature-reopen "$T" Active
+
+refuse "ordinary callers cannot reopen integrated tasks" "reserved for the deterministic integration broker" \
+  "$OPS" task-reopen "$T#1" Active
+STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen "$T#1" Active
+check "integration broker deliberately reopens terminal task to working" grep -q '^## 1 Add form \[Active\]$' "$T"
+"$OPS" state "$T#1" Review >/dev/null
+refuse "task reopen refuses a non-terminal source" "requires a commit-requiring terminal source" \
+  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen "$T#1" Active
+
+# -- conditional claims reject stale snapshots and preserve the existing owner --
+refuse "stale conditional claim refused" "claim conflict" "$OPS" claim "$T#1" frontend --expected Planned --claim-id claim-stale-1234
+check "stale claim did not change assignee" grep -q '^\*\*Assignee:\*\* backend$' "$T"
+
 # -- comment size warning: >50 lines still posts but warns ----------------------
 long="$(python3 -c "print('\n'.join('line %d' % i for i in range(60)))")"
 out="$(printf '%s\n' "$long" | "$OPS" comment "$T#2" - 2>&1)"
@@ -166,9 +250,64 @@ refuse "unknown op refused"           "usage:"                  "$OPS" frobnicat
 refuse "empty comment body refused"   "empty comment body"      bash -c "printf '' | '$OPS' comment '$T#2' -"
 refuse "missing feature file refused" "cannot read"             "$OPS" export nope/feature.md out.json
 refuse "path escaping MARKDOWN_ROOT refused" "escapes MARKDOWN_ROOT" "$OPS" export ../escape.md out.json
+ln -s feat linked-feat
+ln -s feat/feature.md linked-feature.md
+refuse "symlinked Markdown directory refused" "symlinked component" "$OPS" export linked-feat/feature.md out.json
+refuse "symlinked Markdown feature refused" "symlinked component" "$OPS" export linked-feature.md out.json
 refuse "unmapped adapter refused"     "no tracker-ops backend"  env TRACKER_ADAPTER=Nonesuch "$OPS" state "$T#2" Review
 refuse "Markdown update-comment refused"  "append-only"  bash -c "printf 'x\n' | '$OPS' update-comment '$T#2' some-id -"
 refuse "update-comment arg check"         "usage:"       "$OPS" update-comment onlyone
+
+# -- malformed normalized sources fail closed rather than yielding ambiguity --
+mkdir -p malformed
+cat > malformed/duplicate-progress.md <<'EOF'
+# Malformed progress [Planned]
+
+## 1 Duplicate projection [Planned]
+
+**Assignee:** —
+
+<!-- agent-squad:progress:start -->
+> [progress]
+> first
+<!-- agent-squad:progress:end -->
+
+<!-- agent-squad:progress:start -->
+> [progress]
+> second
+<!-- agent-squad:progress:end -->
+EOF
+refuse "duplicate managed progress export refused" "duplicate managed progress" \
+  "$OPS" export malformed/duplicate-progress.md malformed/out.json
+refuse "duplicate managed progress upsert refused" "managed progress block is duplicated" \
+  bash -c "printf '[progress]\nnew\n' | '$OPS' upsert-progress malformed/duplicate-progress.md#1 -"
+
+cat > malformed/duplicate-task.md <<'EOF'
+# Duplicate task ids [Planned]
+
+## 1 First [Planned]
+
+**Assignee:** —
+
+## 1 Second [Planned]
+
+**Assignee:** —
+EOF
+refuse "duplicate normalized task identity refused" "duplicate task identity" \
+  "$OPS" export malformed/duplicate-task.md malformed/out.json
+
+cat > malformed/unknown-status.md <<'EOF'
+# Unknown status [Planned]
+
+## 1 Cannot map [Mystery]
+
+**Assignee:** —
+EOF
+refuse "unmapped generic export status refused" "unmapped/unknown generic status" \
+  "$OPS" export malformed/unknown-status.md malformed/out.json
+
+# -- remote adapter pagination contracts run fully offline with mocked clients --
+check "remote adapters exhaust paginated reads" python3 "$SKILL_DIR/tests/tracker-adapter-pagination-test.py"
 
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }

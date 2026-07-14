@@ -46,12 +46,16 @@ TASK_STRONG_CMD=null             # Optional override for security/schema/concurr
 
 ```
 TEAMWORK_ROOT=.teamwork          # Team workspace root (repo-relative). Add to .gitignore.
+AGENT_ENV_ALLOWLIST="PATH TMPDIR LANG LC_ALL TERM NO_COLOR"
+                                 # Complete environment inherited by LLM processes. The launcher
+                                 # starts them with env -i, then adds only these non-secret names
+                                 # plus fixed STARTUP_FACTORY_* role metadata and the hardening
+                                 # value AWS_EC2_METADATA_DISABLED=true. PATH is required.
 POLL_INTERVAL_SECONDS=120        # Fallback only; local runtime events wake dispatch within ~1s
 STUCK_AFTER_MINUTES=15           # Lead treats silence longer than this as "stuck"
 ESCALATE_AFTER_ATTEMPTS=2        # Failed unblock attempts before the Lead escalates to the human
-TRACKER_WRITERS=all              # all = each worker drains its own outbox and progress upserts;
-                                 # lead = single-writer mode: only the team-lead holds
-                                 # credentials and posts on the team's behalf
+TRACKER_WRITERS=broker           # broker = single-writer mode: only deterministic dispatcher/
+                                 # supervisor processes hold credentials and post on agents' behalf
                                  # (reference/orchestration.md → "Tracker write modes")
 EXECUTION=sequential             # Both modes use one task branch/worktree per task attempt.
                                  # sequential = one implementation task in flight; parallel =
@@ -65,10 +69,24 @@ MAX_ACTIVE_IMPLEMENTERS=null     # Only under EXECUTION=parallel. 1 = pipelined 
                                  # null = conservative default of 2. Setting it under sequential
                                  # is a config error — the launcher refuses to run.
 WORKTREE_SETUP=null              # Run once inside every freshly created task worktree, fail-loud
+                                 # through the same sandbox runner and env -i boundary as workers
                                  # (e.g. "pnpm install --frozen-lockfile && pnpm build").
                                  # null = bare worktree. Provisioning is what makes
                                  # implementer validation claims executable — an
                                  # unprovisioned tree produced the false-green failure class.
+AGENT_SANDBOX_RUNNER=null        # Absolute executable outside the agent repository. In enforced mode
+                                 # the launcher invokes: runner --workdir <absolute> -- /usr/bin/env -i ...
+                                 # It rejects symlinks, non-regular/non-executable files, foreign
+                                 # owners, and group/world-writable runners.
+AGENT_SANDBOX_ENFORCED=false     # true routes every LLM command and WORKTREE_SETUP through the runner.
+                                 # Keep false only for manual/test execution without that boundary;
+                                 # the autonomous PM supervisor refuses to launch while false.
+BROKER_LIFECYCLE_ROOT=null       # Absolute pre-created mode-0700 directory, external and disjoint
+                                 # from the repository. Required when AGENT_SANDBOX_ENFORCED=true
+                                 # (or supply STARTUP_FACTORY_LIFECYCLE_STATE_ROOT to the broker).
+                                 # Authenticated PID/start-time/tmux records live here; .teamwork
+                                 # contains non-authoritative markers only. Agent sandboxes must not
+                                 # be able to read or write this directory.
 ```
 
 Review depth (`REVIEW_MODE=sequential|parallel|tiered`) is a **per-team** choice
@@ -89,7 +107,7 @@ VALIDATE_FORMAT=null             # e.g. "pnpm format:check" / "black --check ." 
                                  # formatting gate. Runs after VALIDATE_LINT; null skips
                                  # (recorded). A formatter CI enforces but integration
                                  # doesn't run is a post-merge CI failure waiting to happen.
-VALIDATE_SCRIPT=null             # alternative to the three above: a repo-relative script
+VALIDATE_SCRIPT=null             # alternative to the four above: a repo-relative script
                                  # that receives the changed-file list as arguments and
                                  # runs whatever applies (per-area suites, tools that only
                                  # exist mid-feature). When set, it replaces VALIDATE_*.
@@ -105,5 +123,25 @@ is "no new failures", not "all green".
 
 - These keys are read with a plain `grep '^KEY='` — keep one `KEY=value` per line
   inside the fenced blocks, no spaces around `=`.
+- `TEAMWORK_ROOT` must be repository-relative and contain no `..`. Managed paths
+  are resolved before use; an absolute root or any existing symlink component is
+  rejected, including links between two in-repository team workspaces.
+- `AGENT_ENV_ALLOWLIST` is a space-separated list of environment variable names,
+  not values. Keep it small and non-secret. Privileged cloud/release variables are
+  always refused, and tracker credentials are refused unless the explicit unsafe
+  `TRACKER_WRITERS=all` mode is in use. `HOME` is intentionally absent because an
+  ambient home commonly contains credential stores; if a model CLI requires it,
+  allow only a dedicated sandbox home containing the minimum CLI-specific state.
+- `AGENT_SANDBOX_RUNNER` must be an absolute protected executable outside the
+  repository, owned by the executor or root, and not group/world-writable. It is
+  responsible for enforcing worktree-only writes, hiding host/broker state, and
+  applying network and process isolation before it executes the argv after `--`.
+- Provision `BROKER_LIFECYCLE_ROOT` with mode `0700` under a path whose parent
+  components are owned by root/the broker executor and not group/world-writable.
+  No component may be a symlink; a leaf below shared `/tmp` is therefore refused.
+  Keep the root outside every path mounted into an agent sandbox. In enforced mode the launcher refuses to start
+  without this root. With both settings absent, manual launches are deliberately
+  unmanaged: `status` never probes workspace-authored PIDs and `stop` refuses to
+  signal anything, so the operator must supervise those processes directly.
 - Never put tracker credentials here. API keys live in environment variables named
   by the active adapter (see `adapters/<Tool>.md` → *Access mechanisms*).

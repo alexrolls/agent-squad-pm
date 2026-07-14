@@ -78,10 +78,23 @@ is context, not a trigger.
    feature branch, commits, then idempotently marks `[Ready to deploy]`. A
    durable transaction record makes retries safe. Every preset roster includes
    it.
-7. **Close.** When all [tasks] are `[Ready to deploy]`: the architect runs the feature
-   completion checklist, the TPM confirms the acceptance criteria hold at
-   feature level with a feature-level `[product-approval]` comment, and only
-   then does the [feature] move to `[Resolved]`.
+7. **Close / release.** When all [tasks] are `[Ready to deploy]`, the architect
+   runs the feature-completion checklist. The release executor validates the
+   closed integration chain and writes
+   `<TEAMWORK_ROOT>/<team>/product-acceptance-request.json`. The TPM re-runs the
+   feature-level acceptance criteria and posts the request's `canonicalBody`
+   unchanged as `[product-approval]` on its `anchorTaskId`. This is a
+   feature-level verdict stored on a task only because feature containers are
+   not uniformly commentable. It binds `scope: feature`, exact `feature-id`,
+   exact `anchor-task-id`, the 40-character integrated `commit`, exact
+   `integration-evidence-digest`, and `acceptance-criteria: passed`. A later
+   `[product-pushback]`, stale binding, or ambiguous tracker timeline reopens
+   the gate. The team-lead may author this envelope only when the team has no
+   product-manager role. Production cannot begin until the deterministic
+   release executor accepts the envelope; only independently verified
+   production success resolves the [feature]. Disabled delivery remains
+   awaiting in the PM registry with the feature non-terminal; the disabled
+   executor creates no tracker `[deployment]` projection.
 
 ## Review modes
 

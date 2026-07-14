@@ -29,21 +29,22 @@ adapter/tool decide" (e.g. prompt, or use the tool's default).
 
 ### Linear
 ```
-LINEAR_DEFAULT_TEAM=null          # Team key or name new features/tasks are created under
+LINEAR_DEFAULT_TEAM=null          # Team key/name; REQUIRED and resolved exactly for automation
 LINEAR_DEFAULT_PROJECT=null       # Optional default Project ([feature]) to file tasks into
 LINEAR_ACCESS=mcp                 # mcp = Linear MCP server; rest = GraphQL API with LINEAR_API_KEY env var
 ```
 
 ### Jira
 ```
-JIRA_PROJECT_KEY=null             # e.g. "ENG" — required to create Epics/Stories
+JIRA_PROJECT_KEY=null             # e.g. "ENG" — REQUIRED scope for automation and creation
+JIRA_TASK_ISSUE_TYPE=Story         # Exact level-0 child type normalized as [task]; MUST NOT be Epic
 JIRA_DEFAULT_ASSIGNEE=null        # Optional accountId or email
 JIRA_ACCESS=mcp                   # mcp = Atlassian MCP server; rest = REST API with JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN env vars
 ```
 
 ### GitHubIssues
 ```
-GITHUB_REPO=null                  # "owner/repo"; null = infer from the current git remote
+GITHUB_REPO=null                  # "owner/repo"; explicit value REQUIRED for automation
 GITHUB_USE_MCP=false              # false = use the `gh` CLI; true = use the GitHub MCP server
 ```
 

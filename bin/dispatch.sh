@@ -10,8 +10,16 @@ set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$SKILL_DIR/config/team.config.md"
 PM_CONFIG="$SKILL_DIR/config/project-management.config.md"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 die() { echo "dispatch: $*" >&2; exit 1; }
+
+validate_team_id() {
+  case "$1" in
+    ''|*[!a-zA-Z0-9._-]*) die "unsafe team/feature-branch identifier '$1'" ;;
+  esac
+  [ "${#1}" -le 63 ] || die "team/feature-branch identifier is longer than 63 characters"
+}
 
 role_cmd_key() { # backend -> BACKEND_CMD ; principal-architect -> PRINCIPAL_ARCHITECT_CMD
   printf '%s_CMD' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
@@ -57,7 +65,7 @@ is_mcp_only() { # is_mcp_only <adapter> -> 0 if configured for MCP-only access
 }
 
 resolve_role() { # resolve_role <team> <protocol-role> -> concrete role (or same if no mapping)
-  local pf; pf="$(teamroot "$1")/preset.env"
+  local dir pf; dir="$(teamroot "$1")"; pf="$(team_path "$dir" preset.env)"
   [ -f "$pf" ] || { printf '%s' "$2"; return; }
   local key; key="PROTOCOL_$(printf '%s' "$2" | tr 'a-z-' 'A-Z_')"
   local val; val="$(grep -m1 "^$key=" "$pf" | cut -d= -f2 || true)"
@@ -65,49 +73,48 @@ resolve_role() { # resolve_role <team> <protocol-role> -> concrete role (or same
 }
 
 teamroot() {
+  validate_team_id "$1"
   local root; root="$(read_key TEAMWORK_ROOT)"; root="${root:-.teamwork}"
-  printf '%s/%s/%s' "$(git rev-parse --show-toplevel)" "$root" "$1"
+  python3 "$SKILL_DIR/bin/teamwork-path.py" workspace \
+    --repo "$REPO_ROOT" --root "$root" --team "$1"
+}
+
+team_path() { # team_path <absolute-workspace> <relative-path>
+  python3 "$SKILL_DIR/bin/teamwork-path.py" child \
+    --repo "$REPO_ROOT" --workspace "$1" --relative "$2"
 }
 
 role_live() { # role_live <team> <role> -> 0 if a live instance exists
-  local pf; pf="$(teamroot "$1")/pids/$2.pid"
-  [ -f "$pf" ] || return 1
-  local pid; pid="$(cat "$pf")"
-  if [ "$pid" = "tmux" ]; then
-    tmux list-windows -t "team-$1" -F '#{window_name}' 2>/dev/null | grep -qx "$2"
+  local rc
+  if "$SKILL_DIR/bin/launch-team.sh" live-role "$1" "$2" >/dev/null; then
+    return 0
   else
-    kill -0 "$pid" 2>/dev/null
+    rc=$?
   fi
+  [ "$rc" -eq 3 ] && return 1
+  die "protected lifecycle lookup failed for role $2 (workspace PID markers are never authority)"
 }
 
 task_live() { # task_live <team> <role> <taskId> <attempt>
-  local key instance pf pid
-  key="$(python3 "$SKILL_DIR/bin/runtime-state.py" key "$3")"
-  instance="$2--$key--a$4"
-  pf="$(teamroot "$1")/pids/tasks/$instance.pid"
-  [ -f "$pf" ] || return 1
-  pid="$(cat "$pf")"
-  if [ "$pid" = "tmux" ]; then
-    tmux list-windows -t "team-$1" -F '#{window_name}' 2>/dev/null | grep -qx "$instance"
+  local rc
+  if "$SKILL_DIR/bin/launch-team.sh" live-task "$1" "$2" "$3" "$4" >/dev/null; then
+    return 0
   else
-    kill -0 "$pid" 2>/dev/null
+    rc=$?
   fi
+  [ "$rc" -eq 3 ] && return 1
+  die "protected lifecycle lookup failed for task $3 (workspace PID markers are never authority)"
 }
 
 task_any_live() { # task_any_live <team> <taskId> -> any role/attempt process for task
-  local key pf pid instance
-  key="$(python3 "$SKILL_DIR/bin/runtime-state.py" key "$2")"
-  for pf in "$(teamroot "$1")"/pids/tasks/*--"$key"--a*.pid; do
-    [ -f "$pf" ] || continue
-    pid="$(cat "$pf")"
-    instance="$(basename "$pf" .pid)"
-    if [ "$pid" = "tmux" ]; then
-      tmux list-windows -t "team-$1" -F '#{window_name}' 2>/dev/null | grep -qx "$instance" && return 0
-    elif kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
-  done
-  return 1
+  local rc
+  if "$SKILL_DIR/bin/launch-team.sh" live-task-any "$1" "$2" >/dev/null; then
+    return 0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 3 ] && return 1
+  die "protected lifecycle lookup failed for task $2 (workspace PID markers are never authority)"
 }
 
 next_mailbox_file() { # next_mailbox_file <mailbox-dir> -> path with next free NNN
@@ -125,12 +132,42 @@ adapter_default_unblock() {
   local a; a="$(grep -m1 '^PRODUCT_MANAGEMENT_TOOL=' "$PM_CONFIG" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)"
   local effective="${TRACKER_ADAPTER:-$a}"
   [ -n "$effective" ] || die "cannot determine tracker adapter (PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md or TRACKER_ADAPTER env)"
-  case "$effective" in Linear|Jira) echo auto ;; *) echo suggest ;; esac
+  case "$effective" in Linear|Jira|GitHubIssues) echo auto ;; *) echo suggest ;; esac
+}
+
+working_feature_status() {
+  python3 - "$SKILL_DIR/config/statuses.config.json" <<'PY'
+import json,sys
+board=json.load(open(sys.argv[1]))
+matches=[str(item.get("name")) for item in board.get("features",{}).get("statuses",[]) if item.get("kind")=="working"]
+if len(matches) != 1:
+    raise SystemExit("dispatch: feature status kind 'working' must resolve to exactly one status")
+print(matches[0])
+PY
+}
+
+claim_id_for() { # team feature task role attempt target -> deterministic bounded id
+  python3 - "$@" <<'PY'
+import hashlib,sys
+team,feature,task,role,attempt,target=sys.argv[1:]
+print("dispatch-" + hashlib.sha256("\0".join(
+    (team,feature,task,role,attempt,target)
+).encode()).hexdigest()[:32])
+PY
 }
 
 dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   local team="$1" fid="$2" dry="$3" unblock="$4"
-  local dir; dir="$(teamroot "$team")"
+  local dir lock tasks_file; dir="$(teamroot "$team")"
+  lock="$(team_path "$dir" dispatch.lock)"
+  tasks_file="$(team_path "$dir" tasks.json)"
+  # The planner reads these children directly; validate their entire lexical
+  # path before it can observe a forged cross-team/external symlink.
+  team_path "$dir" preset.env >/dev/null
+  team_path "$dir" product-acceptance-request.json >/dev/null
+  team_path "$dir" heartbeats >/dev/null
+  team_path "$dir" executions >/dev/null
+  team_path "$dir" claims >/dev/null
   local _a; _a="$(grep -m1 '^PRODUCT_MANAGEMENT_TOOL=' "$PM_CONFIG" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)"
   local adapter="${TRACKER_ADAPTER:-$_a}"
   if is_mcp_only "$adapter"; then
@@ -138,24 +175,37 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   Set the scriptable option in config/project-management.config.md or use harness mode."
   fi
   mkdir -p "$dir"
-  local lock="$dir/dispatch.lock"
   if ! mkdir "$lock" 2>/dev/null; then
-    echo "dispatch: another pass owns $lock; skipping"
-    return 0
+    local owner="" entries
+    [ -f "$lock/owner.pid" ] && owner="$(cat "$lock/owner.pid" 2>/dev/null || true)"
+    entries="$(find "$lock" -mindepth 1 -maxdepth 1 -print 2>/dev/null || true)"
+    if [ -n "$owner" ] && case "$owner" in *[!0-9]*) false ;; *) ! kill -0 "$owner" 2>/dev/null ;; esac \
+       && [ "$entries" = "$lock/owner.pid" ]; then
+      rm -f "$lock/owner.pid"
+      rmdir "$lock"
+      mkdir "$lock" || { echo "dispatch: lost stale-lock recovery race; skipping"; return 0; }
+    else
+      echo "dispatch: another pass owns $lock; skipping"
+      return 0
+    fi
   fi
-  trap 'rmdir "$lock" 2>/dev/null || true' RETURN
+  printf '%s\n' "$$" > "$lock/owner.pid"
+  trap 'rm -f "$lock/owner.pid"; rmdir "$lock" 2>/dev/null || true' RETURN
   if [ "$dry" != "yes" ]; then
+    # The dispatcher is the credentialed integration broker. Finalize exact,
+    # validated merge transactions before observing the next tracker snapshot.
+    "$SKILL_DIR/bin/finalize-integrations.sh" "$team" "$fid"
     "$SKILL_DIR/bin/process-outbox.sh" "$team" "$fid"
   fi
-  "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$dir/tasks.json" >/dev/null
+  "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
   if [ "$dry" != "yes" ]; then
-    "$SKILL_DIR/bin/sync-progress.sh" "$team" "$fid" "$dir/tasks.json"
+    "$SKILL_DIR/bin/sync-progress.sh" "$team" "$fid" "$tasks_file"
   fi
   local stuck; stuck="$(read_key STUCK_AFTER_MINUTES)"; stuck="${stuck:-15}"
   local execution max_active plan
   execution="$(read_key EXECUTION)"; execution="${execution:-sequential}"
   max_active="$(read_key MAX_ACTIVE_IMPLEMENTERS)"
-  local planner_args=(--skill "$SKILL_DIR" --workdir "$dir" --stuck-minutes "$stuck" --execution "$execution")
+  local planner_args=(--skill "$SKILL_DIR" --workdir "$dir" --team "$team" --feature "$fid" --stuck-minutes "$stuck" --execution "$execution")
   [ -z "$max_active" ] || planner_args+=(--max-active "$max_active")
   plan="$(python3 "$SKILL_DIR/bin/dispatch-plan.py" "${planner_args[@]}")"
   if [ -z "$plan" ]; then echo "dispatch: nothing actionable"; return 0; fi
@@ -177,6 +227,8 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
         esac ;;
       unblock-no-rs)
         echo "plan: unblock $arg — NO RESUME STATUS (lead must resume; add 'resume-status: <Status>' to the block comment)" ;;
+      blocked-sensitive)
+        echo "plan: keep $arg [Blocked] — block-kind '$detail' requires an authorized lead/human decision; auto-unblock forbidden" ;;
       launch)
         local concrete; concrete="$(resolve_role "$team" "$arg")"
         local _ck; _ck="$(role_cmd_key "$concrete")"
@@ -197,7 +249,9 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
               IFS="$_old_ifs"
               [ -z "$packages" ] || detail="$detail Review packages:$packages"
             fi
-            local mf; mf="$(next_mailbox_file "$dir/mailbox/$concrete")"
+            local mailbox mf
+            mailbox="$(team_path "$dir" "mailbox/$concrete")"
+            mf="$(next_mailbox_file "$mailbox")"
             printf 'From: dispatcher\nRe: %s\n---\n%s\n' "$fid" "$detail" > "$mf"
             "$SKILL_DIR/bin/launch-team.sh" start "$team" "$fid" "$concrete"
           fi
@@ -209,7 +263,23 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
         else
           echo "plan: claim $detail for $claim_role (attempt $extra)"
           if [ "$dry" != "yes" ]; then
-            "$SKILL_DIR/bin/tracker-ops.sh" claim "$detail" "$claim_role"
+            local claim_id claim_target
+            claim_target="$(python3 - "$SKILL_DIR/config/statuses.config.json" <<'PY'
+import json,sys
+board=json.load(open(sys.argv[1]))
+matches=[str(s.get("name")) for s in board["tasks"]["statuses"] if s.get("kind")=="working"]
+if len(matches)!=1: raise SystemExit("dispatch: task working status must resolve exactly once")
+print(matches[0])
+PY
+)"
+            claim_id="$(claim_id_for "$team" "$fid" "$detail" "$claim_role" "$extra" "$claim_target")"
+            python3 "$SKILL_DIR/bin/runtime-state.py" claim --workspace "$dir" \
+              --team "$team" --feature "$fid" --task "$detail" --role "$claim_role" \
+              --attempt "$extra" --claim-id "$claim_id" --target "$claim_target" >/dev/null
+            "$SKILL_DIR/bin/tracker-ops.sh" claim "$detail" "$claim_role" --claim-id "$claim_id"
+            # Keep the feature lifecycle deterministic: the first successful
+            # task claim also advances a queued feature into its working state.
+            "$SKILL_DIR/bin/tracker-ops.sh" feature-state "$fid" "$(working_feature_status)"
             "$SKILL_DIR/bin/runtime-event.sh" "$team" "$fid" "$detail" "$extra" "$claim_role" task.claimed claimed "task claimed by deterministic dispatcher" >/dev/null
             "$SKILL_DIR/bin/launch-team.sh" start-task "$team" "$fid" "$claim_role" "$detail" "$extra"
           fi

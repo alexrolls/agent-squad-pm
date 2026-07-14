@@ -6,11 +6,11 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$SKILL_DIR/config/team.config.md"
 
 read_key() {
-  local line value
+  local line value _t
   line="$(grep -m1 "^$1=" "$CONFIG" || true)"
   value="${line#*=}"
-  value="${value%%[[:space:]]#*}"
-  value="${value%\"}"; value="${value#\"}"
+  if [ "${value#\"}" != "$value" ]; then value="${value#\"}"; value="${value%%\"*}"
+  else value="${value%%[[:space:]]#*}"; _t="${value##*[![:space:]]}"; value="${value%"$_t"}"; fi
   [ "$value" = "null" ] && value=""
   printf '%s' "$value"
 }
@@ -23,7 +23,10 @@ read_key() {
 team="$1"; feature="$2"; task="$3"; attempt="$4"; actor="$5"; type="$6"; stage="$7"
 summary="${8:-}"; artifact="${9:-}"
 root="$(read_key TEAMWORK_ROOT)"; root="${root:-.teamwork}"
-workspace="$(git rev-parse --show-toplevel)/$root/$team"
+repo="$(git rev-parse --show-toplevel)"
+workspace="$(python3 "$SKILL_DIR/bin/teamwork-path.py" workspace --repo "$repo" --root "$root" --team "$team")"
+python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative events.ndjson >/dev/null
+python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative pm >/dev/null
 
 args=(emit --workspace "$workspace" --team "$team" --feature "$feature" --task "$task"
       --attempt "$attempt" --actor "$actor" --type "$type" --stage "$stage"

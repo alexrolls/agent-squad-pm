@@ -5,9 +5,12 @@
   "environment": "production",
   "trustedBaseRef": "main",
   "target": {
-    "id": null
+    "id": "replace-with-production-target",
+    "provider": "replace-with-cloud-or-platform",
+    "region": "replace-with-region-or-datacenter",
+    "service": "replace-with-service-or-application"
   },
-  "stateRoot": null,
+  "stateRoot": "/var/lib/startup-factory/release-state",
   "trustedPath": "/usr/bin:/bin",
   "gitLfsPolicy": "reject-pointers",
   "maxSourceArchiveBytes": 1073741824,
@@ -17,18 +20,16 @@
   "deliveryAttestationTtlSeconds": 900,
   "planningIsolation": {
     "enforced": false,
-    "provider": "configure-a-protected-os-container-or-ci-sandbox",
+    "provider": "replace-with-protected-build-sandbox",
     "separateIdentity": false,
     "credentialPathsUnmounted": false,
     "statePathsUnmounted": false,
     "productionEgress": true
   },
-  "credentialEnvFile": null,
+  "credentialEnvFile": "/etc/startup-factory/release.env",
   "credentialEnvironmentAllowlist": [],
   "planningEnvironmentAllowlist": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
-  "trackerEnvironmentAllowlist": [
-    "PATH", "TMPDIR", "LANG", "LC_ALL", "TRACKER_ADAPTER"
-  ],
+  "trackerEnvironmentAllowlist": ["PATH", "TMPDIR", "LANG", "LC_ALL", "TRACKER_ADAPTER"],
   "environmentAllowlist": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
   "trustedCodeDigests": {},
   "trustedHookDigests": {},

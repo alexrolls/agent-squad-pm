@@ -25,6 +25,7 @@ When running an actual agent team (`reference/orchestration.md`), the abstract r
 | **Finalizer** | Runs final validation, writes the feature-branch integration commit, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move. |
 | **Principal Architect** | Technical authority: planning approval, per-[task] design gate, architecture half of every review, sole editor of upcoming [task] descriptions. Never writes code. |
 | **Team Lead** | Process authority: plans, launches, supervises, unblocks, reassigns, escalates. Never writes code, never overrides Finalizer/Integrator or Principal Architect. |
+| **Release Executor** | Deterministic, credential-separated production transaction. It alone performs the terminal [feature] transition after independent production verification; it is not an LLM role. |
 
 Small teams collapse roles (one agent can be Reviewer + Finalizer). The ownership *table*
 still holds — it's about which transition, not how many humans/agents exist.
@@ -40,20 +41,31 @@ rule derives everything:
 > **The owner of status S is the only party allowed to work items sitting in S, and the
 > only one allowed to perform S's outbound transitions.**
 
-Ownership is about *authoring* a transition, not typing it: in single-writer mode
-(`TRACKER_WRITERS=lead`, see `reference/orchestration.md` → *Tracker write modes*) the
-team-lead performs every physical write on behalf of the authoring role, and these
-ownership checks apply to the role that authored the change.
+Ownership is about *authoring* a transition, not typing it: in deterministic
+single-writer mode (`TRACKER_WRITERS=broker`, see `reference/orchestration.md` →
+*Tracker write modes*) the credentialed dispatcher performs every physical write
+on behalf of the authoring role, and these ownership checks apply to that role.
+For protocol gate markers, the broker derives that role from the launcher's
+verified per-instance capability; a claimed actor field or tracker signature is
+not an identity.
 
 Two refinements:
 
 - **Entering a `requiresCommit` status** is performed by *that* status's owner
   after the integration commit succeeds (on the default board: the integrator
-  commits, records the transaction, and idempotently moves `[Review]` → `[Ready
-  to deploy]` after both approvals exist).
+  commits and records an immutable transaction; the dispatcher independently
+  validates it and idempotently writes `[Review]` → `[Ready to deploy]` after
+  both approvals exist).
 - **Routing:** when an item enters a status, the mover notifies the new owner's mailbox
   (`reference/orchestration.md` → *Status routing*). A `{"team": ...}` owner is reached
   via that team's lead, who dispatches internally.
+- **Terminal [feature] transition:** the destination's configured
+  `release-executor` owner is the only authority that may enter it, and only
+  after verified production success. The team-lead's completion checklist is a
+  handoff, not authority to resolve. The broker refuses the terminal write
+  without the release-executor flag; because an environment flag is not an
+  authenticated identity, the operator must also keep tracker credentials out
+  of every agent sandbox.
 
 Worked example — the default board:
 
@@ -65,8 +77,11 @@ Worked example — the default board:
 | `[Blocked]` | team-lead | `Blocked → Planned / Active / Review` once cleared |
 | `[Ready to deploy]` | integrator | terminal — entered after a recorded integration commit |
 
-Feature statuses: the team-lead owns all three (`Planned`, `Active`, `Resolved`) and
-moves `[feature]` → `[Resolved]` only after the completion checklist passes.
+Feature statuses: the team-lead works `[Planned]`/`[Active]`, but the configured
+terminal status is owned by the
+`release-executor`. The lead's completion checklist hands off; it never resolves
+the [feature]. Disabled, waiting, denied, failed, or rolled-back delivery remains
+visible and non-terminal. Only verified production success triggers `[Resolved]`.
 
 If any role finds a [task] in an unexpected status, it **pulls the andon cord**: stop,
 don't guess, escalate to the Coordinator (concrete role: `team-lead`).
@@ -80,6 +95,11 @@ don't guess, escalate to the Coordinator (concrete role: `team-lead`).
   integration commit. If the tracker write fails after the commit, the durable
   transaction remains pending and retry completes the same move/comment without
   creating another commit.
+- **Late findings supersede; they do not erase.** Before production release, a
+  later legitimate finding causes the deterministic broker to journal an exact
+  recovery record, commit a validated revert, archive the old transaction, and
+  reopen the task to working through the broker-only terminal-reopen operation.
+  A new attempt must merge the preserved history and pass a completely new review.
 - **Ad-hoc work has no [task].** If an agent is pulled off to fix something unrelated
   (e.g. a production incident), it does **not** touch task statuses for that work — it
   reports back and returns to its assigned [task]. File real follow-ups as new [tasks]

@@ -1,6 +1,5 @@
 {
   "schemaVersion": 1,
-  "protectedBranches": ["main", "master", "production", "release"],
   "additionalDenyPatterns": [],
   "additionalApprovalRequiredActions": [],
   "maximumAutomaticPlanChanges": 100,

@@ -10,7 +10,8 @@ the mechanism (see below). Features map to Epics and tasks to Stories under a pr
 
 Two peer mechanisms; `JIRA_ACCESS` in `../config/project-management.config.md`
 selects one. Use `rest` for harnesses without an MCP client (Codex, Aider, plain
-scripts).
+scripts). `JIRA_TASK_ISSUE_TYPE` must name a level-0 child type such as `Story`
+or `Task`; `Epic` is explicitly refused.
 
 ### mcp (default)
 
@@ -28,7 +29,8 @@ Add the Atlassian MCP server and complete its OAuth flow on first use:
 ```
 
 Relevant config from `../config/project-management.config.md`:
-`JIRA_PROJECT_KEY` (required to create items), `JIRA_DEFAULT_ASSIGNEE`.
+`JIRA_PROJECT_KEY` (required and resolved exactly), `JIRA_TASK_ISSUE_TYPE`
+(the exact child issue-type name, default `Story`), and `JIRA_DEFAULT_ASSIGNEE`.
 
 ### rest — Jira Cloud REST API v3 with an API token
 
@@ -65,7 +67,7 @@ adf() { jq -cn --arg t "$1" '{"type":"doc","version":1,"content":[{"type":"parag
 | Generic term | Jira |
 |---|---|
 | `[Feature]` | Epic |
-| `[Task]` | Story |
+| `[Task]` | The exact `JIRA_TASK_ISSUE_TYPE` (default: Story) |
 | `[Subtask]` | Bullet point in the story description |
 
 ## Status Mapping
@@ -100,7 +102,7 @@ Done (Epic workflow states).
 | Generic ID | Jira | Example |
 |---|---|---|
 | `featureId` | Epic key | `ENG-100` |
-| `taskId` | Story key | `ENG-142` |
+| `taskId` | Configured child issue-type key | `ENG-142` |
 
 The `jira()` and `adf()` helpers above must be defined in your shell before running the rest-column commands.
 
@@ -109,25 +111,45 @@ The `jira()` and `adf()` helpers above must be defined in your shell before runn
 | Generic operation | mcp | rest (via `jira`) |
 |---|---|---|
 | Create `[feature]` | create an Epic in `JIRA_PROJECT_KEY` | `jira /rest/api/3/issue -X POST -d '{"fields":{"project":{"key":"<KEY>"},"issuetype":{"name":"Epic"},"summary":"<name>"}}'` |
-| Create `[task]` under a feature | create a Story linked to the Epic | `jira /rest/api/3/issue -X POST -d '{"fields":{"project":{"key":"<KEY>"},"issuetype":{"name":"Story"},"summary":"<title>","description":'"$(adf "<text>")"',"parent":{"key":"<featureId>"}}}'` |
+| Create `[task]` under a feature | create the configured child issue type linked to the Epic | `jira /rest/api/3/issue -X POST -d '{"fields":{"project":{"key":"<KEY>"},"issuetype":{"name":"<JIRA_TASK_ISSUE_TYPE>"},"summary":"<title>","description":'"$(adf "<text>")"',"parent":{"key":"<featureId>"}}}'` |
 | Read a `[task]` | get the Story | `jira "/rest/api/3/issue/<taskId>?fields=summary,description,status,assignee,comment"` |
-| List `[tasks]` in a feature | search by Epic | `jira "/rest/api/3/search?jql=parent=<featureId>"` |
+| List `[tasks]` in a feature | enhanced JQL search by Epic | `jira /rest/api/3/search/jql -X POST -d '{"jql":"parent=<featureId>","fields":["summary","status"],"maxResults":100}'`; continue with each `nextPageToken` until `isLast=true` |
 | List available transitions | (implicit) | `jira "/rest/api/3/issue/<taskId>/transitions"` |
 | Set `[task]`/`[feature]` status | transition the item | `jira "/rest/api/3/issue/<taskId>/transitions" -X POST -d '{"transition":{"id":"<transitionId>"}}'` |
 | Set `[task]` assignee | update assignee | `jira "/rest/api/3/issue/<taskId>/assignee" -X PUT -d '{"accountId":"<accountId>"}'` |
 | Add a comment to a `[task]` | add comment | `jira "/rest/api/3/issue/<taskId>/comment" -X POST -d '{"body":'"$(adf "<text>")"'}'` |
 | Export the `[tasks]` of a `[feature]` to a file | read via search, write the JSON yourself | `bin/tracker-ops.sh export <featureId> <outfile>` |
+| Scan `[tasks]` across the configured board scope | JQL using configured status mappings | `bin/tracker-ops.sh scan <outfile> --status Planned --status Blocked` paginates; requires an exact `JIRA_PROJECT_KEY` and `JIRA_TASK_ISSUE_TYPE` |
 | update comment | edit comment via MCP | REST `PUT /rest/api/3/issue/<issueId>/comment/<commentId>` (ADF body); or `bin/tracker-ops.sh update-comment ...` |
 | Upsert task runtime progress | edit the managed progress comment, or create it once | `bin/tracker-ops.sh upsert-progress <taskId> <bodyfile>` |
 | Upsert feature runtime digest | edit the managed digest comment, or create it once | `bin/tracker-ops.sh upsert-digest <featureId> <bodyfile>` |
+| Upsert feature deployment state | edit/create one managed `[deployment]` comment | `bin/tracker-ops.sh upsert-deployment <featureId> <bodyfile>` |
 
 > **Helper script.** For the `rest` mechanism, `bin/tracker-ops.sh` wraps the recurring
 > operations — `claim`, `state` (resolves the transition id for you), `comment` (body from
 > a file or stdin — no ADF hand-assembly), `upsert-progress`, `upsert-digest`,
-> idempotent `integrate <hash>`, and `export`. This table remains the spec; the
+> idempotent `integrate <hash>`, `export`, `scan`, `feature-state`, and
+> `upsert-deployment`. This table remains the spec; the
 > script is the ergonomic path. MCP sessions call the MCP tools directly.
 
-> `parent` and `jql=parent=` work in team-managed (NextGen) projects. In company-managed (classic) projects, link Stories to the Epic via the Epic Link field (commonly `customfield_10014`) and query with `jql="Epic Link" = <featureId>`.
+> The bundled unattended REST backend implements `parent` and `jql=parent=`
+> only. Do not enable it for a project whose [task]-to-[feature] relationship is
+> stored in a classic Epic Link custom field: extend and test the backend with
+> that site's discovered field id first. The prose/MCP path may use such a field
+> only when its concrete operations are configured explicitly.
+
+The scriptable backend uses Jira Cloud's current enhanced-search endpoint,
+`POST /rest/api/3/search/jql`, with a JSON `fields` array and opaque
+`nextPageToken` scrolling. It requires a boolean `isLast`, rejects missing or
+repeated continuation tokens, and never falls back to the deprecated
+`/rest/api/3/search` `startAt` API.
+
+Before every REST `scan` or `export`, the backend resolves
+`GET /rest/api/3/project/<JIRA_PROJECT_KEY>` and requires an exact key match.
+Its JQL always contains both that project and `JIRA_TASK_ISSUE_TYPE`; every
+returned issue must also carry the same `fields.project.key` and
+`fields.issuetype.name`. A mismatched server response is an andon stop, so an
+Epic or another issue type is never normalized as an actionable child task.
 
 ## Rules
 
@@ -135,10 +157,15 @@ The `jira()` and `adf()` helpers above must be defined in your shell before runn
   REST API). If ANY call fails: **STOP** and report (andon cord).
   Never work around a failure.
 - NEVER skip status updates.
+- REST exports carry each comment's `createdAt`, `updatedAt`, and revision
+  (`updated`) and order comments by last modification. An edit to an older approval
+  or pushback becomes the current verdict and must pass the full authorization check
+  again.
 - Status changes are **transitions**, not direct field edits — a status may be unreachable
   from the current one; if a transition is missing, pull the andon cord rather than forcing
   it.
-- `featureId` is an Epic key; `taskId` is a Story key.
+- `featureId` is an Epic key; `taskId` is a key of the configured
+  `JIRA_TASK_ISSUE_TYPE`.
 
 ## Initialization
 
