@@ -26,6 +26,12 @@ Markers you are authorized to post: [design-approved], [design-pushback], [archi
    Backend [tasks] always get a full design review. Frontend [tasks] declare
    `Architectural impact: yes/no`; for a credible "no", reply
    `[design-approved]` fast — the checklist may be short, never absent.
+   A human-resumed [task] with changed requirements has a separate barrier:
+   read the queue's durable snapshot/diff request, the receipt-backed
+   `[resume-review]`, and the later `[resume-plan]`. Publish a **later**
+   `[design-approved]` or `[design-pushback]` through the standard outbox. The
+   verdict must address the revised requirements and invalidate any stale
+   design assumptions; a pre-block approval cannot be reused.
 3. **Architecture review — every [task] in `[Review]`.** In parallel with the
    reviewer: check conformance to the approved `[design-note]` and its conditions,
    boundary violations, coupling, contract drift. Problems →
@@ -83,6 +89,10 @@ of truth; the ledger is your index into it.
   not a ruling you can make).
 - Let politeness soften a veto. If the design is wrong, `[design-pushback]` with
   concrete required changes. Pushback is your job, not an exception.
+- Move a [task] out of `[Blocked]` or treat your design verdict as permission to
+  do so. Only a human changes that project-management state; your later verdict
+  can clear the queued resume barrier only after the human move and valid
+  team-lead resume receipts.
 - Go idle with a verdict unwritten. A gate you decided but never posted is still
   closed — deliver the marker comment and notify the team-lead before idling
   (protocol: *Report before idle*).

@@ -42,10 +42,15 @@ cd "$TMP"; git init -q repo && cd repo
 git checkout -q -b feature-integration
 LIFECYCLE_ROOT="$TMP/protected-lifecycle"
 mkdir -m 700 "$LIFECYCLE_ROOT"
+PROTECTED_FORGERY_ROOT="$TMP/protected-forgery-lifecycle"
+mkdir -m 700 "$PROTECTED_FORGERY_ROOT"
+python3 "$SKILL_DIR/bin/process-lifecycle.py" init --root "$LIFECYCLE_ROOT" --repo "$(pwd)" >/dev/null
+python3 "$SKILL_DIR/bin/process-lifecycle.py" init --root "$PROTECTED_FORGERY_ROOT" --repo "$(pwd)" >/dev/null
+export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$LIFECYCLE_ROOT"
 git config user.email test@example.com; git config user.name Test
 mkdir -p .agent-squad/{bin,config,roles} .workspace/task-manager
 cp "$SKILL_DIR"/bin/*.sh "$SKILL_DIR"/bin/*.py .agent-squad/bin/
-cp "$SKILL_DIR/config/statuses.config.json" .agent-squad/config/
+cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" .agent-squad/config/
 cp "$SKILL_DIR/roles/backend.md" .agent-squad/roles/
 cat > .gitignore <<'EOF'
 .teamwork/
@@ -132,6 +137,18 @@ EOF
 FID=.workspace/task-manager/feature.md
 TID="$FID#1"
 LAUNCH=.agent-squad/bin/launch-team.sh
+write_task_hold() {
+  python3 - ".teamwork/feature-integration/task-holds.json" "$FID" "$1" "$2" <<'PY'
+import hashlib,json,re,sys
+path,feature,task,state=sys.argv[1:]
+slug=re.sub(r"[^a-zA-Z0-9]+","-",task).strip("-").lower()[:32] or "task"
+key="%s-%s"%(slug,hashlib.sha256(task.encode()).hexdigest()[:10])
+json.dump({"schemaVersion":1,"featureId":feature,"tasks":{
+    key:{"taskId":task,"taskKey":key,"state":state}
+}},open(path,"w"))
+PY
+}
+clear_task_hold() { rm -f .teamwork/feature-integration/task-holds.json; }
 wt="$($LAUNCH worktree feature-integration backend "$TID" 1)"
 .agent-squad/bin/task-packet.sh feature-integration "$FID" "$TID" backend 1 "$wt" "agent-task/feature-integration/$(python3 .agent-squad/bin/runtime-state.py key "$TID")" >/dev/null
 echo task-change > "$wt/app.txt"
@@ -213,8 +230,91 @@ bind_review "$TID3" third.txt
 .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1 >/dev/null
 key2="$(python3 .agent-squad/bin/runtime-state.py key "$TID2")"
 tx2=".teamwork/feature-integration/integrations/$key2.json"
+prep2=".teamwork/feature-integration/integrations/.prepared/$key2.json"
+head_before_hold="$(git rev-parse HEAD)"
+
+# A protected hold wins over an agent-forged workspace projection. Keep the
+# tracker in Review to prove this denial is authority-driven, not a status
+# side effect, and exercise both the authorization and merge boundaries.
+cat > "$TMP/protected-blocked.json" <<EOF
+{"featureId":"$FID","tasks":[{"taskId":"$TID2","title":"fixture","description":"fixture","status":"Blocked","statusRaw":"Blocked","assignee":"backend","blockedBy":[],"labels":[],"comments":[],"attachments":[]}]}
+EOF
+STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$PROTECTED_FORGERY_ROOT" \
+  python3 .agent-squad/bin/task-hold.py sync \
+  --repo "$(pwd)" --workspace "$(pwd)/.teamwork/feature-integration" \
+  --tasks "$TMP/protected-blocked.json" --feature "$FID" --team feature-integration \
+  --blocked-status Blocked --queued-status Planned \
+  --inflight-status Planned --inflight-status Active --inflight-status Review \
+  --ignored-labels-json '["human-work"]' >/dev/null
+write_task_hold "$TID2" resumed
+refuse "protected hold blocks pre-merge authorization despite forged local resume" \
+  env STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$PROTECTED_FORGERY_ROOT" \
+  .agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" "$prep2"
+refuse "protected hold blocks the merger despite forged local resume" \
+  env STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$PROTECTED_FORGERY_ROOT" \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
+check "protected merge denial leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
+clear_task_hold
+
+write_task_hold "$TID2" blocked
+refuse "held task cannot receive pre-merge broker authorization" \
+  .agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" "$prep2"
+check "held authorization attempt cannot move the feature branch" test "$(git rev-parse HEAD)" = "$head_before_hold"
+
+printf '{not-json\n' > .teamwork/feature-integration/task-holds.json
+refuse "malformed hold registry blocks pre-merge authorization" \
+  .agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" "$prep2"
+python3 - .teamwork/feature-integration/task-holds-target.json "$FID" <<'PY'
+import json,sys
+json.dump({"schemaVersion":1,"featureId":sys.argv[2],"tasks":{}},open(sys.argv[1],"w"))
+PY
+clear_task_hold
+ln -s "$(pwd)/.teamwork/feature-integration/task-holds-target.json" \
+  .teamwork/feature-integration/task-holds.json
+refuse "symlink hold registry blocks pre-merge authorization" \
+  .agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" "$prep2"
+clear_task_hold
+python3 - .teamwork/feature-integration/task-holds.json <<'PY'
+import json,sys
+json.dump({"schemaVersion":1,"featureId":"other-feature","tasks":{}},open(sys.argv[1],"w"))
+PY
+refuse "cross-feature hold registry blocks pre-merge authorization" \
+  .agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" "$prep2"
+clear_task_hold
+rm -f .teamwork/feature-integration/task-holds-target.json
 .agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" \
-  ".teamwork/feature-integration/integrations/.prepared/$key2.json" >/dev/null
+  "$prep2" >/dev/null
+
+# Direct/standalone integration has no PM supervisor environment. The broker's
+# safe default must still treat human-work as a hard automation reservation.
+perl -0pi -e 's/(## 2 Brokered change \[Review\]\n\n\*\*Assignee:\*\* backend\n)/$1\n**Labels:** human-work\n/' "$FID"
+refuse "standalone merger defaults human-work to reserved" \
+  env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON -u STARTUP_FACTORY_LIFECYCLE_STATE_ROOT \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
+check "human-work merge fence leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
+perl -0pi -e 's/\n\*\*Labels:\*\* human-work\n//' "$FID"
+
+# Registry state is re-read by the actual merger, not only by the earlier
+# authorization broker. No resume-review exception exists for integration.
+write_task_hold "$TID2" resume-review-pending
+refuse "resume-review hold blocks an already-authorized merge" \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
+check "held merge leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
+clear_task_hold
+
+# A just-moved tracker status can precede the next dispatcher registry sync.
+# The merger must therefore export PM state itself and fail closed on semantic
+# Blocked even while task-holds.json is absent.
+perl -0pi -e 's/## 2 Brokered change \[Review\]/## 2 Brokered change [Blocked]/' "$FID"
+refuse "fresh tracker fence blocks merge before the registry catches up" \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
+check "authoritative Blocked fence leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
+perl -0pi -e 's/## 2 Brokered change \[Blocked\]/## 2 Brokered change [Review]/' "$FID"
+perl -0pi -e 's/## 2 Brokered change \[Review\]/## 2 Brokered change [Active]/' "$FID"
+refuse "manual Blocked-to-Active drift cannot bypass the semantic review fence" \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
+check "non-review status drift leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
+perl -0pi -e 's/## 2 Brokered change \[Active\]/## 2 Brokered change [Review]/' "$FID"
 .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1 >/dev/null
 .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID3" backend 1 >/dev/null
 key3="$(python3 .agent-squad/bin/runtime-state.py key "$TID3")"
@@ -233,6 +333,57 @@ import json, sys
 value=json.load(open(sys.argv[1]))
 raise SystemExit(0 if value['baseCommit'] != value['reviewBaseCommit'] else 1)
 PY
+
+# The same protected hold remains authoritative after a merge transaction was
+# created. Forging the local projection to resumed cannot authorize tracker
+# finalization or cleanup.
+write_task_hold "$TID2" resumed
+refuse "protected hold blocks finalization despite forged local resume" \
+  env STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$PROTECTED_FORGERY_ROOT" \
+  .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
+check "protected finalization denial preserves awaiting tracker" grep -q '"phase": "awaiting-tracker"' "$tx2"
+check "protected finalization denial preserves the task worktree" test -d "$wt2"
+clear_task_hold
+
+perl -0pi -e 's/(## 2 Brokered change \[Review\]\n\n\*\*Assignee:\*\* backend\n)/$1\n**Labels:** human-work\n/' "$FID"
+refuse "standalone finalizer defaults human-work to reserved" \
+  env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON -u STARTUP_FACTORY_LIFECYCLE_STATE_ROOT \
+  .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
+check "human-work finalization fence preserves awaiting tracker" grep -q '"phase": "awaiting-tracker"' "$tx2"
+perl -0pi -e 's/\n\*\*Labels:\*\* human-work\n//' "$FID"
+
+write_task_hold "$TID2" manual-takeover
+refuse "manual-takeover hold blocks tracker finalization of an existing merge" \
+  .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
+check "held finalization leaves tracker state in review" grep -q '^## 2 Brokered change \[Review\]$' "$FID"
+check "held finalization preserves awaiting-tracker transaction" grep -q '"phase": "awaiting-tracker"' "$tx2"
+check "held finalization preserves the task worktree" test -d "$wt2"
+clear_task_hold
+
+# Simulate a PM move in the narrow window after the broker's pass-level export
+# but before tracker-ops integrate. The per-write fresh fence must observe the
+# second state even though the first authorization snapshot still said Review.
+mv .agent-squad/bin/tracker-ops.sh .agent-squad/bin/tracker-ops.sh.real
+cat > .agent-squad/bin/tracker-ops.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+real="$(dirname "$0")/tracker-ops.sh.real"
+if [ "${1:-}" = export ] && [ ! -e .teamwork/feature-integration/finalizer-race-once ]; then
+  "$real" "$@"
+  : > .teamwork/feature-integration/finalizer-race-once
+  perl -0pi -e 's/## 2 Brokered change \[Review\]/## 2 Brokered change [Blocked]/' "$2"
+  exit 0
+fi
+exec "$real" "$@"
+EOF
+chmod +x .agent-squad/bin/tracker-ops.sh
+refuse "per-write fresh tracker fence catches Blocked after pass authorization" \
+  .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
+check "finalizer race fence prevents terminal tracker mutation" grep -q '^## 2 Brokered change \[Blocked\]$' "$FID"
+check "finalizer race fence leaves transaction awaiting tracker" grep -q '"phase": "awaiting-tracker"' "$tx2"
+mv .agent-squad/bin/tracker-ops.sh.real .agent-squad/bin/tracker-ops.sh
+rm -f .teamwork/feature-integration/finalizer-race-once
+perl -0pi -e 's/## 2 Brokered change \[Blocked\]/## 2 Brokered change [Review]/' "$FID"
 
 cat >> "$FID" <<'EOF'
 
@@ -362,6 +513,44 @@ refuse "SIGKILL lands in the journaled merge window" env INTEGRATION_TEST_CRASH_
   .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID4" backend 1
 check "crashed merge retains its durable preparation" test -f "$prep4"
 check "crashed merge is recognizable through MERGE_HEAD" git rev-parse -q --verify MERGE_HEAD
+perl -0pi -e 's/## 4 Crash during merge \[Review\]/## 4 Crash during merge [Blocked]/' "$FID"
+refuse "fresh tracker fence catches Blocked after merge and before commit" \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID4" backend 1
+refuse "Blocked-after-merge safely clears MERGE_HEAD" git rev-parse -q --verify MERGE_HEAD
+check "Blocked-after-merge restores a clean feature checkout" \
+  bash -c 'test -z "$(git status --porcelain -uno)"'
+perl -0pi -e 's/## 4 Crash during merge \[Blocked\]/## 4 Crash during merge [Review]/' "$FID"
+
+# Prove the aborted merge does not strand unrelated delivery. A sibling uses
+# the real integration broker and reaches its merge window immediately. Crash
+# it there deliberately, then clean up its fixture without moving feature HEAD,
+# so the original task can resume from its still-valid preparation.
+cat >> "$FID" <<'EOF'
+
+## 6 Sibling after Blocked abort [Review]
+
+**Assignee:** backend
+
+parallel-safe: true
+files: sibling-after-block.txt
+EOF
+TID6="$FID#6"; key6="$(python3 .agent-squad/bin/runtime-state.py key "$TID6")"
+wt6="$($LAUNCH worktree feature-integration backend "$TID6" 1)"
+.agent-squad/bin/task-packet.sh feature-integration "$FID" "$TID6" backend 1 "$wt6" \
+  "agent-task/feature-integration/$key6" >/dev/null
+echo sibling-after-block > "$wt6/sibling-after-block.txt"
+git -C "$wt6" add sibling-after-block.txt
+git -C "$wt6" commit -q -m 'sibling after blocked abort fixture'
+bind_review "$TID6" sibling-after-block.txt
+.agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID6" backend 1 >/dev/null
+prep6=".teamwork/feature-integration/integrations/.prepared/$key6.json"
+.agent-squad/bin/finalize-integrations.sh --authorize-prepared feature-integration "$FID" "$prep6" >/dev/null
+refuse "sibling can enter integration immediately after Blocked abort" env INTEGRATION_TEST_CRASH_AT=after-merge \
+  .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID6" backend 1
+check "sibling reached the real merge window" git rev-parse -q --verify MERGE_HEAD
+git merge --abort >/dev/null
+rm -f "$prep6"
+$LAUNCH worktree-remove feature-integration backend "$TID6" 1 >/dev/null
 .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID4" backend 1 >/dev/null
 tx4=".teamwork/feature-integration/integrations/$key4.json"
 check "retry completes interrupted merge exactly once" grep -q '"phase": "awaiting-tracker"' "$tx4"

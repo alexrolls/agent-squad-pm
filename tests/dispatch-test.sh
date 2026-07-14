@@ -14,7 +14,7 @@ mkdir -m 700 "$LIFECYCLE_ROOT"
 mkdir -p .claude/skills/pm
 cp -R "$SKILL_DIR/roles" "$SKILL_DIR/reference" "$SKILL_DIR/bin" "$SKILL_DIR/teams" .claude/skills/pm/
 mkdir -p .claude/skills/pm/config
-cp "$SKILL_DIR/config/statuses.config.json" .claude/skills/pm/config/
+cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" .claude/skills/pm/config/
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
@@ -94,8 +94,10 @@ EOF
 FID="feat/feature.md"
 
 # -- dry-run prints the full action plan, changes nothing ----------------------
-plan="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run --unblock=auto)"
-echo "$plan" | grep -q "unblock $FID#2" && echo "ok: plans unblock" || { echo "FAIL: plans unblock"; FAILURES=$((FAILURES+1)); }
+plan="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
+echo "$plan" | grep -q "keep $FID#2 \[Blocked\].*human-held" \
+  && echo "ok: plans human-held block" \
+  || { echo "FAIL: blocked task was not held: $plan"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch reviewer" && echo "ok: plans reviewer queue" || { echo "FAIL: reviewer queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch principal-architect" && echo "ok: plans PA queue" || { echo "FAIL: PA queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch team-lead" && echo "ok: plans lead (Planned #5)" || { echo "FAIL: lead launch"; FAILURES=$((FAILURES+1)); }
@@ -103,10 +105,58 @@ echo "$plan" | grep -q "launch integrator" && echo "ok: plans integrator merge q
 check "dry-run does not move status" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
 check "dry-run launches nothing"     test ! -d .teamwork/feat-team/pids
 
-# -- real pass: auto-unblock writes, queues land in mailboxes, roles launch ----
-TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --unblock=auto
-check "auto-unblock moved status"    grep -q '^## 2 Blocked thing \[Active\]$' "$FID"
-check "auto-unblock left a comment"  grep -q 'Auto-unblocked by dispatcher' "$FID"
+# -- PM-supervisor label policy excludes human-owned work but keeps siblings --
+cat > feat/human-work.md <<'EOF'
+# Human/agent split [Active]
+
+## 1 Manual decision [Planned]
+
+**Assignee:** —
+**Labels:** human-work
+
+track: backend
+parallel-safe: true
+files: src/manual.py
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+
+## 2 Automatic implementation [Planned]
+
+**Assignee:** —
+
+track: backend
+parallel-safe: true
+files: src/automatic.py
+
+> [design-note] round 1
+> - backend
+>
+> [design-approved] round 1
+> - principal-architect
+EOF
+HUMAN_FID="feat/human-work.md"
+human_plan="$(STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='["human-work"]' TEAM_RUNNER=background "$DISPATCH" feat-human-team "$HUMAN_FID" --once --dry-run)"
+if echo "$human_plan" | grep -q "claim $HUMAN_FID#1"; then
+  echo "FAIL: human-work task entered autonomous plan"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: human-work task is absent from autonomous plan"
+fi
+echo "$human_plan" | grep -q "claim $HUMAN_FID#2.*backend" \
+  && echo "ok: non-human sibling remains automatically claimable" \
+  || { echo "FAIL: automatic sibling was not claimed: $human_plan"; FAILURES=$((FAILURES+1)); }
+
+# -- real pass: blocked task stays held while unrelated gate queues still run --
+TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once
+check "dispatcher never moves Blocked outbound" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
+if grep -q 'Auto-unblocked by dispatcher' "$FID"; then
+  echo "FAIL: dispatcher left an obsolete auto-unblock comment"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: dispatcher leaves no auto-unblock comment"
+fi
 check "reviewer queue in mailbox"    grep -rq "$FID#3" .teamwork/feat-team/mailbox/reviewer/
 check "PA queue in mailbox"          grep -rq "$FID#4" .teamwork/feat-team/mailbox/principal-architect/
 check "reviewer launched"            test -f .teamwork/feat-team/pids/reviewer.pid
@@ -119,16 +169,12 @@ echo "$plan2" | grep -q "launch reviewer" \
   && echo "ok: workspace PID spoof cannot suppress protected liveness lookup" \
   || { echo "FAIL: workspace PID spoof affected dedup"; FAILURES=$((FAILURES+1)); }
 
-# -- suggest mode: Markdown default never writes -------------------------------
-# (state resets between blocks use sed on the fixture file, never tracker ops)
-sed -i '' 's/^## 2 Blocked thing \[Active\]$/## 2 Blocked thing [Blocked]/' "$FID"
-plan3="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
-echo "$plan3" | grep -q "unblock $FID#2 — SUGGESTED" \
-  && echo "ok: Markdown defaults to suggest-only" || { echo "FAIL: suggest default"; FAILURES=$((FAILURES+1)); }
-
-# real suggest pass: never writes the blocked task
-TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once
-check "suggest never writes blocked status" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
+# -- legacy unblock option is a compatibility no-op, never an authority -------
+legacy_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run --unblock=auto 2>&1)"
+echo "$legacy_out" | grep -q "deprecated and ignored.*human-only" \
+  && echo "ok: legacy unblock option reports human-only policy" \
+  || { echo "FAIL: legacy unblock option was not safely deprecated: $legacy_out"; FAILURES=$((FAILURES+1)); }
+check "legacy unblock option cannot move Blocked" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
 
 # -- anomaly: [Review] task with no [review-request] routes to team-lead -------
 cat >> "$FID" <<'EOF'
@@ -155,7 +201,7 @@ cat > feat/quiet.md <<'EOF'
 
 **Assignee:** backend
 EOF
-out="$("$DISPATCH" feat-team feat/quiet.md --once --dry-run)"
+out="$("$DISPATCH" feat-quiet-team feat/quiet.md --once --dry-run)"
 echo "$out" | grep -q "nothing actionable" && echo "ok: clean exit" || { echo "FAIL: clean exit"; FAILURES=$((FAILURES+1)); }
 
 # -- all-terminal product closeout routes exact release request -----------------
@@ -226,7 +272,7 @@ printf '\nREVIEWER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
 sed -i '' 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
 # Clear reviewer pid and mailbox so this is a clean slate for the assertion.
 rm -rf .teamwork/feat-team/pids/reviewer.pid .teamwork/feat-team/mailbox/reviewer
-null_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --unblock=off)"
+null_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once)"
 echo "$null_out" | grep -q "skipped (REVIEWER_CMD=null" \
   && echo "ok: null-CMD reviewer skipped" || { echo "FAIL: null-CMD reviewer not skipped"; FAILURES=$((FAILURES+1)); }
 check "null-CMD: reviewer.pid not created" test ! -f .teamwork/feat-team/pids/reviewer.pid
@@ -234,155 +280,67 @@ check "null-CMD: reviewer mailbox not written" test ! -d .teamwork/feat-team/mai
 # Remove the injected line to leave the config clean for any future assertions.
 sed -i '' '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
 
-# -- resume-status: auto-unblock routes to the correct phase ------------------
-cat > feat/rs-test.md <<'EOF'
-# RS Test [Active]
+# -- tracker comments cannot grant automated authority to leave Blocked -------
+cat > feat/human-held.md <<'EOF'
+# Human-held fixture [Active]
 
-## 1 Terminal [Ready to deploy]
-
-**Assignee:** backend
-
-Done.
-
-## 2 Needs Review [Blocked]
-
-**Assignee:** backend
-**BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Review
-
-## 3 Needs Planned [Blocked]
-
-**Assignee:** backend
-**BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Planned
-
-## 4 No resume-status [Blocked]
-
-**Assignee:** backend
-**BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> reason: no resume-status here
-
-## 5 Invalid resume-status [Blocked]
-
-**Assignee:** backend
-**BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Nonesuch
-EOF
-RS_FID="feat/rs-test.md"
-
-# real auto pass — tasks 2 and 3 should be moved; 4 and 5 must not be touched
-TEAM_RUNNER=background "$DISPATCH" feat-team-rs "$RS_FID" --once --unblock=auto
-check "resume-status Review: moved to [Review]"  grep -q '^## 2 Needs Review \[Review\]$'  "$RS_FID"
-check "resume-status Planned: moved to [Planned]" grep -q '^## 3 Needs Planned \[Planned\]$' "$RS_FID"
-check "no-rs: not moved (still Blocked)"          grep -q '^## 4 No resume-status \[Blocked\]$' "$RS_FID"
-check "invalid-rs: not moved (still Blocked)"     grep -q '^## 5 Invalid resume-status \[Blocked\]$' "$RS_FID"
-
-# auto comments on moved tasks name the chosen resume status
-check "Review unblock comment present"  grep -rq 'Resuming to \[Review\]'  "$RS_FID"
-check "Planned unblock comment present" grep -rq 'Resuming to \[Planned\]' "$RS_FID"
-
-# dry-run captures the no-rs suggestion and the invalid-rs warning
-rs_dry="$(TEAM_RUNNER=background "$DISPATCH" feat-team-rs2 "$RS_FID" --once --dry-run --unblock=auto 2>&1)"
-echo "$rs_dry" | grep -q "NO RESUME STATUS" \
-  && echo "ok: no-rs: lead-actionable suggestion printed" \
-  || { echo "FAIL: no-rs: suggestion not printed"; FAILURES=$((FAILURES+1)); }
-echo "$rs_dry" | grep -q "invalid resume-status" \
-  && echo "ok: invalid-rs: warning printed" \
-  || { echo "FAIL: invalid-rs: no warning"; FAILURES=$((FAILURES+1)); }
-
-# under Markdown suggest-only default: no write even for a task with a valid resume-status
-sed -i '' 's/^## 2 Needs Review \[Review\]$/## 2 Needs Review [Blocked]/' "$RS_FID"
-rs_sug="$(TEAM_RUNNER=background "$DISPATCH" feat-team-rs3 "$RS_FID" --once --dry-run 2>&1)"
-echo "$rs_sug" | grep -q "unblock $RS_FID#2 — SUGGESTED" \
-  && echo "ok: suggest-only: valid-rs task shows SUGGESTED" \
-  || { echo "FAIL: suggest-only: wrong message for valid-rs task"; FAILURES=$((FAILURES+1)); }
-check "suggest-only: no write for valid-rs task" grep -q '^## 2 Needs Review \[Blocked\]$' "$RS_FID"
-
-# -- D3.6: stale resume-status — only latest blocked-by comment governs --------
-cat > feat/stale-rs-test.md <<'EOF'
-# Stale RS Test [Active]
-
-## 1 Terminal [Ready to deploy]
+## 1 Finished dependency [Ready to deploy]
 
 **Assignee:** backend
 
 Done.
 
-## 2 No RS in new block [Blocked]
+## 2 Human-held ticket [Blocked]
 
 **Assignee:** backend
 **BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Review
-
-> block-kind: dependency
-> blocked-by: 1
-> reason: second block
-
-## 3 Invalid RS in new block [Blocked]
-
-**Assignee:** backend
-**BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Review
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Nonesuch
-
-## 4 Valid override — newest wins [Blocked]
-
-**Assignee:** backend
-**BlockedBy:** 1
-
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Review
 
 > block-kind: dependency
 > blocked-by: 1
 > resume-status: Active
 
-## 5 Multiline block [Blocked]
+## 3 Independent Todo [Planned]
 
-**Assignee:** backend
-**BlockedBy:** 1
+**Assignee:** —
 
-> block-kind: dependency
-> blocked-by: 1
-> resume-status: Review
-> reason: waiting
-> multiline test
+track: backend
+
+> [design-note] ready — backend
+
+> [design-approved] approved — principal-architect
+
+## 4 Potential dependent [Planned]
+
+**Assignee:** —
+**BlockedBy:** 2
+
+track: backend
+
+> [design-note] ready — backend
+
+> [design-approved] approved — principal-architect
 EOF
-SRS_FID="feat/stale-rs-test.md"
-TEAM_RUNNER=background "$DISPATCH" feat-team-stale "$SRS_FID" --once --unblock=auto
-check "stale RS #2: new no-RS block not moved"        grep -q '^## 2 No RS in new block \[Blocked\]$' "$SRS_FID"
-check "stale RS #3: invalid new RS not moved"         grep -q '^## 3 Invalid RS in new block \[Blocked\]$' "$SRS_FID"
-check "stale RS #4: valid new RS moved to Active"     grep -q '^## 4 Valid override — newest wins \[Active\]$' "$SRS_FID"
-check "stale RS #5: multiline block moved to Review"  grep -q '^## 5 Multiline block \[Review\]$' "$SRS_FID"
-srs_dry="$(TEAM_RUNNER=background "$DISPATCH" feat-team-stale2 "$SRS_FID" --once --dry-run --unblock=auto 2>&1)"
-echo "$srs_dry" | grep -q "invalid resume-status" \
-  && echo "ok: stale RS #3: invalid-rs warning printed" \
-  || { echo "FAIL: no invalid-rs warning for stale #3"; FAILURES=$((FAILURES+1)); }
-echo "$srs_dry" | grep -q "NO RESUME STATUS" \
-  && echo "ok: stale RS #2: no-rs suggestion printed (stale history not reused)" \
-  || { echo "FAIL: no NO RESUME STATUS for stale #2"; FAILURES=$((FAILURES+1)); }
+HELD_FID="feat/human-held.md"
+held_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-human-held "$HELD_FID" --once --dry-run)"
+echo "$held_plan" | grep -q "keep $HELD_FID#2 \[Blocked\].*human-held" \
+  && echo "ok: resume-status metadata cannot release a human hold" \
+  || { echo "FAIL: human hold missing from plan: $held_plan"; FAILURES=$((FAILURES+1)); }
+echo "$held_plan" | grep -q "claim $HELD_FID#3.*backend" \
+  && echo "ok: human-held ticket does not stop independent Todo work" \
+  || { echo "FAIL: independent Todo not dispatched: $held_plan"; FAILURES=$((FAILURES+1)); }
+if echo "$held_plan" | grep -q "claim $HELD_FID#4"; then
+  echo "FAIL: dependent Todo was dispatched through a Blocked prerequisite"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: dependent Todo remains undispatched"
+fi
+echo "$held_plan" | grep -q "possible downstream impact: $HELD_FID#4" \
+  && echo "ok: queued direct dependent is sent for lead dependency review" \
+  || { echo "FAIL: queued direct dependent was not routed for dependency review: $held_plan"; FAILURES=$((FAILURES+1)); }
+git branch feat-human-held
+TEAM_RUNNER=background "$DISPATCH" feat-human-held "$HELD_FID" --once >/dev/null
+check "resume-status metadata leaves task Blocked" grep -q '^## 2 Human-held ticket \[Blocked\]$' "$HELD_FID"
+check "independent Todo is claimed"              grep -q '^## 3 Independent Todo \[Active\]$' "$HELD_FID"
+check "dependent stays queued pending lead verdict" grep -q '^## 4 Potential dependent \[Planned\]$' "$HELD_FID"
 
 # -- D2.5: Linear+MCP → dispatch fails before tracker-ops ----------------------
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
@@ -495,7 +453,7 @@ PROTOCOL_INTEGRATOR=integrator
 PROTOCOL_BACKEND=senior-full-stack-engineer
 PROTOCOL_FRONTEND=senior-full-stack-engineer
 EOF
-signer_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-signer-team "$SIG_FID" --once --dry-run --unblock=auto 2>&1)"
+signer_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-signer-team "$SIG_FID" --once --dry-run 2>&1)"
 echo "$signer_plan" | grep -q "signed by 'reviewer', expected preset final gate 'senior-qa-engineer'" \
   && echo "ok: generic reviewer: warning printed" \
   || { echo "FAIL: no signer warning in: $signer_plan"; FAILURES=$((FAILURES+1)); }
@@ -642,7 +600,8 @@ EOF
 PAR_FID=feat/parallel-test.md
 sed -i '' 's/^EXECUTION=sequential$/EXECUTION=parallel/' .claude/skills/pm/config/team.config.md
 printf 'MAX_ACTIVE_IMPLEMENTERS=2\n' >> .claude/skills/pm/config/team.config.md
-parallel_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$PAR_FID" --once --dry-run)"
+PAR_TEAM=feat-parallel-team
+parallel_plan="$(TEAM_RUNNER=background "$DISPATCH" "$PAR_TEAM" "$PAR_FID" --once --dry-run)"
 echo "$parallel_plan" | grep -q "claim $PAR_FID#1.*backend" && echo "ok: parallel scheduler claims task 1" || { echo "FAIL: task 1 not claimed"; FAILURES=$((FAILURES+1)); }
 echo "$parallel_plan" | grep -q "claim $PAR_FID#2.*backend" && echo "ok: parallel scheduler claims task 2" || { echo "FAIL: task 2 not claimed"; FAILURES=$((FAILURES+1)); }
 echo "$parallel_plan" | grep -q "constrained ready tasks: $PAR_FID#3" && echo "ok: conflicting resource held" || { echo "FAIL: conflict not constrained"; FAILURES=$((FAILURES+1)); }
@@ -693,12 +652,13 @@ if echo "$active_unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
 else
   echo "ok: active unsafe task keeps the wave exclusive"
 fi
-TEAM_RUNNER=background "$DISPATCH" feat-team "$PAR_FID" --once --unblock=off >/dev/null
+git branch "$PAR_TEAM"
+TEAM_RUNNER=background "$DISPATCH" "$PAR_TEAM" "$PAR_FID" --once >/dev/null
 check "parallel task 1 becomes Active" grep -q '^## 1 Backend A \[Active\]$' "$PAR_FID"
 check "parallel task 2 becomes Active" grep -q '^## 2 Backend B \[Active\]$' "$PAR_FID"
 check "conflicting task remains Planned" grep -q '^## 3 Conflicts with A \[Planned\]$' "$PAR_FID"
-check "same role gets two isolated worktrees" test "$(find .teamwork/feat-team/worktrees -maxdepth 1 -type d -name 'backend#1-*' | wc -l | tr -d ' ')" -ge 2
-check "two execution records persisted" test "$(find .teamwork/feat-team/executions -type f -name '*.json' | wc -l | tr -d ' ')" -ge 2
+check "same role gets two isolated worktrees" test "$(find ".teamwork/$PAR_TEAM/worktrees" -maxdepth 1 -type d -name 'backend#1-*' | wc -l | tr -d ' ')" -ge 2
+check "two execution records persisted" test "$(find ".teamwork/$PAR_TEAM/executions" -type f -name '*.json' | wc -l | tr -d ' ')" -ge 2
 sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
 
 # -- a first successful claim advances the feature lifecycle -----------------
@@ -721,7 +681,7 @@ files: src/activation.py
 EOF
 ACT_FID=feat/activation-test.md
 git branch feat-activation-team
-TEAM_RUNNER=background "$DISPATCH" feat-activation-team "$ACT_FID" --once --unblock=off >/dev/null
+TEAM_RUNNER=background "$DISPATCH" feat-activation-team "$ACT_FID" --once >/dev/null
 check "first claim moves queued feature to Active" grep -q '^# Activation Test \[Active\]$' "$ACT_FID"
 check "first claim still moves task to Active" grep -q '^## 1 First implementation \[Active\]$' "$ACT_FID"
 
@@ -790,7 +750,7 @@ body = (
 with path.open("a", encoding="utf-8") as handle:
     handle.write("\n\n" + "\n".join("> " + line for line in body.splitlines()) + "\n")
 PY
-remote_plan="$(TEAM_RUNNER=background "$DISPATCH" "$REMOTE_TEAM" "$REMOTE_FID" --once --dry-run --unblock=off)"
+remote_plan="$(TEAM_RUNNER=background "$DISPATCH" "$REMOTE_TEAM" "$REMOTE_FID" --once --dry-run)"
 echo "$remote_plan" | grep -q "launch task $REMOTE_TASK as backend (attempt 1)" \
   && echo "ok: durable claim relaunches remote active task with null assignee" \
   || { echo "FAIL: remote null-assignee claim was stranded: $remote_plan"; FAILURES=$((FAILURES+1)); }
@@ -799,7 +759,7 @@ python3 - "$REMOTE_WORKSPACE/claims/$REMOTE_KEY.json" <<'PY'
 import json,sys
 path=sys.argv[1]; value=json.load(open(path)); value['taskId']='forged-task'; json.dump(value,open(path,'w'))
 PY
-if forged_claim_out="$(TEAM_RUNNER=background "$DISPATCH" "$REMOTE_TEAM" "$REMOTE_FID" --once --dry-run --unblock=off 2>&1)"; then
+if forged_claim_out="$(TEAM_RUNNER=background "$DISPATCH" "$REMOTE_TEAM" "$REMOTE_FID" --once --dry-run 2>&1)"; then
   echo "FAIL: planner accepted a forged durable claim binding"; FAILURES=$((FAILURES+1))
 elif echo "$forged_claim_out" | grep -q 'claim record does not match its team/feature/task/attempt binding'; then
   echo "ok: durable claim fallback fails closed on identity tampering"
@@ -830,7 +790,7 @@ sed -i '' 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/
 
 # Quoted key with outer inline comment: CMD must still be executable (inner content preserved)
 sed -i '' 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
-TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once --unblock=off >/dev/null 2>&1 || true
+TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once >/dev/null 2>&1 || true
 sleep 0.2
 if [ -f .teamwork/feat-rk-team/pids/reviewer.log ] && \
    ! grep -q "command not found\|unexpected EOF\|not found" .teamwork/feat-rk-team/pids/reviewer.log 2>/dev/null; then

@@ -16,6 +16,16 @@ read_key() {
   printf '%s' "$value"
 }
 
+# The PM supervisor pins this authority in the process environment. Direct
+# broker invocations must consume the same configured root instead of silently
+# falling back to the agent-writable workspace registry.
+if [ -z "${STARTUP_FACTORY_LIFECYCLE_STATE_ROOT:-}" ]; then
+  configured_lifecycle_root="$(read_key BROKER_LIFECYCLE_ROOT)"
+  if [ -n "$configured_lifecycle_root" ]; then
+    export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$configured_lifecycle_root"
+  fi
+fi
+
 [ $# -ge 2 ] && [ $# -le 3 ] || { echo "usage: process-outbox.sh <team> <featureId> [entry.json]" >&2; exit 2; }
 team="$1"; feature="$2"; only="${3:-}"
 repo="$(git rev-parse --show-toplevel)"
@@ -65,6 +75,23 @@ refresh_authority() {
     # scheduler tick can retry after the adapter recovers.
     return 75
   fi
+  local hold_fields hold_task hold_marker hold_rc=0
+  hold_fields="$(python3 - "$entry" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+print(str(value.get("taskId") or ""))
+print(str(value.get("marker") or ""))
+PY
+)" || { cleanup_snapshot; return 1; }
+  hold_task="$(printf '%s\n' "$hold_fields" | sed -n '1p')"
+  hold_marker="$(printf '%s\n' "$hold_fields" | sed -n '2p')"
+  python3 "$SKILL_DIR/bin/task-hold.py" check \
+    --repo "$repo" --workspace "$workspace" --team "$team" --feature "$feature" \
+    --task "$hold_task" --marker "$hold_marker" || hold_rc=$?
+  if [ "$hold_rc" -ne 0 ]; then
+    cleanup_snapshot
+    return 1
+  fi
   if ! validation_output="$(python3 - "$entry" "$workspace" "$team" "$feature" \
       "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/project-management.config.md" \
       "$preset_file" "$pending" "$bodies" "$staged" "$current_snapshot" "$repo" "$SKILL_DIR" <<'PY'
@@ -106,6 +133,72 @@ def read_json_regular(path, label):
     except (OSError, UnicodeError, ValueError) as exc:
         fail("invalid %s: %s" % (label, exc))
 
+def safe_task_key(value):
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()[:32] or "task"
+    return "%s-%s" % (slug, hashlib.sha256(value.encode()).hexdigest()[:10])
+
+def task_hold_state(task_id):
+    """Read the one canonical registry and reject any ambiguous authority state."""
+    path = Path(workspace) / "task-holds.json"
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        fail("cannot inspect task hold registry: %s" % exc)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        fail("task hold registry must be a non-symlink regular file")
+    if before.st_size <= 0 or before.st_size > 64 * 1024 * 1024:
+        fail("task hold registry must contain 1..67108864 bytes")
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            fail("task hold registry changed while authorizing the artifact")
+        content = b""
+        while len(content) <= 64 * 1024 * 1024:
+            block = os.read(descriptor, min(1024 * 1024, 64 * 1024 * 1024 + 1 - len(content)))
+            if not block:
+                break
+            content += block
+        if len(content) > 64 * 1024 * 1024:
+            fail("task hold registry exceeds the 64 MiB safety limit")
+    except OSError as exc:
+        fail("cannot securely read task hold registry: %s" % exc)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        registry = json.loads(content.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        fail("invalid task hold registry: %s" % exc)
+    records = registry.get("tasks") if isinstance(registry, dict) else None
+    if (
+        not isinstance(registry, dict)
+        or registry.get("schemaVersion") != 1
+        or registry.get("featureId") != expected_feature
+        or not isinstance(records, dict)
+    ):
+        fail("task hold registry schema/feature scope mismatch")
+    known_states = {"blocked", "resume-review-pending", "manual-takeover", "resumed"}
+    seen = set()
+    for key, record in records.items():
+        if not isinstance(key, str) or not isinstance(record, dict):
+            fail("task hold registry contains a malformed task record")
+        record_task = record.get("taskId")
+        if not isinstance(record_task, str) or not record_task or record_task in seen:
+            fail("task hold registry contains a missing or duplicate task identity")
+        seen.add(record_task)
+        if key != safe_task_key(record_task) or record.get("taskKey") != key:
+            fail("task hold registry task identity/key mismatch")
+        if record.get("state") not in known_states:
+            fail("task hold registry contains an unknown task state")
+    record = records.get(safe_task_key(task_id))
+    if record is not None and record.get("taskId") != task_id:
+        fail("task hold registry entry does not match the artifact task")
+    return None if record is None else record.get("state")
+
 try:
     entry_real = os.path.realpath(entry)
     if os.path.commonpath([os.path.realpath(pending), entry_real]) != os.path.realpath(pending):
@@ -136,6 +229,7 @@ for key in ("taskId", "featureId"):
     value = str(data.get(key) or "")
     if not value or any(ord(char) < 32 for char in value):
         fail("invalid %s" % key)
+hold_state = task_hold_state(str(data["taskId"]))
 
 # The broker, not the producer, assigns the tracker delivery identity and stages
 # the bytes. Once assigned, every related field is mandatory and digest-bound.
@@ -185,6 +279,8 @@ target = data.get("targetStatus")
 if target is not None:
     if target not in statuses:
         fail("unknown target status")
+    if statuses[target].get("kind") == "blocked":
+        fail("outbox cannot request semantic Blocked; dependency propagation is dispatcher-only")
     if statuses[target].get("terminal"):
         fail("outbox cannot request a terminal transition; use the integrator transaction")
 expected_kind = {"review-request": "review", "review-findings": "working"}.get(data["marker"])
@@ -213,6 +309,31 @@ if len(task_ids) != len(tasks) or len(task_ids) != len(set(task_ids)):
 matches = [item for item in tasks if str(item.get("taskId")) == str(data["taskId"])]
 if len(matches) != 1:
     fail("task is absent from the authoritative feature/team scope")
+authoritative_task = matches[0]
+blocked_statuses = [
+    name for name, spec in statuses.items() if spec.get("kind") == "blocked"
+]
+if len(blocked_statuses) != 1:
+    fail("status board must define exactly one semantic blocked task status")
+if authoritative_task.get("status") == blocked_statuses[0]:
+    fail("task is authoritatively Blocked; every agent publication is stopped")
+raw_ignored = os.environ.get("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON")
+try:
+    ignored_labels = json.loads(raw_ignored if raw_ignored is not None else '["human-work"]')
+except ValueError:
+    fail("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON is not valid JSON")
+if not isinstance(ignored_labels, list) or any(
+    not isinstance(label, str) or not label.strip() for label in ignored_labels
+):
+    fail("automation ignoredTaskLabels policy must be an array of non-empty strings")
+ignored = {label.strip().casefold() for label in ignored_labels}
+if len(ignored) != len(ignored_labels):
+    fail("automation ignoredTaskLabels policy contains duplicate labels")
+labels = authoritative_task.get("labels") or []
+if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+    fail("authoritative task labels are malformed")
+if ignored.intersection(label.strip().casefold() for label in labels):
+    fail("task is labeled for human work; every agent publication is stopped")
 
 protocol = {}
 if os.path.isfile(preset) and not os.path.islink(preset):
@@ -285,6 +406,23 @@ else:
         for name, value in expected.items():
             if execution.get(name) != value:
                 fail("producer %s does not match the canonical task execution" % name)
+
+# Blocked and manual-takeover stop every agent publication. During the narrow
+# human-resume review barrier, only authenticated, comment-only gate verdicts
+# needed to resolve that barrier may pass; ordinary work/review artifacts and
+# every state transition remain stopped.
+if hold_state in {"blocked", "manual-takeover"}:
+    fail("task is held (%s); agent artifact publication is stopped" % hold_state)
+if hold_state == "resume-review-pending":
+    allowed = {"resume-review", "resume-plan", "design-approved", "design-pushback"}
+    if data["marker"] not in allowed or target is not None:
+        fail("resume-review-pending permits only comment-only resume barrier gate markers")
+    if (
+        not gate_owned
+        or verified_capability is None
+        or verified_capability.get("executionKind") != "gate"
+    ):
+        fail("resume barrier marker requires an authenticated gate-role capability")
 PY
   )"; then
     [ -z "$validation_output" ] || printf '%s\n' "$validation_output" >&2
@@ -569,6 +707,20 @@ PY
     continue
   fi
 
+  # The entry may have waited for its lock while the PM agent established a
+  # hold. Re-export and re-read the canonical hold registry at the last useful
+  # boundary before broker-owned staging writes begin.
+  authority_status=0
+  refresh_authority "$entry" || authority_status=$?
+  if [ "$authority_status" -eq 75 ]; then
+    stop_for_authority_outage "$owner_file" "$lock"
+  elif [ "$authority_status" -ne 0 ]; then
+    cleanup_snapshot
+    rm -f "$owner_file"; rmdir "$lock" 2>/dev/null || true
+    reject_entry "$entry"
+    if [ -n "$only" ]; then exit 1; fi
+    continue
+  fi
   if ! delivery="$(broker_stage "$entry")"; then
     rm -f "$owner_file"; rmdir "$lock" 2>/dev/null || true
     reject_entry "$entry"
@@ -601,6 +753,22 @@ PY
         publish_ok=no
       fi
     fi
+    [ "$publish_ok" = yes ] && prepare_publish_body "$entry" "$marker" "$task" "$delivery" "$staged_body" || publish_ok=no
+    if [ "$publish_ok" = yes ]; then
+      # Body preparation can run validation tooling and build a review package;
+      # do not let an intervening Blocked move race the actual publication.
+      cleanup_snapshot
+      authority_status=0
+      refresh_authority "$entry" || authority_status=$?
+      if [ "$authority_status" -eq 75 ]; then
+        stop_for_authority_outage "$owner_file" "$lock"
+      elif [ "$authority_status" -ne 0 ]; then
+        publish_ok=no
+      fi
+    fi
+    # Rebind/compare once more against that last fresh snapshot. The final
+    # authority refresh is not useful unless the exact publish bytes are also
+    # proven unchanged before comment-once.
     [ "$publish_ok" = yes ] && prepare_publish_body "$entry" "$marker" "$task" "$delivery" "$staged_body" || publish_ok=no
     if [ "$publish_ok" != yes ]; then
       cleanup_snapshot
@@ -641,6 +809,20 @@ PY
     phase=transitioned
   fi
   if [ "$phase" != "published" ]; then
+    # The event is part of durable artifact publication too. A hold appearing
+    # after a tracker write stops this pass before any further agent evidence is
+    # emitted; the tracker operation itself remains idempotent on a later retry.
+    authority_status=0
+    refresh_authority "$entry" || authority_status=$?
+    if [ "$authority_status" -eq 75 ]; then
+      stop_for_authority_outage "$owner_file" "$lock"
+    elif [ "$authority_status" -ne 0 ]; then
+      cleanup_snapshot
+      rm -f "$owner_file"; rmdir "$lock" 2>/dev/null || true
+      reject_entry "$entry"
+      if [ -n "$only" ]; then exit 1; fi
+      continue
+    fi
     body="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("publishBodyPath") or d["stagedBodyPath"])' "$entry")"
     python3 "$SKILL_DIR/bin/runtime-state.py" emit --workspace "$workspace" --team "$team" \
       --feature "$feature" --task "$task" --attempt "$attempt" --actor "$actor" \
@@ -652,6 +834,10 @@ p=sys.argv[1]; d=json.load(open(p)); d['phase']='published'
 t=p+'.tmp'; open(t,'w').write(json.dumps(d, indent=2)+'\n'); os.replace(t,p)
 PY
   fi
+  # Workspace receipts are not authorization. Bind the exact successful
+  # tracker publication into the protected external broker ledger first.
+  python3 "$SKILL_DIR/bin/broker_evidence.py" \
+    --repo "$repo" --workspace "$workspace" --entry "$entry" >/dev/null
   destination="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "outbox/done/$id.json")"
   [ ! -f "$entry" ] || mv "$entry" "$destination"
   rm -f "$owner_file"

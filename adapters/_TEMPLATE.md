@@ -72,7 +72,7 @@ MCP tool / CLI command / file edit.
 | Create `[task]` under a feature | <...> |
 | Read a `[task]` | <...> |
 | List `[tasks]` in a feature | <...> |
-| Set `[task]` status | <...> |
+| Set `[task]` status | <...; document the human project-management action for outbound `[Blocked]`, while the deterministic backend must reject that outbound mutation> |
 | Set `[feature]` status | <...> |
 | Add a comment to a `[task]` | <...> |
 | Add a comment once by delivery id | <how `comment-once` finds the exact `delivery-id:` token before creating a comment> |
@@ -127,7 +127,9 @@ page and emit `{adapter, featureId, exportedAt, tasks}`. `featureId` must equal
 the requested identifier exactly. `tasks` must have unique, non-empty string
 `taskId` values and normalized `title`, generic `status`, raw status,
 `assignee`, `description`, `blockedBy`, `labels`, `updatedAt`, `revision`, and
-`comments`. `scan` must exhaust the explicitly configured board scope and emit
+`comments`. When the tool exposes attachments, also emit stable normalized
+attachment metadata so resume review can detect additions, removals, and
+changes. `scan` must exhaust the explicitly configured board scope and emit
 schema-v1 `{adapter, scannedAt, statuses, items, orphans}` records; every item
 uses the same normalized fields plus an exact `featureId`. Never silently omit
 out-of-scope records from an allegedly exhaustive feature export—reject the
@@ -140,6 +142,23 @@ For scans, task identities are unique across the complete snapshot (not merely
 within one feature). If the tool exposes a first-class dependency endpoint,
 paginate it for every returned task; an unavailable/unsupported/unauthorized
 endpoint is an andon, not an empty `blockedBy` fallback.
+
+The deterministic status backend may enter `[Blocked]` only through the board's
+configured authority and must reject every outbound `[Blocked]` transition.
+Only the tool's human-operated surface may perform that move. For a locally held
+task, a human return to queued begins the full communication-diff resume
+barrier; direct movement to a working/review status is manual takeover. `[dependency-hold]`,
+`[resume-review]`, and `[resume-plan]` comments are acted on only when the local
+broker has a matching published launched-role capability receipt—tracker
+authorship or copied marker text is never enough.
+
+Document the tool-side workflow ACL or verified transition-provenance mechanism
+that restricts outbound Blocked moves to human principals and denies every
+automation/service identity. A normalized snapshot alone cannot prove the
+actor; adapters without this control must not claim enforceable automatic human
+resume and must keep autonomous portfolio automation disabled. Also document
+label handling: `human-work` prevents new claims/launches
+and stops/fences matching in-flight work on reconciliation.
 
 Each comment must expose a stable `id`, `body`, author, and sortable `revision`;
 remote tools also expose `createdAt` and `updatedAt`. A file adapter may use

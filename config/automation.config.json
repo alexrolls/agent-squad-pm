@@ -9,7 +9,19 @@
   "maxFeaturesPerPass": 2,
   "requireAgentSandbox": true,
   "requireSingleTrackerWriter": true,
-  "scanStatusKinds": ["queued", "blocked"],
+  "observeStatusKinds": ["queued", "blocked"],
+  "launchStatusKinds": ["queued"],
+  "blockedTaskPolicy": {
+    "scope": "task",
+    "exitAuthority": "human",
+    "automaticResume": false,
+    "resumeFromKind": "queued",
+    "dependentPropagation": "lead-confirmed-just-in-time",
+    "continueIndependentWork": true,
+    "refreshAllCommunication": true,
+    "freshAttemptOnResume": true
+  },
+  "ignoredTaskLabels": ["human-work"],
   "reconcileRegisteredRuns": true,
   "baseRef": "main",
   "branchPrefix": "factory-",
@@ -22,7 +34,7 @@
     "deep-infra",
     "deep-security"
   ],
-  "requireMetadataOptIn": true,
+  "requireMetadataOptIn": false,
   "metadata": {
     "optInKey": "automation",
     "teamPresetKey": "team-preset"

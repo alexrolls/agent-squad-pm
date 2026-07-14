@@ -17,6 +17,15 @@ read_key() {
   printf '%s' "$value"
 }
 
+# Broker authorization must use the protected hold authority even when this
+# script is invoked directly rather than through the PM supervisor.
+if [ -z "${STARTUP_FACTORY_LIFECYCLE_STATE_ROOT:-}" ]; then
+  configured_lifecycle_root="$(read_key BROKER_LIFECYCLE_ROOT)"
+  if [ -n "$configured_lifecycle_root" ]; then
+    export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$configured_lifecycle_root"
+  fi
+fi
+
 git_unprivileged() {
   local args=(-i "PATH=${PATH:-/usr/bin:/bin}" "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_NOSYSTEM=1")
   [ -z "${TMPDIR-}" ] || args+=("TMPDIR=$TMPDIR")
@@ -100,8 +109,148 @@ for raw in sys.argv[2:]:
         raise SystemExit("finalize-integrations: broker directory escapes workspace")
 PY
 
+# A task hold is authorization state, not an advisory flag. Every mutating
+# broker boundary re-reads this single canonical registry. Missing means no
+# holds have ever been recorded; every malformed, redirected, or mismatched
+# registry fails closed.
+assert_task_not_held() {
+  local protected_rc=0
+  python3 "$SKILL_DIR/bin/task-hold.py" check \
+    --repo "$repo" --workspace "$workspace" --team "$team" --feature "$feature" \
+    --task "$1" || protected_rc=$?
+  [ "$protected_rc" -eq 0 ] || die "task $1 is held by protected Blocked authority; integration/finalization is stopped"
+  python3 - "$workspace" "$feature" "$1" <<'PY'
+import hashlib,json,os,re,stat,sys
+from pathlib import Path
+workspace,feature,task=sys.argv[1:]
+path=Path(workspace)/"task-holds.json"
+def fail(message): raise SystemExit("finalize-integrations: "+message)
+def key(value):
+    slug=re.sub(r"[^a-zA-Z0-9]+","-",value).strip("-").lower()[:32] or "task"
+    return "%s-%s"%(slug,hashlib.sha256(value.encode()).hexdigest()[:10])
+try: before=os.lstat(path)
+except FileNotFoundError: raise SystemExit(0)
+except OSError as exc: fail("cannot inspect task hold registry: %s"%exc)
+if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+    fail("task hold registry must be a non-symlink regular file")
+if before.st_size<=0 or before.st_size>64*1024*1024:
+    fail("task hold registry must contain 1..67108864 bytes")
+fd=None
+try:
+    fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)); opened=os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino):
+        fail("task hold registry changed during authorization")
+    content=b""
+    while len(content)<=64*1024*1024:
+        block=os.read(fd,min(1024*1024,64*1024*1024+1-len(content)))
+        if not block: break
+        content+=block
+    if len(content)>64*1024*1024: fail("task hold registry exceeds the 64 MiB safety limit")
+except OSError as exc: fail("cannot securely read task hold registry: %s"%exc)
+finally:
+    if fd is not None: os.close(fd)
+try: data=json.loads(content.decode("utf-8"))
+except (UnicodeError,ValueError) as exc: fail("invalid task hold registry: %s"%exc)
+records=data.get("tasks") if isinstance(data,dict) else None
+if not isinstance(data,dict) or data.get("schemaVersion")!=1 or data.get("featureId")!=feature or not isinstance(records,dict):
+    fail("task hold registry schema/feature scope mismatch")
+states={"blocked","resume-review-pending","manual-takeover","resumed"}; seen=set()
+for record_key,record in records.items():
+    if not isinstance(record_key,str) or not isinstance(record,dict): fail("malformed task hold record")
+    record_task=record.get("taskId")
+    if not isinstance(record_task,str) or not record_task or record_task in seen:
+        fail("task hold registry has a missing or duplicate task identity")
+    seen.add(record_task)
+    if record_key!=key(record_task) or record.get("taskKey")!=record_key:
+        fail("task hold registry task identity/key mismatch")
+    if record.get("state") not in states: fail("task hold registry contains an unknown task state")
+record=records.get(key(task))
+if record is not None and record.get("taskId")!=task: fail("task hold registry entry/task mismatch")
+if record is not None and record.get("state") in {"blocked","resume-review-pending","manual-takeover"}:
+    fail("task %s is held (%s); integration/finalization is stopped"%(task,record.get("state")))
+PY
+}
+
+assert_tracker_task_review_authorized() {
+  local task="$1" fresh="$pm_dir/integration-write-snapshot.json"
+  [ ! -L "$fresh" ] || die "fresh integration-write snapshot path is a symlink"
+  [ ! -e "$fresh" ] || [ -f "$fresh" ] || die "fresh integration-write snapshot path is not a regular file"
+  if ! env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+    "$SKILL_DIR/bin/tracker-ops.sh" export "$feature" "$fresh" >/dev/null; then
+    die "fresh tracker export unavailable; tracker integration remains stopped"
+  fi
+  python3 - "$fresh" "$SKILL_DIR/config/statuses.config.json" "$feature" "$task" <<'PY'
+import json,os,stat,sys
+snapshot_raw,board_raw,feature,task=sys.argv[1:]
+def fail(message): raise SystemExit("finalize-integrations: "+message)
+def read_regular(path,label,limit):
+    try: before=os.lstat(path)
+    except OSError as exc: fail("%s unavailable: %s"%(label,exc))
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_size<=0 or before.st_size>limit:
+        fail("%s must be a bounded non-symlink regular file"%label)
+    fd=None
+    try:
+        fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)); opened=os.fstat(fd)
+        if (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino): fail("%s changed while reading"%label)
+        raw=b""
+        while len(raw)<=limit:
+            part=os.read(fd,min(1024*1024,limit+1-len(raw)))
+            if not part: break
+            raw+=part
+        if len(raw)>limit: fail("%s exceeds its safety limit"%label)
+    except OSError as exc: fail("cannot securely read %s: %s"%(label,exc))
+    finally:
+        if fd is not None: os.close(fd)
+    try: return json.loads(raw.decode("utf-8"))
+    except (UnicodeError,ValueError) as exc: fail("invalid %s: %s"%(label,exc))
+payload=read_regular(snapshot_raw,"fresh tracker snapshot",64*1024*1024)
+board=read_regular(board_raw,"status configuration",1024*1024)
+if not isinstance(payload,dict) or payload.get("featureId")!=feature:
+    fail("fresh tracker snapshot feature scope mismatch")
+tasks=payload.get("tasks")
+if not isinstance(tasks,list) or any(not isinstance(item,dict) for item in tasks):
+    fail("fresh tracker snapshot tasks are malformed")
+ids=[str(item.get("taskId") or "") for item in tasks]
+if any(not value for value in ids) or len(ids)!=len(set(ids)):
+    fail("fresh tracker snapshot task identities are missing or duplicated")
+matches=[item for item in tasks if str(item.get("taskId"))==task]
+if len(matches)!=1: fail("task is absent or duplicated in the fresh tracker snapshot")
+try: ignored_raw=json.loads(os.environ.get("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON", '["human-work"]'))
+except ValueError: fail("ignored-task label policy is not valid JSON")
+if not isinstance(ignored_raw,list) or any(not isinstance(item,str) or not item.strip() for item in ignored_raw):
+    fail("ignored-task label policy must be a JSON array of non-empty strings")
+if len({item.strip().casefold() for item in ignored_raw}) != len(ignored_raw):
+    fail("ignored-task label policy contains duplicate labels")
+labels=matches[0].get("labels") or []
+if not isinstance(labels,list) or any(not isinstance(item,str) for item in labels):
+    fail("fresh tracker task labels are malformed")
+if {item.strip().casefold() for item in ignored_raw}.intersection(item.strip().casefold() for item in labels):
+    fail("task is labeled for human work; tracker integration is stopped")
+try: review=[item["name"] for item in board["tasks"]["statuses"] if item.get("kind")=="review"]
+except (KeyError,TypeError): fail("status configuration has no semantic task statuses")
+if len(review)!=1: fail("status configuration must define exactly one semantic review status")
+if matches[0].get("status")!=review[0]:
+    fail("task %s is no longer in semantic review; tracker integration is stopped"%task)
+PY
+}
+
 authorize_preparation() {
-  local entry="$1" snapshot
+  local entry="$1" snapshot task
+  task="$(python3 - "$entry" <<'PY'
+import json,os,stat,sys
+path=sys.argv[1]
+try: mode=os.lstat(path).st_mode
+except OSError as exc: raise SystemExit("finalize-integrations: prepared transaction unavailable: %s"%exc)
+if os.path.islink(path) or not stat.S_ISREG(mode):
+    raise SystemExit("finalize-integrations: prepared transaction must be a non-symlink regular file")
+try: data=json.load(open(path))
+except (OSError,ValueError) as exc: raise SystemExit("finalize-integrations: invalid prepared transaction: %s"%exc)
+task=data.get("taskId") if isinstance(data,dict) else None
+if not isinstance(task,str) or not task: raise SystemExit("finalize-integrations: prepared transaction lacks taskId")
+print(task)
+PY
+)"
+  assert_task_not_held "$task"
   snapshot="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative pm/integration-authorization-snapshot.json)"
   [ ! -L "$snapshot" ] || die "authorization snapshot path is a symlink"
   "$SKILL_DIR/bin/tracker-ops.sh" export "$feature" "$snapshot" >/dev/null
@@ -120,6 +269,47 @@ def regular(path,label,maximum=8*1024*1024):
     try: mode=path.lstat().st_mode
     except OSError as exc: fail("%s unavailable: %s"%(label,exc))
     if path.is_symlink() or not stat.S_ISREG(mode) or path.stat().st_size>maximum: fail("unsafe %s"%label)
+def assert_unheld(task):
+    path=workspace/"task-holds.json"
+    try: before=path.lstat()
+    except FileNotFoundError: return
+    except OSError as exc: fail("cannot inspect task hold registry: %s"%exc)
+    if path.is_symlink() or not stat.S_ISREG(before.st_mode) or before.st_size<=0 or before.st_size>64*1024*1024:
+        fail("unsafe task hold registry")
+    fd=None
+    try:
+        fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)); opened=os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino):
+            fail("task hold registry changed during prepared authorization")
+        raw=b""
+        while len(raw)<=64*1024*1024:
+            part=os.read(fd,min(1024*1024,64*1024*1024+1-len(raw)))
+            if not part: break
+            raw+=part
+        if len(raw)>64*1024*1024: fail("task hold registry exceeds safety limit")
+    except OSError as exc: fail("cannot securely read task hold registry: %s"%exc)
+    finally:
+        if fd is not None: os.close(fd)
+    try: registry=json.loads(raw.decode("utf-8"))
+    except (UnicodeError,ValueError) as exc: fail("invalid task hold registry: %s"%exc)
+    records=registry.get("tasks") if isinstance(registry,dict) else None
+    if not isinstance(registry,dict) or registry.get("schemaVersion")!=1 or registry.get("featureId")!=feature or not isinstance(records,dict):
+        fail("task hold registry schema/feature scope mismatch")
+    def hold_key(value):
+        slug=re.sub(r"[^a-zA-Z0-9]+","-",value).strip("-").lower()[:32] or "task"
+        return "%s-%s"%(slug,hashlib.sha256(value.encode()).hexdigest()[:10])
+    states={"blocked","resume-review-pending","manual-takeover","resumed"}; seen=set()
+    for record_key,record in records.items():
+        if not isinstance(record_key,str) or not isinstance(record,dict): fail("malformed task hold record")
+        record_task=record.get("taskId")
+        if not isinstance(record_task,str) or not record_task or record_task in seen: fail("invalid task hold identity")
+        seen.add(record_task)
+        if record_key!=hold_key(record_task) or record.get("taskKey")!=record_key: fail("task hold identity/key mismatch")
+        if record.get("state") not in states: fail("unknown task hold state")
+    record=records.get(hold_key(task))
+    if record is not None and record.get("taskId")!=task: fail("task hold entry/task mismatch")
+    if record is not None and record.get("state") in {"blocked","resume-review-pending","manual-takeover"}:
+        fail("task %s is held (%s)"%(task,record.get("state")))
 regular(entry,"prepared transaction",1024*1024); regular(snapshot,"fresh tracker snapshot",8*1024*1024)
 prepared_dir=(workspace/"integrations"/".prepared").resolve()
 if entry.resolve().parent != prepared_dir: fail("prepared transaction escapes its broker queue")
@@ -172,6 +362,9 @@ actual={item.decode("utf-8","surrogateescape") for item in raw.split(b"\0") if i
 for marker in ("review-request","review-approval","architecture-approval"):
     if files(str(comments[positions[marker]].get("body") or ""),marker)!=actual: fail("[%s] Files evidence mismatch"%marker)
 snapshot_digest="sha256:"+hashlib.sha256(snapshot.read_bytes()).hexdigest()
+# This second read is intentionally adjacent to the authorization journal
+# write; the earlier shell check only fences the tracker export.
+assert_unheld(data["taskId"])
 data["phase"]="authorized"; data["authorizedAt"]=datetime.now(timezone.utc).isoformat(timespec="seconds")
 data["authorizationSnapshotSha256"]=snapshot_digest
 temp=str(entry)+".tmp.%s"%os.getpid(); fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
@@ -216,7 +409,7 @@ run_recovery_validation() {
 
 supersede_one() {
   local entry="$1" snapshot="$2" fields task role attempt commit worktree body txid phase key
-  fields="$(validate_entry "$entry")"
+  fields="$(validate_unheld_entry "$entry")"
   task="$(printf '%s\n' "$fields" | sed -n '1p')"; role="$(printf '%s\n' "$fields" | sed -n '2p')"
   attempt="$(printf '%s\n' "$fields" | sed -n '3p')"; commit="$(printf '%s\n' "$fields" | sed -n '4p')"
   worktree="$(printf '%s\n' "$fields" | sed -n '5p')"; body="$(printf '%s\n' "$fields" | sed -n '6p')"
@@ -233,6 +426,7 @@ supersede_one() {
   recovery="$recovery_dir/$key.json"
   pre_head="$(git_unprivileged -C "$repo" rev-parse "$team")"
   if [ ! -e "$recovery" ]; then
+    assert_task_not_held "$task"
     python3 - "$entry" "$snapshot" "$recovery" "$team" "$feature" "$task" "$txid" "$commit" "$pre_head" <<'PY'
 import hashlib,json,os,re,sys
 from datetime import datetime,timezone
@@ -288,6 +482,7 @@ PY
     revert_commit="$(git_unprivileged -C "$repo" log "$team" --format='%H' --grep="^Integration-Recovery: $recovery_id$" -n 1)"
   fi
   if [ -z "$revert_commit" ]; then
+    assert_task_not_held "$task"
     [ "$(git_unprivileged -C "$repo" rev-parse HEAD)" = "$pre_head" ] \
       || die "feature branch moved during late-invalidation recovery; manual rebase/recovery required"
     [ -z "$(git_unprivileged -C "$repo" status --porcelain -uall)" ] || die "feature checkout is dirty before recovery"
@@ -301,6 +496,10 @@ PY
       git_unprivileged -C "$repo" revert --abort >/dev/null 2>&1 || true
       die "late-invalidation revert failed project validation; recovery journal preserved"
     fi
+    if ! assert_task_not_held "$task"; then
+      git_unprivileged -C "$repo" revert --abort >/dev/null 2>&1 || true
+      die "task hold appeared during late-invalidation validation; revert aborted"
+    fi
     git_unprivileged -C "$repo" commit -m "revert: late findings for $task" -m "Task-Id: $task
 Supersedes-Integration: $txid
 Integration-Recovery: $recovery_id"
@@ -309,6 +508,7 @@ Integration-Recovery: $recovery_id"
   fi
   git_unprivileged -C "$repo" merge-base --is-ancestor "$revert_commit" "$team" \
     || die "recorded recovery commit is not on the feature branch"
+  assert_task_not_held "$task"
   python3 - "$recovery" "$recovery_id" "$revert_commit" <<'PY'
 import json,os,sys
 from datetime import datetime,timezone
@@ -330,6 +530,7 @@ if len(values)!=1: raise SystemExit("finalize-integrations: expected one working
 print(values[0])
 PY
 )"
+  assert_task_not_held "$task"
   if [ "$phase" = "completed" ]; then
     STARTUP_FACTORY_INTEGRATION_BROKER=1 "$SKILL_DIR/bin/tracker-ops.sh" task-reopen "$task" "$working_status"
   else
@@ -342,9 +543,11 @@ token="Recovery-Id: "+sys.argv[3]
 raise SystemExit(0 if any(token in str(c.get("body") or "") for c in task.get("comments") or []) else 1)
 PY
   then
+    assert_task_not_held "$task"
     printf '[integration-superseded]\nRecovery-Id: %s\nOriginal integration: %s\nRevert commit: %s\nLate review findings invalidated the merge. History is preserved; rework and a new review are required.\n\n— dispatcher\n' \
       "$recovery_id" "$commit" "$revert_commit" | "$SKILL_DIR/bin/tracker-ops.sh" comment "$task" -
   fi
+  assert_task_not_held "$task"
   python3 - "$recovery" "$recovery_id" <<'PY'
 import json,os,sys
 from datetime import datetime,timezone
@@ -797,6 +1000,14 @@ for value in (
 PY
 }
 
+validate_unheld_entry() {
+  local fields task
+  fields="$(validate_entry "$@")"
+  task="$(printf '%s\n' "$fields" | sed -n '1p')"
+  assert_task_not_held "$task"
+  printf '%s\n' "$fields"
+}
+
 advance_phase() {
   local entry="$1" txid="$2" expected="$3" next="$4"
   python3 - "$entry" "$txid" "$expected" "$next" <<'PY'
@@ -859,7 +1070,7 @@ PY
 
 finalize_one() {
   local entry="$1" snapshot="$2" fields task role attempt commit worktree body txid phase
-  fields="$(validate_entry "$entry" "$snapshot")"
+  fields="$(validate_unheld_entry "$entry" "$snapshot")"
   task="$(printf '%s\n' "$fields" | sed -n '1p')"
   role="$(printf '%s\n' "$fields" | sed -n '2p')"
   attempt="$(printf '%s\n' "$fields" | sed -n '3p')"
@@ -887,28 +1098,34 @@ finalize_one() {
   printf '%s\n' "$$" > "$lock/owner.pid"
 
   # Revalidate after taking the transaction lock; the producer is untrusted.
-  fields="$(validate_entry "$entry" "$snapshot")"
+  fields="$(validate_unheld_entry "$entry" "$snapshot")"
   phase="$(printf '%s\n' "$fields" | sed -n '8p')"
   if [ "$phase" != "completed" ]; then
+    assert_task_not_held "$task"
+    assert_tracker_task_review_authorized "$task"
     "$SKILL_DIR/bin/tracker-ops.sh" integrate "$task" "$commit" "$body"
   fi
   if [ "$phase" = "awaiting-tracker" ]; then
+    assert_task_not_held "$task"
     advance_phase "$entry" "$txid" awaiting-tracker tracker-finalized
     phase=tracker-finalized
   fi
   if [ "$phase" != "completed" ]; then
     if ! event_exists "$txid" "$task" "$attempt" "$body"; then
+      assert_task_not_held "$task"
       python3 "$SKILL_DIR/bin/runtime-state.py" emit --workspace "$workspace" --team "$team" \
         --feature "$feature" --task "$task" --attempt "$attempt" --actor dispatcher \
         --type task.integrated --stage integrated \
         --summary "tracker finalized for integration transaction $txid" --artifact "$body" >/dev/null
     fi
     if [ "$phase" = "tracker-finalized" ]; then
+      assert_task_not_held "$task"
       advance_phase "$entry" "$txid" tracker-finalized event-emitted
       phase=event-emitted
     fi
   fi
   if [ "$phase" = "event-emitted" ]; then
+    assert_task_not_held "$task"
     if [ -e "$worktree" ]; then
       [ -z "$(git_unprivileged -C "$worktree" status --porcelain -uall)" ] \
         || die "task worktree became dirty before cleanup: $worktree"
@@ -919,6 +1136,7 @@ finalize_one() {
     if worktree_registered "$worktree"; then
       die "task worktree is still registered after cleanup: $worktree"
     fi
+    assert_task_not_held "$task"
     advance_phase "$entry" "$txid" event-emitted completed
     phase=completed
   fi
@@ -935,7 +1153,7 @@ done
 
 if [ "$validate_only" = "yes" ]; then
   [ "${#entries[@]}" -eq 1 ] || die "--validate-only requires exactly one transaction"
-  validate_entry "${entries[0]}"
+  validate_unheld_entry "${entries[0]}"
   exit 0
 fi
 
@@ -945,13 +1163,13 @@ snapshot="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --wor
 [ ! -L "$snapshot" ] || die "broker snapshot path is a symlink"
 [ ! -e "$snapshot" ] || [ -f "$snapshot" ] || die "broker snapshot path is not a regular file"
 "$SKILL_DIR/bin/tracker-ops.sh" export "$feature" "$snapshot" >/dev/null
-for entry in "${entries[@]}"; do validate_entry "$entry" >/dev/null; done
+for entry in "${entries[@]}"; do validate_unheld_entry "$entry" >/dev/null; done
 authorized_entries=()
 for entry in "${entries[@]}"; do
   if late_invalidation "$entry" "$snapshot"; then
     supersede_one "$entry" "$snapshot"
   else
-    validate_entry "$entry" "$snapshot" >/dev/null
+    validate_unheld_entry "$entry" "$snapshot" >/dev/null
     authorized_entries+=("$entry")
   fi
 done

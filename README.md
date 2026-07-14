@@ -7,14 +7,16 @@ delivery.** Connect the project-management tool your team already loves—Linear
 Jira, GitHub Issues, local Markdown, or your own adapter—and make it the durable
 control plane for a cross-functional team of AI agents.
 
-Put an opted-in `[task]` in a queued or blocked state—Todo or Blocked on the
-shipped Linear mapping. When automation is enabled and scheduled, the
-deterministic PM supervisor checks the board every three minutes by default,
-routes work by its explicit team preset (or your configured default), and drives
-it through architecture, implementation, review, QA, and integration. When your
-release policy and exact approval allow it, a separate credential-isolated
-executor deploys the reviewed immutable artifact, verifies the target, and only
-then closes the parent `[feature]`.
+Put a `[task]` in Todo—the shipped Linear mapping of the generic queued state.
+When automation is enabled and scheduled, the deterministic PM supervisor
+checks the board every three minutes by default, leaves anything labeled
+`human-work` to people, routes every other queued task by its explicit team
+preset (or your configured default), and drives it through architecture,
+implementation, review, QA, and integration. It also observes Blocked work as a
+human-controlled safety lock: the matching task workers stop, while independent
+Todo work continues. When your release policy and exact approval allow it, a
+separate credential-isolated executor deploys the reviewed immutable artifact,
+verifies the target, and only then closes the parent `[feature]`.
 
 Bring your own models, repository, stack, tracker, and infrastructure.
 Provider-neutral structured hooks can target production in any cloud,
@@ -35,7 +37,8 @@ production authority.
 ![Startup Factory demo](exports/execmatchai-issues-57s-70s.gif)
 
 ```text
-Todo / Blocked -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
+Todo -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
+                       Blocked -> stop only this task -> human unlock -> review changes -> fresh attempt
 ```
 
 > **Safe by default:** board automation and production delivery both ship
@@ -107,7 +110,8 @@ authentication.
 | **Keep quality gates explicit** | Architecture approval precedes implementation. Review uses an exact package, QA re-runs required checks, and the integrator runs your build, test, and lint commands before merging. |
 | **Recover instead of restarting** | Immutable task packets, durable events, checkpoint branches, an idempotent outbox, and attempt-aware relaunches make interrupted work inspectable and recoverable. |
 | **Keep your stack and your tracker** | The same workflow runs across languages, frameworks, LLMs, and project-management tools. Start offline with Markdown and switch adapters without rewriting the process. |
-| **Turn the board into a safe delivery queue** | A deterministic cron/service pass discovers semantic queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only when action is required. |
+| **Turn the board into a safe delivery queue** | A deterministic cron/service pass observes queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only for eligible queued tasks. |
+| **Pause one task without stopping the factory** | On the next scan, `[Blocked]` immediately fences only the matching task. Independent Todo work and other features continue; only a human can unlock it. |
 | **Keep dangerous authority out of agents** | One deny/approval/allow contract governs every role. The code gate blocks dangerous privileged release hooks and plans; your required OS sandbox and least-privilege identities enforce ordinary-agent filesystem, network, process, and IAM boundaries. |
 
 ## Full transparency in your tracker
@@ -135,7 +139,7 @@ Use as much of the system as your project needs:
 | **2. Governed squad** | A lead coordinates, an architect gates design, specialists implement, QA verifies, and an integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
 | **3. Task-driven runtime** | Event-driven dispatch, bounded parallel waves, model routing, exact review packages, durable handoffs, and recoverable integration. | `bin/dispatch.sh`, `bin/runtime-state.py`, `bin/integrate-task.sh` |
 | **4. Preset teams** | Five ready-made rosters for full-stack, backend, frontend, security, and infrastructure work, all resolved through the same team launcher. | `teams/`, `bin/launch-team.sh` |
-| **5. Portfolio automation** | One bounded cron/service pass scans generic queued/blocked statuses, bootstraps isolated feature runs, and reconciles comments, blockers, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
+| **5. Portfolio automation** | One bounded cron/service pass observes generic queued/blocked statuses, bootstraps only queued feature runs, and reconciles comments, task holds, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
 | **6. Safe production delivery** | Structured provider-neutral plan/apply/status/verify hooks, hard guardrails, isolated credentials, crash recovery, and bounded rollback. | `bin/release-feature.py`, `bin/policy-check.py`, `reference/deployment.md` |
 
 Everything is inspectable: plain Markdown, shell scripts, small Python utilities,
@@ -203,11 +207,21 @@ when you're ready—via MCP, REST, or the `gh` CLI, depending on the adapter.
 
 **For cron/service automation:** use one scheduler instance and a scriptable,
 explicitly scoped adapter (REST/CLI/files; a cron process cannot invoke an MCP
-client). The queued/blocked scan discovers new work; registered runs are
-re-authorized on every pass through an exhaustive per-feature export. Production
+client). The scan observes queued and Blocked work, but only queued work
+bootstraps or launches. Registered runs are re-authorized on every pass through
+an exhaustive per-feature export. Production
 delivery additionally needs protected external structured hooks/config/state,
 an external identity/isolation attestor for automatic mode, and a separate
 short-lived credential environment that ordinary agents never inherit.
+
+The human-only exit from `[Blocked]` also needs an operator-owned control in the
+project-management tool: restrict outbound Blocked transitions to human
+principals and deny them to every scheduler, bot, and service identity. Startup
+Factory refuses its own outbound writes, but normalized adapters do not prove
+who performed an external transition. If the tool cannot enforce status-level
+permissions or provide verified transition provenance, treat the human-only
+claim as an operational policy and keep autonomous portfolio automation disabled
+for that tool.
 
 ---
 
@@ -447,7 +461,9 @@ instead copied to operator-protected storage outside agent mounts.
 `config/statuses.config.json` defines both state machines: every status, legal
 `transitions`, owner, and per-tracker `tool` mapping. The shipped task flow is
 `Planned → Active → Review → Ready to deploy`, with `Blocked` as the
-parking/rework state. The shipped feature flow is
+task-scoped human-held state. Its listed outbound transitions normalize human
+project-management actions; Startup Factory itself cannot author them. The
+shipped feature flow is
 `Planned → Active → Resolved`. Add, rename, or remove
 statuses by editing the JSON, then run `bin/launch-team.sh validate-board` to
 check the structural graph, reachability, owners, and marker roles. Separately
@@ -476,7 +492,7 @@ integrator learns about your stack.
 
 | File | Purpose | Safe default |
 |---|---|---|
-| `config/automation.config.json` | Scan cadence, queued/blocked semantic kinds, run cap, branch/worktree root, allowed/default team presets | `enabled: false` |
+| `config/automation.config.json` | Scan cadence, separate observation/launch kinds, task-hold policy, run cap, branch/worktree root, allowed/default team presets | `enabled: false` |
 | `config/deployment.config.json` | Disabled template for protected external target/state paths, trusted base, code/hook pins, four positive environment boundaries, attestation/approval hooks, and timeouts | `enabled: false`, `approval-required` |
 | `config/guardrails.config.json` | Project additions to the built-in immutable deny policy and automatic cost/change limits | Zero cost delta; cannot weaken built-ins |
 
@@ -497,14 +513,17 @@ protected external storage before enabling it. The scheduler reads these keys:
 | `maxFeaturesPerPass` | `2` | Maximum new feature runs bootstrapped in one pass, from 1–1000; existing runs reconcile first. The omission fallback is 1. |
 | `requireAgentSandbox` | `true` | Mandatory invariant; `false` or missing is rejected. |
 | `requireSingleTrackerWriter` | `true` | Mandatory invariant requiring deterministic broker writes. |
-| `scanStatusKinds` | `queued`, `blocked` | Adapter-neutral task kinds to discover. The shipped Linear mapping is Todo and Blocked. |
+| `observeStatusKinds` | `queued`, `blocked` | Exact adapter-neutral kinds to observe. The shipped Linear mapping is Todo and Blocked; observation is not launch authority. |
+| `launchStatusKinds` | `queued` | The only kind eligible for a new automatic launch. `[Blocked]` is observed solely to enforce its hold. |
+| `blockedTaskPolicy` | task-scoped, human exit, no automatic resume | Fixed fail-closed policy: continue independent work, refresh all communication, propagate only lead-confirmed direct dependencies, and use a fresh attempt after human resume. Missing, unknown, or weaker values are rejected. |
+| `ignoredTaskLabels` | `human-work` | Case-insensitive tracker labels that reserve a task for people. New matching tasks are never claimed or launched; if the label appears mid-flight, the next reconcile stops/fences that task while independent work continues. Removing it restores normal status-specific handling on the next scan. |
 | `reconcileRegisteredRuns` | `true` | Re-export and re-authorize every unfinished registered feature on each pass. |
 | `baseRef` | `main` | Feature-run starting ref whose resolved base commit is recorded immutably. Production provenance is anchored separately by deployment `trustedBaseRef`. |
 | `branchPrefix` | `factory-` | Prefix for generated feature branches. External IDs are hashed before use in paths or refs. |
 | `workspaceRoot` | `.teamwork/pm-agent` | Repository-relative supervisor workspace and registry root. |
 | `defaultTeamPreset` | `full-stack` | Team used when eligible metadata contains no explicit preset. |
 | `allowedTeamPresets` | all five shipped presets | Exact routing allowlist. Unknown or changed routing pauses the run. |
-| `requireMetadataOptIn` | `true` | Require an explicit latest `automation: enabled` marker before launch. |
+| `requireMetadataOptIn` | `false` | When `false`, every non-ignored queued task is eligible by default. Set `true` to additionally require an explicit latest `automation: enabled` marker. |
 | `metadata.optInKey` | `automation` | Adapter-neutral description/comment key for enablement. |
 | `metadata.teamPresetKey` | `team-preset` | Adapter-neutral description/comment key for specialist-team routing. |
 
@@ -681,13 +700,21 @@ Just talk to your agent in the generic vocabulary:
 | `validate-board [config-path]` | Validate status structure, initial/terminal rules, transitions, reachability, owners, and marker-role references |
 | `status <team>` | Show authenticated process state plus last heartbeat when protected lifecycle authority is enabled; otherwise report that markers are non-authoritative |
 | `stop <team>` | Stop the managed team through authenticated lifecycle identities; unmanaged mode refuses to signal |
+| `stop-task <team> <taskId>` | Send bounded TERM→KILL to the authenticated launcher-managed process group/session for one [task], then revoke that [task]'s active publication capabilities; sibling workers and gate roles continue |
+
+Process-group stopping is lifecycle control, not a complete containment
+boundary. A subprocess that deliberately escapes with `setsid`, double-forking,
+or an external supervisor may outlive the launcher. Autonomous deployments must
+therefore use an OS sandbox, cgroup/container, service job, or equivalent
+kill-on-close boundary that contains every descendant. Broker hold checks still
+reject output from an escaped stale process.
 
 **`bin/dispatch.sh` — the event loop:**
 
 | Command | Purpose |
 |---|---|
-| `dispatch.sh <team> <featureId> --once [--dry-run] [--unblock=auto\|suggest\|off]` | One deterministic read-and-act pass |
-| `dispatch.sh <team> <featureId> --watch [--unblock=…]` | Wake on runtime events with `POLL_INTERVAL_SECONDS` as a fallback — run in a persistent shell (tmux/nohup); **you own this process** |
+| `dispatch.sh <team> <featureId> --once [--dry-run]` | One deterministic read-and-act pass |
+| `dispatch.sh <team> <featureId> --watch` | Wake on runtime events with `POLL_INTERVAL_SECONDS` as a fallback — run in a persistent shell (tmux/nohup); **you own this process** |
 
 > **CLI dispatch requires scriptable tracker access.** Linear and Jira default to MCP; set `LINEAR_ACCESS=rest` or `JIRA_ACCESS=rest` in `config/project-management.config.md` before running `dispatch.sh --watch`. Harness mode (`launch-team.sh compose`) supports MCP natively.
 
@@ -695,7 +722,7 @@ Just talk to your agent in the generic vocabulary:
 
 | Command | Purpose |
 |---|---|
-| `state <taskId> <Status>` | Make and verify a legal generic `[task]` status write. |
+| `state <taskId> <Status>` | Make and verify a legal generic `[task]` status write. Startup Factory rejects every outbound `[Blocked]` transition; a human must perform that move in the project-management tool. |
 | `feature-state <featureId> <Status>` | Make and verify a legal generic `[feature]` status write. |
 | `feature-reopen <featureId> <Status>` | PM-supervisor-only terminal-to-queued reopen for a new delivery generation. |
 | `task-reopen <taskId> <Status>` | Integration-broker-only terminal-to-working reopen after late valid findings. |
@@ -722,9 +749,10 @@ worktrees → specialists checkpoint their task branches → the **Senior QA
 Engineer is the final review gate** over an exact review package → the
 integrator validates and merges one task at a time, then idempotently marks it
 `[Ready to deploy]`. Runtime events trigger PM progress and feature-digest
-upserts. The lead detects stuck/conflicting/crashed agents and unblocks them —
+upserts. The lead detects stuck/conflicting/crashed agents and recovers them —
 message → decide → reassign → relaunch — escalating to you only as a last
-resort.
+resort. A tracker `[Blocked]` state is different: it is a human lock that no
+Startup Factory role can remove.
 
 ## Automate the board and production delivery
 
@@ -746,22 +774,75 @@ On every pass the supervisor:
 
 1. authenticates the protected installation, configs, Python, Git, sandbox
    runner, lifecycle authority, tracker scope, and single-writer mode;
-2. takes the single-host lease and discovers only configured semantic
-   `queued`/`blocked` work;
+2. takes the single-host lease and observes the configured semantic `queued`
+   and `blocked` work, while granting launch eligibility only to `queued`;
 3. exhaustively re-exports every unfinished registered `[feature]` so a local
    registry entry never becomes standing authority;
-4. validates opt-in and exact preset routing, then bootstraps at most
-   `maxFeaturesPerPass` new isolated feature runs;
+4. excludes new `human-work` tasks and stops/fences any matching in-flight task,
+   enforces task-scoped holds, validates any
+   configured opt-in and exact preset routing, then bootstraps queued work for
+   at most `maxFeaturesPerPass` new isolated feature runs;
 5. launches persistent gate roles, invokes one deterministic dispatch pass,
-   reconciles blockers/comments/recovery, and starts fresh task-scoped workers
-   only when the state machine calls for them; and
+   reconciles holds/comments/recovery, and starts fresh task-scoped workers only
+   when the state machine calls for them; and
 6. hands an all-integrated feature to the protected release executor, or leaves
    it visibly awaiting delivery when deployment is disabled or authorization is
    incomplete.
 
-Malformed state, an incomplete export, lost opt-in, conflicting metadata,
-preset drift, an expired capability, or a failed read-back pauses/stops work; it
-never falls through to a guessed action.
+Malformed state, an incomplete export, a newly human-owned task, lost required
+opt-in, conflicting metadata,
+preset drift, an expired capability, or a failed read-back pauses/stops the
+affected run or pass; it never falls through to a guessed action. A valid
+`[Blocked]` state is not such a failure: it fences that [task] and the portfolio
+continues.
+
+### `[Blocked]` is a human-controlled task lock
+
+When a dispatcher or portfolio reconcile observes a [task] in `[Blocked]`, it
+creates a durable task hold and captures the complete communication snapshot.
+If the [task] is in flight, it stops the workers bound to that [task] and revokes
+their active publication capabilities. The team, PM loop, gate roles, sibling [tasks], and other
+[features] continue. A held [task] cannot publish, integrate, or release; its
+parent [feature] waits because not every [task] is integrated, while unrelated
+[features] remain eligible for delivery.
+
+Dependencies remain narrow and explicit:
+
+- A queued [task] with an unfinished non-Blocked `blockedBy` dependency remains
+  unclaimable. Independent queued [tasks] continue.
+- A queued, `[Active]`, or `[Review]` [task] whose adapter-normalized,
+  first-class `blockedBy` edge points directly to a currently `[Blocked]` [task]
+  enters dependency-impact review. Titles, descriptions, comments, and semantic
+  similarity never create dependency edges.
+- The team-lead publishes `[dependency-hold]` with the current graph digest and
+  a verdict of `blocked`, `partially-actionable`, or `independent`. Only an
+  authenticated `blocked` verdict that still matches a fresh graph authorizes
+  the broker to move that dependent into `[Blocked]`; the other verdicts give
+  the exact graph-bound clearance needed to claim or continue it.
+
+Only a human can move a [task] out of `[Blocked]`; Startup Factory has no
+automated outbound path. A human move of that held [task] to the configured
+queued status starts a resume barrier: the supervisor snapshots the [task] again,
+diffs title, description, every stable comment (including edits/deletions), and
+adapter-provided normalized attachment metadata, and asks the team-lead for an
+authenticated `[resume-review]` bound to the hold and communication digest.
+`unchanged` may clear the barrier; `requirements-changed` additionally requires
+a later `[resume-plan]` and principal-architect `[design-approved]`;
+`needs-human` keeps it closed. The prior worktree must also be clean—dirty work
+is preserved for explicit salvage or quarantine, never discarded. Clearing the
+barrier archives the old claim and starts a fresh numbered attempt from the new
+packet. A human move directly to `[Active]` or `[Review]` is manual takeover, so
+automation remains fenced rather than claiming it.
+
+This human-only rule is enforceable end to end only when the project-management
+tool's workflow ACL restricts outbound Blocked transitions to human principals.
+The adapters observe state but do not authenticate the transition actor.
+
+These hold-control markers are authenticated workflow commands, not ordinary
+board prose. The local broker accepts them only when a published receipt binds
+the exact body, role, task, feature, and verified launched-role capability.
+Copying the marker text into a project-management comment—or claiming a
+team-lead signature—does not create that receipt and grants no authority.
 
 1. Provision a real worktree-scoped OS sandbox and network/IAM restrictions for
    every ordinary agent. Install its protected external entrypoint, configure its
@@ -783,8 +864,11 @@ never falls through to a guessed action.
    mode-0700 `BROKER_LIFECYCLE_ROOT` outside the checkout, installed skill, and
    every agent sandbox mount; its parent chain must contain no symlinks or
    group/world-writable directory (so do not place it below shared `/tmp`). The
-   safe default requires an
-   `automation: enabled` [task] metadata marker; then inspect a pass:
+   shipped policy automatically launches queued tasks and observes Blocked
+   tasks as human-held unless they carry the `human-work` label. Set
+   `requireMetadataOptIn: true` if this installation
+   should additionally require an `automation: enabled` metadata marker. Then
+   inspect a pass:
 
    ```bash
    STARTUP_FACTORY_PROJECT_ROOT=/absolute/target-checkout \
@@ -824,16 +908,24 @@ never falls through to a guessed action.
    deadline; a production transaction uses
    its separately bounded `releaseTimeoutSeconds`, which must cover the full
    configured plan/attestation/status/apply/verify/rollback path. New
-   queued/blocked work on an already deployed feature opens a numbered
+   queued work on an already deployed feature opens a numbered
    generation with a new run ID, team, and feature branch rooted at the exact
    verified predecessor HEAD, while preserving the stable workspace and prior
    release evidence.
-5. Put initial routing metadata in a [task] description:
+5. Optionally put initial routing metadata in a [task] description:
 
    ```text
-   automation: enabled
    team-preset: deep-backend
    ```
+
+   Apply the tracker label `human-work` to reserve a task for a person. The PM
+   supervisor makes no new claims or launches for it; if it was already in
+   flight, the next reconcile stops its managed worker and fences publication,
+   integration, and release while other tasks remain eligible. Removing the
+   label returns the task to automatic consideration on the next scan.
+   `automation: disabled`
+   remains an explicit metadata opt-out, while `automation: enabled` is required
+   only when `requireMetadataOptIn` is true.
 
    Treat descriptions as the baseline. Post every later routing change as a
    timestamped/revisioned comment; generic record `updatedAt` does not prove a
@@ -942,6 +1034,8 @@ need tracker-specific workflow logic.
 flowchart LR
     Board["Linear · Jira · GitHub Issues · Markdown"]
     PM["Deterministic PM supervisor<br/>cron · timer · service"]
+    State{"Task state?"}
+    Hold["Task-scoped human hold<br/>stop worker · revoke capability"]
     Route{"Opt-in and preset<br/>valid?"}
     Gates["Lead · Product · Architect<br/>scope and design gates"]
     Work["Task-scoped agents<br/>isolated Git worktrees"]
@@ -951,7 +1045,9 @@ flowchart LR
     Release["Credential-isolated<br/>release executor"]
     Target["Verified production target"]
 
-    Board --> PM --> Route
+    Board --> PM --> State
+    State -->|queued| Route
+    State -->|Blocked| Hold -->|human returns to queued| Board
     Route -->|yes| Gates --> Work --> Review --> Integrate --> Policy
     Route -->|pause / escalate| Board
     Policy -->|approved| Release --> Target --> Board
@@ -976,7 +1072,7 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 | [`reference/team-roles.md`](reference/team-roles.md) | Which role owns each status and transition in team mode? |
 | [`reference/orchestration.md`](reference/orchestration.md) | How do roles coordinate, authenticate handoffs, review, integrate, recover, and pull the andon cord? |
 | [`reference/dispatch.md`](reference/dispatch.md) | Which deterministic event launches each next role action? |
-| [`reference/automation.md`](reference/automation.md) | How do protected cron/service scans, routing metadata, registration, generations, leases, and recovery work? |
+| [`reference/automation.md`](reference/automation.md) | How do protected cron/service scans, task holds, human resume barriers, routing metadata, registration, generations, leases, and recovery work? |
 | [`reference/guardrails.md`](reference/guardrails.md) | Which actions are denied, approval-only, or autonomously allowed, and where are those boundaries enforced? |
 | [`reference/deployment.md`](reference/deployment.md) | What are the provider-neutral hook schemas, trust requirements, approvals, transaction phases, and rollback rules? |
 | [`teams/README.md`](teams/README.md) and [`teams/_PLAYBOOK.md`](teams/_PLAYBOOK.md) | Which preset should you choose and how does its shared delivery protocol operate? |
@@ -1063,13 +1159,14 @@ exact protocol markers — never invent new ones.
 | A role won't launch in a preset | It's likely `<ROLE>_CMD=null` (explicitly disabled). Remove the line to fall back to `TEAM_DEFAULT_CMD` |
 | No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
 | `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
-| Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead auto-unblocks, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md` |
-| An eligible queued/blocked task never launches | Confirm automation is enabled and scheduled, the scriptable adapter has an exact scope, the latest metadata says `automation: enabled`, and `team-preset` is absent or exactly one allowed preset; conflicting or unordered metadata deliberately pauses |
+| Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead applies the recovery ladder, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md`. A `[Blocked]` task is intentionally human-held and never changed outbound by automation. |
+| An eligible queued task never launches | Confirm automation is enabled and scheduled, the scriptable adapter has an exact scope, the task does not carry an `ignoredTaskLabels` value such as `human-work`, and `team-preset` is absent or exactly one allowed preset. If `requireMetadataOptIn` is true, also confirm the latest metadata says `automation: enabled`; conflicting or unordered metadata deliberately pauses. |
+| A human moved `[Blocked]` to queued but no fresh attempt starts | Inspect the generated resume-review request. A broker-authenticated `[resume-review]` must bind its exact hold and communication digest; changed requirements also need a later `[resume-plan]` and `[design-approved]`, and the prior worktree must be clean. |
 | `--print-cron` rejects the scan interval | Conventional cron output supports minute divisors of 60 and whole-hour divisors of 24. Use a service timer or hosted scheduler for cadences such as seven minutes |
 | `another live pass owns the monitor lease` | One healthy pass is already running on this host. Do not start a second scheduler; multi-host operation needs a distributed lock or adapter-native compare-and-set |
 | Release waits for product acceptance | Publish a current feature-scope `[product-approval]` bound to the exact final feature HEAD and integration-evidence digest; stale or ambiguous evidence cannot release |
 | Release says it is awaiting authorization | In `approval-required` mode, have the protected `verifyApproval` system authorize the exact manifest before its expiry; a board comment is intentionally insufficient |
-| Release is fenced after an uncertain apply or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
+| Release is fenced after an uncertain apply, detached-worker loss (exit 125), post-launch authority change, or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
 | Want to verify the plumbing | `bash tests/run-all.sh` → `ALL TESTS PASS` (stub agents + local files; no LLM, no cost) |
 
 ---

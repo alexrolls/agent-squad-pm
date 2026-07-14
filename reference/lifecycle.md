@@ -84,7 +84,9 @@ Reality rarely matches the plan. When you must deviate from what the [task] desc
 
 If review finds problems: **move the [task] back to `[Active]`**, fix, and return to
 `[Review]`. Backward moves are legal exactly where `config/statuses.config.json` lists
-them (on the default board: `Review → Active`, plus the `Blocked` returns).
+them (on the default board: `Review → Active`). `[Blocked]` exits are listed so a
+human project-management action can be represented, but Startup Factory itself
+is forbidden to author them.
 
 ---
 
@@ -132,26 +134,36 @@ edge case, a follow-up):
 When the *work* cannot proceed — missing dependency, unanswered question, broken
 external service — and it isn't a process failure (that's the andon cord, Scenario 8):
 
-1. **Add a comment** with the block metadata in this shape:
+1. **Report the block** with enough context for a human and the lead:
    ```
    block-kind: dependency|approval|policy|incident
-   blocked-by: <taskId> [<taskId2> ...]
-   resume-status: <Status>
    reason: <what is blocking, what was tried, what would unblock>
    ```
-   `block-kind:` is required. Only `dependency` can auto-unblock;
-   approval, policy, and incident blocks always require an authorized decision.
-   `blocked-by:` is required for the dispatcher to identify this as the current
-   block event. `resume-status:` (a legal `[Blocked]` → `[Status]` transition) is
-   required for the dispatcher to auto-unblock without team-lead confirmation;
-   without it the dispatcher routes to the team-lead. **Only the most recent
-   `blocked-by:` comment governs — older `resume-status:` lines in the history
-   are not reused.**
-2. **Move the [task] to `[Blocked]`** via the adapter. The board's owner of `[Blocked]`
-   (default: team-lead) now owns resolving it.
-3. The `[Blocked]` owner works the blocker and, once cleared, **moves the [task] back**
-   to the appropriate working status (`Planned`, `Active`, or `Review` on the default
-   board) with a comment saying what changed.
+   This prose explains the situation but grants no workflow authority. For a
+   dependency, record the edge through the adapter's first-class `blockedBy`
+   mechanism; never infer one from this comment, a title, or similarity.
+2. **Ask the team-lead to enter `[Blocked]`.** On the shipped board only the
+   authenticated team-lead or deterministic PM supervisor may author an inbound
+   Blocked transition. Do not continue while waiting for the status write.
+3. **On observation, fence only this [task].** The dispatcher records a durable
+   hold and full communication snapshot, stops only matching task workers, and
+   revokes only their publication capabilities. It does not stop the PM loop,
+   gate roles, sibling [tasks], or other [features]. Independent queued work
+   continues.
+4. **Do not move the [task] out of `[Blocked]`.** Only a human may perform that
+   action in the project-management tool. No agent, role, broker, supervisor,
+   dependency completion, or comment may do it automatically. Enforce this with
+   a project-management workflow ACL that denies outbound Blocked transitions
+   to automation identities; normalized adapter state cannot prove the actor.
+5. A human move to the configured queued status starts the resume barrier. The
+   lead reads complete blocked/current snapshots and their comment/attachment
+   diff, then publishes a broker-authenticated `[resume-review]` bound to the
+   exact hold and communication digest. If requirements changed, publish a later
+   `[resume-plan]` and obtain a later `[design-approved]`. The prior worktree must
+   be clean. Only then does the dispatcher archive the old claim and launch a
+   fresh attempt.
+6. A human move directly to `[Active]` or `[Review]` means manual takeover. The
+   automated hold remains closed; no old or new worker is launched.
 
 ---
 
@@ -163,10 +175,14 @@ Named after the Toyota cord any worker can pull to halt the line. Pull it when:
 - An adapter operation **fails** (MCP error, CLI non-zero exit, file conflict).
 - You're blocked, or any warning/error signal appears.
 
-When pulled: **stop immediately, do not work around it, and report** the exact problem to
-the user (or, in team mode, escalate to the coordinator (concrete role: `team-lead`, via mailbox)). Resume only once resolved. This
-directly enforces the *fail-loud* invariant from `vocabulary.md` — a silent workaround is
-the failure mode this whole design exists to prevent.
+When pulled: **stop the affected action/[task] immediately, do not work around
+it, and report** the exact problem to the user (or, in team mode, escalate to the
+coordinator (concrete role: `team-lead`, via mailbox)). This is task-scoped by
+default: the deterministic PM process and independent work continue unless the
+failure invalidates their shared authority or state. Resume the affected work
+only once resolved. This directly enforces the *fail-loud* invariant from
+`vocabulary.md` — a silent workaround is the failure mode this whole design
+exists to prevent.
 
 ---
 
@@ -232,20 +248,32 @@ Run the adapter-neutral supervisor from one scheduler:
 1. Read `reference/automation.md`, `reference/guardrails.md`, and
    `config/automation.config.json`.
 2. Configure a scriptable adapter and exact board scope. MCP-only sessions cannot
-   be called by cron.
+   be called by cron. Configure the project-management workflow ACL so only
+   human principals can move a task out of Blocked.
 3. Set the absolute target checkout and protected config environment variables,
    then use protected Python with `-I -S -E -s` to run the external
    `pm-agent.py --once --dry-run`; inspect every route.
 4. Set `scanIntervalMinutes` (default `3`), set `enabled: true`, and use that same protected invocation for
    `pm-agent.py --print-cron`, and install its output in
    one scheduler, and configure overlap prevention there too.
-5. Each pass uses semantic `queued` and `blocked` status kinds only to discover
-   new work. It re-authorizes every registered unfinished [feature] through a
+5. Each pass observes exactly semantic `queued` and `blocked` status kinds, but
+   launches only `queued` work. It re-authorizes every registered unfinished [feature] through a
    separate exhaustive feature export, bootstraps an isolated integration
    worktree, launches only the selected preset's persistent gate/supervision
    roles, then calls the existing per-[feature] dispatcher, which creates fresh
-   task-scoped implementers.
-6. A registered run pauses before dispatch or release when its authoritative
+   task-scoped implementers. A Blocked-only [feature] consumes no cold-start
+   budget; independent queued [tasks] continue even while other [tasks] are held.
+   A task matching `ignoredTaskLabels` is never claimed/launched; if labeled
+   mid-flight, it is stopped/fenced on reconciliation.
+6. A registered run first synchronizes task holds: Blocked tasks stop only their
+   workers and cannot publish/integrate; queued and in-flight direct dependents
+   require an authenticated lead verdict plus fresh graph validation. Only a
+   true blocker enters Blocked; partial/independent work receives an exact
+   graph-bound scheduling clearance. Human Blocked → queued starts the full
+   communication-diff and
+   resume-review barrier, then a fresh attempt. Startup Factory never moves
+   Blocked outbound.
+7. A registered run pauses before dispatch or release when its authoritative
    feature export is unreadable/empty, it loses opt-in, is disabled, conflicts
    on routing, or changes preset. Moving from queued/blocked into working/review
    status does not pause it. Unknown/
@@ -299,7 +327,7 @@ from `reference/deployment.md`:
 | 4 Review | `[task]` → `[Review]` (or back to `[Active]` on rework) |
 | 5 Finalize | recoverable merge/broker transaction + `[task]` → `[Ready to deploy]`; feature remains non-terminal awaiting verified production delivery |
 | 6 New work | create `[task]` `[Planned]` |
-| 7 Block | comment + `[task]` → `[Blocked]`; owner routes it back when cleared |
+| 7 Block | report + authorized inbound `[task]` → `[Blocked]`; stop only that task; only a human may move it outbound, and queued re-entry requires resume review plus a fresh attempt |
 | 8 Andon | **no write** — stop and report |
 | 10 Pre-flight design pass | comments only — one `[design-note]` + verdict (+ scope sign-off) per [task] |
 | 11 Portfolio automation | board scan + durable run registry + bounded team/dispatcher launches |

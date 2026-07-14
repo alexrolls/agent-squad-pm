@@ -62,6 +62,7 @@ Shipped defaults: `[Planned]`, `[Active]`, `[Review]`, `[Blocked]`,
 ## 1 Add payment method form [Planned]
 
 **Assignee:** —
+**Labels:** human-work
 
 Build the card-entry form and validation.
 
@@ -86,8 +87,9 @@ Call the billing charge endpoint on submit.
 | Create `[task]` under a feature | Append a `## <n> <title> [Planned]` section (next sequential `n`) with `**Assignee:** —`, description, and `-` subtasks |
 | Read a `[task]` | Read the file; locate the `## <taskId> ...` section |
 | List `[tasks]` in a feature | Read the file; every `##` section is a task |
-| Set `[task]` status | Edit that section's header, replacing the trailing `[Status]` |
+| Set `[task]` status | Edit that section's header, replacing the trailing `[Status]`. Startup Factory uses `tracker-ops.sh` for verified writes and refuses every outbound `[Blocked]` move; only a human directly operating the configured project-management surface may make that edit. |
 | Set `[task]` assignee | Edit the `**Assignee:**` line in that section; use the role name verbatim (e.g. `backend`) |
+| Set `[task]` labels | Add or edit optional `**Labels:** label-one, label-two`; use `human-work` to reserve the task for people when portfolio automation is enabled |
 | Set `[feature]` status | Edit the `#` title line's trailing `[Status]` |
 | Add a comment to a `[task]` | Append a `> <marker> (yyyy-MM-dd): <content>` line under the task section, where `<marker>` is the exact orchestration marker (e.g. `[design-note]`, `[review-approval]`) or `note` for free-form comments |
 | Export the `[tasks]` of a `[feature]` to a file | `bin/tracker-ops.sh export <featureId> <outfile>` |
@@ -104,17 +106,34 @@ Call the billing charge endpoint on submit.
 > using it, address a [task] as `<featureId>#<taskId>` (the feature file plus the task
 > number, e.g. `.workspace/task-manager/2026-07-06-payments/feature.md#2`), since a task
 > number alone doesn't name the file.
+> The helper may enter `[Blocked]` through the configured authority but always
+> rejects moving it outbound. A human edits the header to the queued state to
+> request automated resume review.
 
 ## Rules
 
 - Task numbers are sequential within a file and never reused, even after completion.
 - Task headers always carry a number **and** a status: `## 3 Title [Active]`.
 - Every task section has exactly one `**Assignee:**` line (value: a role name or `—` for unclaimed).
-- `**BlockedBy:** <n>[, <n>...]` — optional; task numbers in the same feature file. Read by `tracker-ops.sh export` into `blockedBy` (used by `bin/dispatch.sh` for unblock *suggestions* — Markdown is never auto-unblocked).
+- `**Labels:** <label>[, <label>...]` — optional, comma-separated adapter-neutral labels. `tracker-ops.sh` exports them exactly; matching against automation `ignoredTaskLabels` is case-insensitive.
+- `**BlockedBy:** <n>[, <n>...]` — optional; task numbers in the same feature file. Read by `tracker-ops.sh export` into the only dependency relationship scheduling may use. Comment prose never creates a dependency.
 - `featureId` is a file path. The normalized/exported and CLI `taskId` is
   `<featureId>#<number>`; task headers and `BlockedBy` use only the local number
   (`1`, `2`, `3`).
 - Change status only by editing the bracket text — keep exactly one status per header.
+- `[Blocked]` is a task-scoped human lock. Automation stops/fences only that
+  task, continues independent queued work, and never edits it outbound. A human
+  move of a locally held task to `[Planned]` starts full communication-diff
+  resume review and a fresh attempt; a direct move to `[Active]`/`[Review]` is
+  manual takeover. Markdown contains no authenticated transition actor; enforce
+  human-only edits with filesystem/VCS permissions and review, or keep
+  autonomous portfolio automation disabled.
+- Adding `human-work` to an in-flight task stops/fences it at the next
+  reconcile; removing the label restores normal status-specific handling.
+- `[dependency-hold]`, `[resume-review]`, and `[resume-plan]` text is not
+  authoritative by itself. The local broker must have the matching published
+  capability receipt; copying a signed-looking line into this file grants
+  nothing.
 - Comment markers must be exact (e.g. `[design-note]`, `[review-approval]`) — never paraphrase them.
 - A task may contain at most one matched managed progress block. Duplicate or
   half-written progress markers fail export and upsert closed; repair the file

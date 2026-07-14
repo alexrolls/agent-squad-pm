@@ -23,9 +23,14 @@ cd "$TMP"; git init -q repo && cd repo
 git commit -q --allow-empty -m init; git checkout -q -b feature-runtime
 LIFECYCLE_ROOT="$TMP/protected-lifecycle"
 mkdir -m 700 "$LIFECYCLE_ROOT"
+PROTECTED_FORGERY_ROOT="$TMP/protected-forgery-lifecycle"
+mkdir -m 700 "$PROTECTED_FORGERY_ROOT"
+python3 "$SKILL_DIR/bin/process-lifecycle.py" init --root "$LIFECYCLE_ROOT" --repo "$(pwd)" >/dev/null
+python3 "$SKILL_DIR/bin/process-lifecycle.py" init --root "$PROTECTED_FORGERY_ROOT" --repo "$(pwd)" >/dev/null
+export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$LIFECYCLE_ROOT"
 mkdir -p .agent-squad/{bin,config,roles,reference} feat
 cp "$SKILL_DIR"/bin/*.sh "$SKILL_DIR"/bin/*.py .agent-squad/bin/
-cp "$SKILL_DIR/config/statuses.config.json" .agent-squad/config/
+cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" .agent-squad/config/
 cp "$SKILL_DIR/roles/backend.md" "$SKILL_DIR/roles/reviewer.md" .agent-squad/roles/
 cp "$SKILL_DIR/teams/roles/principal-software-architect.md" \
   "$SKILL_DIR/teams/roles/senior-technical-product-manager.md" .agent-squad/roles/
@@ -316,24 +321,135 @@ cat > gate-submit-probe.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 marker="$1"; source="$2"; output="$3"
+target="${4:--}"
 entry="$("$STARTUP_FACTORY_CANONICAL_REPO/.agent-squad/bin/submit-artifact.sh" \
   "$STARTUP_FACTORY_TEAM" "$STARTUP_FACTORY_FEATURE_ID" 'feat/feature.md#1' 1 \
-  "$STARTUP_FACTORY_ROLE" "$marker" "$source" -)"
+  "$STARTUP_FACTORY_ROLE" "$marker" "$source" "$target")"
 printf '%s\n' "$entry" > "$STARTUP_FACTORY_CANONICAL_WORKSPACE/$output"
 EOF
 chmod +x gate-submit-probe.sh
 
-launch_gate_submission() { # role marker body output-file -> entry path
-  local role="$1" marker="$2" body_file="$3" output_file="$4" key_name
+launch_gate_submission() { # role marker body output-file [target] -> entry path
+  local role="$1" marker="$2" body_file="$3" output_file="$4" target="${5:--}" key_name
   key_name="$(printf '%s_CMD' "$(printf '%s' "$role" | tr 'a-z-' 'A-Z_')")"
   sed -i '' "/^${key_name}=/d" "$CFG"
-  printf '%s="%s %s %s %s {prompt_file}"\n' "$key_name" "$(pwd)/gate-submit-probe.sh" \
-    "$marker" "$body_file" "$output_file" >> "$CFG"
+  printf '%s="%s %s %s %s %s {prompt_file}"\n' "$key_name" "$(pwd)/gate-submit-probe.sh" \
+    "$marker" "$body_file" "$output_file" "$target" >> "$CFG"
   rm -f ".teamwork/feature-runtime/$output_file" ".teamwork/feature-runtime/pids/$role.pid"
   TEAM_RUNNER=background "$LAUNCH" start feature-runtime "$FID" "$role" >/dev/null
   for _i in $(seq 1 50); do [ -s ".teamwork/feature-runtime/$output_file" ] && break; sleep 0.1; done
   cat ".teamwork/feature-runtime/$output_file"
 }
+
+write_task_hold() {
+  python3 - ".teamwork/feature-runtime/task-holds.json" "$FID" "$TID" "$key" "$1" <<'PY'
+import json,sys
+path,feature,task,key,state=sys.argv[1:]
+with open(path,"w") as handle:
+    json.dump({"schemaVersion":1,"featureId":feature,"tasks":{
+        key:{"taskId":task,"taskKey":key,"state":state}
+    }},handle)
+PY
+}
+
+# A Blocked/manual hold stops every agent publication. The only exception is
+# the resume-review barrier itself: an authenticated gate may add one of the
+# exact comment-only verdicts needed to resolve it, but cannot publish ordinary
+# review/work artifacts or move state.
+cat > resume-design-approved.md <<'EOF'
+[design-approved]
+fixture: authenticated resume barrier gate
+
+- principal-software-architect
+EOF
+
+# Protected authority must remain decisive even if an agent deletes or forges
+# the workspace projection and the fresh tracker status itself is non-Blocked.
+# Produce the gate capability under the same external authority first, then
+# establish its protected hold and lie locally that the task resumed.
+export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$PROTECTED_FORGERY_ROOT"
+protected_gate_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md protected-gate.path)"
+cat > "$TMP/protected-blocked.json" <<EOF
+{"featureId":"$FID","tasks":[{"taskId":"$TID","title":"fixture","description":"fixture","status":"Blocked","statusRaw":"Blocked","assignee":"backend","blockedBy":[],"labels":[],"comments":[],"attachments":[]}]}
+EOF
+python3 .agent-squad/bin/task-hold.py sync \
+  --repo "$(pwd)" --workspace "$(pwd)/.teamwork/feature-runtime" \
+  --tasks "$TMP/protected-blocked.json" --feature "$FID" --team feature-runtime \
+  --blocked-status Blocked --queued-status Planned \
+  --inflight-status Planned --inflight-status Active --inflight-status Review \
+  --ignored-labels-json '["human-work"]' >/dev/null
+write_task_hold resumed
+refuse "protected Blocked authority defeats a forged local resumed projection" "is held (blocked)" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$protected_gate_entry"
+export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$LIFECYCLE_ROOT"
+rm -f .teamwork/feature-runtime/task-holds.json
+
+write_task_hold resume-review-pending
+resume_gate_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md resume-gate.path)"
+.agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$resume_gate_entry" >/dev/null
+check "resume-review hold permits an authenticated comment-only barrier gate" \
+  grep -q 'fixture: authenticated resume barrier gate' "$FID"
+resume_state_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md resume-state.path Active)"
+refuse "resume-review hold rejects state-moving barrier gates" "comment-only" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$resume_state_entry"
+
+cat > held-architecture.md <<'EOF'
+[architecture-approval]
+fixture: ordinary gate must remain stopped
+
+- principal-software-architect
+EOF
+resume_work_entry="$(launch_gate_submission principal-software-architect architecture-approval held-architecture.md resume-work.path)"
+refuse "resume-review hold rejects ordinary review gates" "resume-review-pending" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$resume_work_entry"
+
+write_task_hold blocked
+blocked_gate_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md blocked-gate.path)"
+refuse "Blocked hold rejects even resume barrier comments" "is held (blocked)" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$blocked_gate_entry"
+
+printf '{not-json\n' > .teamwork/feature-runtime/task-holds.json
+malformed_hold_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md malformed-hold.path)"
+refuse "malformed hold registry fails closed" "invalid task hold registry" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$malformed_hold_entry"
+
+python3 - ".teamwork/feature-runtime/task-holds-target.json" "$FID" <<'PY'
+import json,sys
+json.dump({"schemaVersion":1,"featureId":sys.argv[2],"tasks":{}},open(sys.argv[1],"w"))
+PY
+rm -f .teamwork/feature-runtime/task-holds.json
+ln -s "$(pwd)/.teamwork/feature-runtime/task-holds-target.json" .teamwork/feature-runtime/task-holds.json
+symlink_hold_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md symlink-hold.path)"
+refuse "symlink hold registry fails closed" "non-symlink regular file" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$symlink_hold_entry"
+rm .teamwork/feature-runtime/task-holds.json
+
+python3 - ".teamwork/feature-runtime/task-holds.json" <<'PY'
+import json,sys
+json.dump({"schemaVersion":1,"featureId":"other-feature","tasks":{}},open(sys.argv[1],"w"))
+PY
+mismatched_hold_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md mismatched-hold.path)"
+refuse "cross-feature hold registry fails closed" "feature scope mismatch" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$mismatched_hold_entry"
+rm -f .teamwork/feature-runtime/task-holds.json .teamwork/feature-runtime/task-holds-target.json
+
+blocked_target_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md blocked-target.path Blocked)"
+refuse "generic authenticated outbox entry cannot move a task to Blocked" "dispatcher-only" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$blocked_target_entry"
+
+perl -0pi -e 's/## 1 Implement endpoint \[Review\]/## 1 Implement endpoint [Blocked]/' "$FID"
+blocked_source_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md blocked-source.path)"
+refuse "authoritative Blocked stops comment-only publication before hold sync" "authoritatively Blocked" \
+  env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$blocked_source_entry"
+perl -0pi -e 's/## 1 Implement endpoint \[Blocked\]/## 1 Implement endpoint [Review]/' "$FID"
+
+perl -0pi -e 's/(\*\*Assignee:\*\* backend\n)/$1\n**Labels:** human-work\n/' "$FID"
+human_label_entry="$(launch_gate_submission principal-software-architect design-approved resume-design-approved.md human-label.path)"
+refuse "standalone outbox uses configured human-work fallback without dispatcher env" "labeled for human work" \
+  env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON -u STARTUP_FACTORY_LIFECYCLE_STATE_ROOT \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$human_label_entry"
+perl -0pi -e 's/\n\*\*Labels:\*\* human-work\n//' "$FID"
 
 cat > architecture-verdict.md <<'EOF'
 [architecture-approval]

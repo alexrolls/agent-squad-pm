@@ -19,6 +19,7 @@ from task_metadata import parse_task_metadata
 
 
 MARKER_RE = re.compile(r"^\s*\[([\w-]+)\]")
+HOLD_STATES = {"blocked", "resume-review-pending", "manual-takeover"}
 
 
 def last(task: dict, *names: str) -> int:
@@ -28,6 +29,10 @@ def last(task: dict, *names: str) -> int:
         if match and match.group(1) in names:
             index = i
     return index
+
+
+def design_request(task: dict) -> int:
+    return last(task, "design-note", "resume-plan")
 
 
 def metadata(task: dict) -> dict:
@@ -45,35 +50,6 @@ def claims_conflict(left: set[str], right: set[str]) -> bool:
     left_files = [item[5:].rstrip("/") for item in left if item.startswith("file:")]
     right_files = [item[5:].rstrip("/") for item in right if item.startswith("file:")]
     return any(a.startswith(b + "/") or b.startswith(a + "/") for a in left_files for b in right_files)
-
-
-def current_block_body(task: dict):
-    result = None
-    for comment in task.get("comments") or []:
-        body = str(comment.get("body") or "")
-        if any(line.strip().startswith("blocked-by:") for line in body.splitlines()):
-            result = body
-    return result
-
-
-def resume_status(task: dict):
-    body = current_block_body(task)
-    if body is None:
-        return None
-    for line in body.splitlines():
-        if line.strip().startswith("resume-status: "):
-            return line.strip()[len("resume-status: ") :].strip()
-    return None
-
-
-def block_kind(task: dict):
-    body = current_block_body(task)
-    if body is None:
-        return None
-    for line in body.splitlines():
-        if line.strip().startswith("block-kind: "):
-            return line.strip()[len("block-kind: ") :].strip().lower()
-    return None
 
 
 def open_directory(path: Path, label: str) -> int:
@@ -264,6 +240,24 @@ def emit(*parts) -> None:
     print("\t".join(str(part).replace("\t", " ").replace("\n", " ") for part in parts))
 
 
+def ignored_labels(raw: str) -> set[str]:
+    try:
+        values = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"ignored task labels are not valid JSON: {exc}") from exc
+    if not isinstance(values, list):
+        raise RuntimeError("ignored task labels must be a JSON list")
+    result: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise RuntimeError("ignored task labels contain a malformed label")
+        canonical = value.casefold()
+        if canonical in result:
+            raise RuntimeError("ignored task labels contain a case-insensitive duplicate")
+        result.add(canonical)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skill", required=True)
@@ -273,6 +267,7 @@ def main() -> None:
     parser.add_argument("--stuck-minutes", type=int, required=True)
     parser.add_argument("--execution", choices=["sequential", "parallel"], required=True)
     parser.add_argument("--max-active", type=int)
+    parser.add_argument("--ignored-labels-json", default="[]")
     args = parser.parse_args()
 
     skill = Path(args.skill)
@@ -288,7 +283,53 @@ def main() -> None:
         claims_fd = open_child_directory(workdir_fd, "claims", "claim-record directory")
     except FileNotFoundError:
         claims_fd = None
+    try:
+        holds = strict_object(
+            read_regular_at(workdir_fd, "task-holds.json", "task hold registry"),
+            "task hold registry",
+        )
+    except FileNotFoundError:
+        holds = {"schemaVersion": 1, "featureId": args.feature, "tasks": {}}
+    if (
+        holds.get("schemaVersion") != 1
+        or holds.get("featureId") != args.feature
+        or not isinstance(holds.get("tasks"), dict)
+    ):
+        raise RuntimeError("task hold registry has an unsupported or mismatched schema")
+    hold_entries = holds["tasks"]
+    dependency_verdicts = holds.get("dependencyVerdicts", {})
+    if not isinstance(dependency_verdicts, dict):
+        raise RuntimeError("task hold registry dependency verdicts are malformed")
+    for key, entry in hold_entries.items():
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("taskId"), str)
+            or key != task_key(entry["taskId"])
+            or entry.get("state")
+            not in {"blocked", "resume-review-pending", "manual-takeover", "resumed"}
+        ):
+            raise RuntimeError("task hold registry contains a malformed identity or state")
+
+    def hold_entry(task_id: str) -> dict | None:
+        entry = hold_entries.get(task_key(task_id))
+        if entry is not None and entry.get("taskId") != task_id:
+            raise RuntimeError("task hold registry identity mismatch")
+        return entry
+
+    def task_is_held(task_id: str) -> bool:
+        entry = hold_entry(task_id)
+        return bool(entry and entry.get("state") in HOLD_STATES)
     tasks = payload.get("tasks") or []
+    excluded = ignored_labels(args.ignored_labels_json)
+    filtered_tasks = []
+    for task in tasks:
+        labels = task.get("labels")
+        if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+            raise RuntimeError("tracker snapshot task labels must be a list of label names")
+        if excluded.intersection(label.casefold() for label in labels):
+            continue
+        filtered_tasks.append(task)
+    tasks = filtered_tasks
     if str(payload.get("featureId") or "") != args.feature:
         raise RuntimeError("tracker snapshot featureId does not match the dispatcher invocation")
     by_id = {str(task["taskId"]): task for task in tasks}
@@ -302,10 +343,6 @@ def main() -> None:
     working_status = by_kind.get("working", "Active")
     review_status = by_kind.get("review", "Review")
     blocked_status = by_kind.get("blocked", "Blocked")
-    blocked_transitions = next(
-        (set(status["transitions"]) for status in board["tasks"]["statuses"] if status["name"] == "Blocked"),
-        set(),
-    )
 
     protocol_reviewer = None
     protocol_product_manager = None
@@ -320,29 +357,58 @@ def main() -> None:
         protocol_product_manager = match.group(1) if match and match.group(1) != "null" else None
 
     def blockers_terminal(task: dict) -> bool:
-        return all(by_id.get(str(blocker), {}).get("status") in terminal for blocker in (task.get("blockedBy") or []))
+        blockers = [str(blocker) for blocker in (task.get("blockedBy") or [])]
+        unfinished = [
+            blocker
+            for blocker in blockers
+            if by_id.get(blocker, {}).get("status") not in terminal
+        ]
+        if not unfinished:
+            return True
+        blocked_sources = sorted(
+            blocker
+            for blocker in unfinished
+            if by_id.get(blocker, {}).get("status") == blocked_status
+        )
+        if sorted(unfinished) != blocked_sources:
+            return False
+        clearance = dependency_verdicts.get(task_key(str(task.get("taskId") or "")))
+        if not isinstance(clearance, dict):
+            return False
+        expected = {
+            "taskId": str(task.get("taskId") or ""),
+            "status": task.get("status"),
+            "revision": task.get("revision"),
+            "blockedBy": sorted(blockers),
+            "blockedSources": blocked_sources,
+        }
+        return (
+            clearance.get("verdict") in {"partially-actionable", "independent"}
+            and all(clearance.get(name) == value for name, value in expected.items())
+        )
 
-    no_resume, manual_blocks = [], []
+    blocked_tasks = [
+        str(task["taskId"])
+        for task in tasks
+        if task.get("status") == blocked_status
+    ]
+    blocked_ids = set(blocked_tasks)
+    blocked_impacts = []
     for task in tasks:
         task_id = str(task["taskId"])
-        if task.get("status") == blocked_status and (task.get("blockedBy") or []) and blockers_terminal(task):
-            kind = block_kind(task)
-            if kind != "dependency":
-                manual_blocks.append(task_id)
-                emit("blocked-sensitive", task_id, kind or "missing")
-                continue
-            target = resume_status(task)
-            if target in blocked_transitions:
-                emit("unblock", task_id, target)
-            else:
-                if target:
-                    print(
-                        "dispatch: warning - %s has invalid resume-status '%s' (legal: %s)"
-                        % (task_id, target, ", ".join(sorted(blocked_transitions))),
-                        file=sys.stderr,
-                    )
-                no_resume.append(task_id)
-                emit("unblock-no-rs", task_id, target or "")
+        if task.get("status") == blocked_status:
+            emit("blocked-hold", task_id)
+        elif (
+            not task_is_held(task_id)
+            and task.get("status") in {queued_status, working_status, review_status}
+        ):
+            blocked_dependencies = [
+                str(blocker)
+                for blocker in task.get("blockedBy") or []
+                if str(blocker) in blocked_ids
+            ]
+            if blocked_dependencies:
+                blocked_impacts.append("%s <- %s" % (task_id, ",".join(blocked_dependencies)))
         for blocker in task.get("blockedBy") or []:
             if str(blocker) not in by_id:
                 print(
@@ -353,13 +419,16 @@ def main() -> None:
     design_queue = [
         str(task["taskId"])
         for task in tasks
-        if last(task, "design-note") > last(task, "design-approved", "design-pushback")
+        if not task_is_held(str(task["taskId"]))
+        and design_request(task) > last(task, "design-approved", "design-pushback")
     ]
     review_queue, architecture_queue, merge_queue, anomalies = [], [], [], []
     for task in tasks:
         if task.get("status") != review_status:
             continue
         task_id = str(task["taskId"])
+        if task_is_held(task_id):
+            continue
         request = last(task, "review-request")
         if request < 0:
             anomalies.append(task_id)
@@ -466,6 +535,8 @@ def main() -> None:
         if task.get("status") != working_status:
             continue
         task_id = str(task["taskId"])
+        if task_is_held(task_id):
+            continue
         execution = execution_identity(
             executions_fd, workdir, args.team, args.feature, task_id
         )
@@ -486,7 +557,7 @@ def main() -> None:
             role, attempt = durable
             if tracker_role and str(tracker_role) != role:
                 raise RuntimeError("tracker assignee conflicts with the durable dispatch identity")
-        design_note = last(task, "design-note")
+        design_note = design_request(task)
         design_approved = last(task, "design-approved")
         design_pushback = last(task, "design-pushback")
         if design_note >= 0 and (design_approved <= design_note or design_pushback > design_approved):
@@ -498,8 +569,18 @@ def main() -> None:
                 attempt += 1
             emit("launch-task", role, task_id, attempt)
 
-    active_count = sum(1 for task in tasks if task.get("status") == working_status)
-    unintegrated = [task for task in tasks if task.get("status") in {working_status, review_status}]
+    active_count = sum(
+        1
+        for task in tasks
+        if task.get("status") == working_status
+        and not task_is_held(str(task["taskId"]))
+    )
+    unintegrated = [
+        task
+        for task in tasks
+        if task.get("status") in {working_status, review_status}
+        and not task_is_held(str(task["taskId"]))
+    ]
     held = set().union(*(resources(task) for task in unintegrated)) if unintegrated else set()
     held_unsafe = any(not metadata(task)["parallelSafe"] for task in unintegrated)
     if args.execution == "sequential":
@@ -515,14 +596,20 @@ def main() -> None:
     candidates = [
         task
         for task in tasks
-        if task.get("status") == queued_status and not task.get("assignee") and blockers_terminal(task)
+        if task.get("status") == queued_status
+        and not task_is_held(str(task["taskId"]))
+        and (
+            not task.get("assignee")
+            or (hold_entry(str(task["taskId"])) or {}).get("state") == "resumed"
+        )
+        and blockers_terminal(task)
     ]
     for task in candidates:
         task_id = str(task["taskId"])
         if slots <= 0:
             constrained.append(task_id)
             continue
-        design_note = last(task, "design-note")
+        design_note = design_request(task)
         design_approved = last(task, "design-approved")
         design_pushback = last(task, "design-pushback")
         if design_note < 0 or design_approved <= design_note or design_pushback > design_approved:
@@ -543,7 +630,23 @@ def main() -> None:
                 constrained.append(task_id)
                 continue
         role = data["track"] if data["track"] in {"backend", "frontend", "qa"} else "backend"
-        emit("claim-task", role, task_id, 1)
+        attempt = 1
+        resumed = (hold_entry(task_id) or {}).get("state") == "resumed"
+        if resumed:
+            previous = execution_identity(
+                executions_fd, workdir, args.team, args.feature, task_id
+            )
+            if previous is not None:
+                role, previous_attempt = previous
+                if task.get("assignee") and str(task["assignee"]) != role:
+                    raise RuntimeError(
+                        "resumed task assignee conflicts with its durable execution identity"
+                    )
+                attempt = previous_attempt + 1
+            elif task.get("assignee"):
+                constrained.append(task_id + " (resume lacks durable execution identity)")
+                continue
+        emit("claim-task", role, task_id, attempt)
         selected_resources |= claims
         selected_count += 1
         slots -= 1
@@ -562,7 +665,26 @@ def main() -> None:
             elif now - info.st_mtime > args.stuck_minutes * 60:
                 stale.append(name)
 
-    if missing_gate or constrained or stale or anomalies or no_resume or manual_blocks:
+    resume_pending = [
+        entry["taskId"]
+        for entry in hold_entries.values()
+        if entry.get("state") == "resume-review-pending"
+    ]
+    manual_takeovers = [
+        entry["taskId"]
+        for entry in hold_entries.values()
+        if entry.get("state") == "manual-takeover"
+    ]
+    if (
+        missing_gate
+        or constrained
+        or stale
+        or anomalies
+        or blocked_tasks
+        or blocked_impacts
+        or resume_pending
+        or manual_takeovers
+    ):
         detail = "Lead-actionable - missing design gates: %s; constrained ready tasks: %s; stale: %s" % (
             ", ".join(missing_gate) or "none",
             ", ".join(constrained) or "none",
@@ -570,10 +692,24 @@ def main() -> None:
         )
         if anomalies:
             detail += "; anomalous [Review]: %s" % ", ".join(anomalies)
-        if no_resume:
-            detail += "; blocked without valid resume-status: %s" % ", ".join(no_resume)
-        if manual_blocks:
-            detail += "; approval/policy/incident or unclassified blocks requiring a lead: %s" % ", ".join(manual_blocks)
+        if blocked_tasks:
+            detail += "; human-held [Blocked] tasks: %s (supervise only; never move them outbound)" % ", ".join(blocked_tasks)
+        if blocked_impacts:
+            detail += (
+                "; possible downstream impact: %s (verify implementation is actually prevented; "
+                "only then move the dependent into [Blocked])" % "; ".join(blocked_impacts)
+            )
+        if resume_pending:
+            detail += (
+                "; human-resumed tasks awaiting full communication review: %s "
+                "(read the durable resume request; post only the digest-bound [resume-review], "
+                "and [resume-plan] when requirements changed)" % ", ".join(resume_pending)
+            )
+        if manual_takeovers:
+            detail += (
+                "; human resumed directly into a non-queued status: %s "
+                "(manual takeover; do not claim or launch)" % ", ".join(manual_takeovers)
+            )
         emit("launch", "team-lead", detail + ". One supervision pass, then exit.")
 
 

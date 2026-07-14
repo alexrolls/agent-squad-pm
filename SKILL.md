@@ -14,7 +14,7 @@ skill's directory):
 - `reference/vocabulary.md` — the generic contract (terms, statuses, IDs, banned words)
 - `reference/lifecycle.md` — the numbered scenarios you execute
 - `reference/team-roles.md` — status ownership (only if `TEAM_MODE=true`)
-- `reference/orchestration.md` — multi-agent protocol (mailboxes, gates, unblocking)
+- `reference/orchestration.md` — multi-agent protocol (mailboxes, gates, task holds)
 - `reference/dispatch.md` — who converts tracker/mailbox events into role launches (the loop lives outside the agent)
 - `reference/automation.md` + `config/automation.config.json` + `bin/pm-agent.py` — board-wide cron/service reconciliation and team routing
 - `reference/guardrails.md` + `config/guardrails.config.json` + `bin/policy-check.py` — immutable deny/approval/allow boundary
@@ -24,6 +24,8 @@ skill's directory):
 - `bin/update-installed-skill.sh` — fetch the latest upstream skill bundle into the current repository
 - `bin/runtime-state.py` + `bin/task-packet.sh` — durable events, PM projections,
   and minimal task-local context
+- `bin/task-hold.py` — task-scoped `[Blocked]` holds, communication snapshots,
+  dependency-impact review, and human-resume barriers
 - `bin/submit-artifact.sh` + `bin/process-outbox.sh` + `bin/outbox_capability.py`
   — canonical idempotent handoffs and launched-role gate authentication
 - `bin/review-package.sh` + `bin/review_evidence.py` + `bin/integrate-task.sh` —
@@ -100,7 +102,7 @@ each generic operation through the adapter's *Operations* table:
 | Run an agent team on a feature ("launch the team") | Team: set `TEAM_MODE=true`; gate roles use `start`/`compose`, task workers use `start-task`/`compose-task`, and `dispatch.sh` owns claims and bounded scheduling |
 | Connect a new tool / switch tools | 9 — Connect / switch |
 | Design/plan everything up front, sign off all designs before coding | 10 — Pre-flight design pass |
-| Monitor queued/blocked work and launch teams automatically | 11 — Portfolio automation; install the skill outside the target checkout, provision an external mode-0700 lifecycle root outside every agent mount, set its absolute project/config environment and `scanIntervalMinutes` (default 3), then run `bin/pm-agent.py --once` with protected Python `-I -S -E -s` |
+| Monitor queued and Blocked work; launch eligible queued tasks automatically | 11 — Portfolio automation; install the skill outside the target checkout, provision an external mode-0700 lifecycle root outside every agent mount, set its absolute project/config environment, `scanIntervalMinutes` (default 3), and `ignoredTaskLabels` (default `human-work`), then run `bin/pm-agent.py --once` with protected Python `-I -S -E -s` |
 | Deliver an integrated feature to production | 12 — Production release; only `bin/release-feature.py` holds the structured release authority |
 
 ## Non-negotiables (the fail-loud contract)
@@ -113,6 +115,30 @@ each generic operation through the adapter's *Operations* table:
   `config/statuses.config.json` (default board:
   `[Planned]` → `[Active]` → `[Review]` → `[Ready to deploy]`, rework `[Review]` → `[Active]`,
   `[Blocked]` for stuck work).
+- **`[Blocked]` is a task-scoped human lock.** On observation, stop only that
+  [task]'s workers and revoke their publication capabilities. Keep the PM loop,
+  gate roles, independent [features], and independent queued [tasks] running.
+  No agent, dispatcher, broker, or supervisor may move a [task] out of
+  `[Blocked]`; only a human may do so in the configured project-management tool.
+  Require an external workflow ACL that denies this transition to automation
+  identities: normalized adapters cannot authenticate the actor of an observed
+  external transition.
+- **`human-work` is a live task fence.** Never claim or launch a matching queued
+  [task]. If the label appears on in-flight work, stop/fence that [task] on the
+  next reconcile and continue independent work.
+- **Review direct Blocked dependencies before scheduling.** Route every queued,
+  working, or review [task] directly `blockedBy` a currently `[Blocked]` [task]
+  to the team-lead. Only a fresh receipt-backed `blocked` verdict may move the
+  dependent to `[Blocked]`; a `partially-actionable` or `independent` verdict
+  grants the exact graph-bound clearance to claim or continue it.
+- **A human resume re-enters through the queue.** `[Blocked]` → the configured
+  queued status triggers a full blocked/current communication diff and an
+  authenticated `[resume-review]`. Re-read the complete description, comments,
+  communication history, and normalized attachment metadata; never reuse the
+  old worker's context. Changed requirements additionally require a
+  later `[resume-plan]` and `[design-approved]`; a dirty prior worktree keeps the
+  hold closed. A cleared hold launches a fresh attempt. Human movement directly
+  to working/review means manual takeover, never automatic resumption.
 - **When `STRICT_STATUS=true`, verify the current status before writing** and that the
   intended move is in its `transitions` list. If not, pull the andon cord instead of
   forcing the change.
@@ -128,7 +154,10 @@ each generic operation through the adapter's *Operations* table:
   separate target-scoped credential environment, and only after an immutable plan
   passes policy and approval gates. Release config/state/hooks stay outside agent mounts.
 - **Tracker authorship is routing evidence, not authentication.** Claimed role
-  signatures and comments cannot authorize production. Automatic delivery needs
+  signatures and comments cannot authorize a hold or production. Hold-control
+  markers are accepted only with a matching local published broker receipt from
+  a verified launched-role capability; raw project-management comments cannot
+  impersonate them. Automatic delivery needs
   a pinned external `verifyDelivery` attestor proving real role isolation and
   the configured separate-identity planning sandbox plus approval authenticity
   for the exact feature commit, integration evidence, and

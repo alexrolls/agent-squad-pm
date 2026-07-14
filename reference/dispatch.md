@@ -7,7 +7,7 @@ time. **Dispatch is a stateless read-and-act pass** executed by machinery:
 
 | Runtime | Loop owner | One pass = |
 |---|---|---|
-| CLI (tmux / background processes) | `bin/dispatch.sh <team> <featureId> --once` (or `--watch`) | process artifact outbox → read tracker export → sync PM projection → claim/launch task instances and gate roles |
+| CLI (tmux / background processes) | `bin/dispatch.sh <team> <featureId> --once` (or `--watch`) | fresh tracker export → establish/act on task holds → finalize integrations/process artifact outbox → refresh export/projection → claim/launch task instances and gate roles |
 | Harness (in-session subagents) | the team-lead orchestrator itself — its native event loop | same table, executed directly: subagent spawn = role launch, idle notifications = heartbeats |
 
 `--watch` needs a persistent shell (tmux window or `nohup`) — **the human
@@ -21,11 +21,14 @@ heartbeat files, then acts top to bottom:
 
 | State observed | Action |
 |---|---|
-| `[Blocked]` [task] whose `blockedBy` [tasks] are all terminal | Auto-move `Blocked → <resume-status from block comment>` + comment — no agent launch (adapter caveat below) |
+| Any [task] matching `ignoredTaskLabels` (default `human-work`) | Make no claim/launch/progress write; if it is in flight, stop its managed worker and fence publication, integration, and release. Independent work continues. |
+| Any `[Blocked]` [task] | Record/refresh its durable hold, stop only its matching workers, and revoke only its publication capabilities. Never move it outbound. |
+| Human moved a held [task] to the queued status | Snapshot and diff all communication, route the authenticated `[resume-review]` barrier to the team-lead, and launch no worker until it clears. |
+| Queued/`[Active]`/`[Review]` [task] directly `blockedBy` a currently `[Blocked]` [task] | Route a graph-digest-bound dependency-impact review to the team-lead; enter `[Blocked]` only after an authenticated `blocked` verdict survives fresh graph validation. A partial/independent verdict gives only that exact graph a scheduling clearance. |
 | `[design-note]` with no later `[design-approved]`/`[design-pushback]` | Launch principal-architect with the **whole** pending-design queue |
 | [Task](s) in `[Review]` missing `[review-approval]` / `[architecture-approval]` since the last `[review-request]` | Launch reviewer / principal-architect with the **whole** review queue |
 | [Task](s) in `[Review]` holding both approvals | Launch integrator with the merge queue in dependency order |
-| Dispatchable `[Planned]` [tasks] (design approved, blockers terminal, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
+| Dispatchable `[Planned]` [tasks] (not held, design approved, every blocker terminal or carrying a fresh partial/independent clearance for its current Blocked graph, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
 | Valid `product-acceptance-request.json` after all integrations | Launch the configured product-manager role with the exact feature-level acceptance request; use team-lead only when no product role is mapped |
 | `[Planned]` task missing metadata/gate, resource conflict, stale/artifact-less-idle teammate | Launch team-lead with the whole exception queue |
 | Nothing actionable | Exit cleanly, print "nothing actionable" |
@@ -54,16 +57,27 @@ heartbeat files, then acts top to bottom:
 - **End of turn = exit.** Role briefs contain no self-scheduling. An agent
   that finished its queue delivers its artifacts and exits; the next pass
   owns what happens next.
-- **Auto-unblock scope:** performed automatically only where the adapter's
-  `blockedBy` read is reliable (Linear, Jira, and GitHubIssues). Markdown is
-  **suggest-only** — the pass prints the suggestion and the team-lead
-  confirms. Override per invocation with `--unblock=auto|suggest|off`.
-  Auto-unblock writes only when the latest comment containing `blocked-by:`
-  also carries `block-kind: dependency` and a legal
-  `resume-status: <Status>` line (see lifecycle Scenario 7);
-  without one the pass prints a lead-actionable suggestion and routes to the
-  team-lead. `approval`, `policy`, `incident`, missing, and unknown block kinds
-  can never auto-resume, even when their referenced dependencies are terminal.
+- **Blocked is a task-scoped human lock:** observation stops only the protected
+  task workers and revokes only their broker capabilities. It does not stop the
+  team, PM loop, gate roles, sibling [tasks], or other [features]. No dispatch
+  option enables automatic outbound movement; only a human may change
+  `[Blocked]` in the project-management tool. Enforce that promise with an
+  external workflow ACL restricting outbound moves to human principals; adapter
+  state alone cannot prove who made the move.
+- **Dependency propagation is just in time:** independent queued work continues.
+  A queued dependency on unfinished non-Blocked work remains unclaimable. For
+  every queued or in-flight direct dependent of a currently Blocked task, only
+  a first-class
+  adapter-normalized `blockedBy` edge and a broker-authenticated team-lead
+  `[dependency-hold]` verdict bound to the freshly revalidated graph can cause
+  the deterministic broker to enter `[Blocked]` or clear that exact dependency
+  for claim/continuation. Prose is never a dependency.
+- **Human resume is a new attempt:** only a human `[Blocked]` → queued move opens
+  the resume barrier. The team-lead compares complete blocked/current snapshots
+  and publishes a receipt-backed `[resume-review]`. Changed requirements also
+  need a later `[resume-plan]` and `[design-approved]`; a dirty prior worktree
+  remains held. A cleared barrier archives the old claim and launches a fresh
+  attempt. Human movement directly to working/review is manual takeover.
 - **Policy stays where it was:** the pipelined dispatch rules (independence,
   sweep gate, freeze protocol — `reference/orchestration.md` → *Execution
   modes*) are decisions the **team-lead** makes during its pass. The
@@ -88,7 +102,8 @@ heartbeat files, then acts top to bottom:
 
 `dispatch.sh` remains one-[feature]-at-a-time. Cron and service timers invoke
 `bin/pm-agent.py --once`, whose adapter-normalized `scan` discovers semantic
-`queued`/`blocked` [tasks]. For every registered in-flight [feature], it performs
+`queued`/`blocked` [tasks] for observation but launches only `queued` work. For
+every registered in-flight [feature], it performs
 an exhaustive per-feature export before restoring authority, then creates one
 isolated integration worktree per [feature] and invokes this dispatcher. See
 `reference/automation.md`. The PM supervisor is deterministic and zero-LLM when

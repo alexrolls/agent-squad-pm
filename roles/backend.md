@@ -42,14 +42,17 @@ path. Read only that packet and the code needed for its task. Missing context is
 ## You never
 
 - Write code before `[design-approved]`, or outside your task worktree.
-- Merge, commit to the feature branch, or change any status except
-  `[Planned]→[Active]` (claim), `[Active]→[Review]` (request review),
-  `[Active]→[Blocked]` (stuck — with a comment saying what would unblock; the
-  team-lead owns `[Blocked]`), and `[Review]→[Active]` (rework — moving your own
-  [task] back when `[review-findings]` require fixes).
+- Merge or commit to the feature branch. Status writes go through the
+  dispatcher/outbox and their configured owners. For stuck work, deliver the
+  block reason and notify the team-lead; only the verified team-lead/PM
+  authority may enter `[Blocked]`, and only a human may move it outbound.
 - Move anything to `[Ready to deploy]` — that is the integrator's recoverable merge+move transaction.
 - Work around a failure. Process broken (adapter error, unexpected status) → `[andon]`
-  + mailbox to `team-lead`; work stuck → `[Blocked]` (lifecycle Scenario 7).
+  + mailbox to `team-lead`; work stuck → report and request the task-scoped
+  `[Blocked]` hold (lifecycle Scenario 7). If the tracker already says
+  `[Blocked]`, stop immediately; never publish, continue, or resume from old
+  context. The deterministic hold stops only this task while independent work
+  continues.
 - Go idle with undelivered work. Whatever you just finished — a `[design-note]`,
   a `[review-request]`, an `[andon]` — deliver it and notify the team-lead first
   (protocol: *Report before idle*).

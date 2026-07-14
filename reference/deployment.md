@@ -44,7 +44,7 @@ executor refuses unless all of these hold:
   immutable commit; archive inspection separately rejects every gitlink;
 - the external config and private state root pass path/type/owner/permission
   checks; the config digest is transaction-bound; and configured hook
-  executables plus all thirteen trusted Startup Factory files match their protected pins;
+  executables plus all sixteen trusted Startup Factory files match their protected pins;
 - the exact commit is exported with credential-free Git into the protected release
   directory, gitlinks/submodules, unsafe archive members, and Git LFS pointers are
   rejected, and `plan` runs only inside that read-only materialization. Untracked
@@ -179,6 +179,9 @@ setting `enabled`):
     "policy-check.py": "sha256:<64 lowercase hex>",
     "tracker-ops.sh": "sha256:<64 lowercase hex>",
     "finalize-integrations.sh": "sha256:<64 lowercase hex>",
+    "task-hold.py": "sha256:<64 lowercase hex>",
+    "outbox_capability.py": "sha256:<64 lowercase hex>",
+    "broker_evidence.py": "sha256:<64 lowercase hex>",
     "runtime-state.py": "sha256:<64 lowercase hex>",
     "task_metadata.py": "sha256:<64 lowercase hex>",
     "product_acceptance.py": "sha256:<64 lowercase hex>",
@@ -226,7 +229,7 @@ executor interprets normalized tracker records, not provider-specific objects.
 
 Only configured hooks need a `trustedHookDigests` entry; `plan`, `apply`,
 `status`, and `verify` are required. `verifyApproval` is required in
-`approval-required`; `verifyDelivery` is required in `automatic`. The thirteen
+`approval-required`; `verifyDelivery` is required in `automatic`. The sixteen
 `trustedCodeDigests` keys above are exact and all are required whenever delivery
 is enabled. Hash the installed reviewed bytes (for example, `shasum -a 256
 <file>`) and store each value with the `sha256:` prefix. Any code/config update
@@ -501,7 +504,7 @@ break-glass mutation outside Startup Factory: require two-person review, record
 the observed target/artifact/release ID, archive `active.json`, remove it, and
 only then re-enable one scheduler.
 
-The supervisor first captures the thirteen pinned helper/config files into
+The supervisor first captures the sixteen pinned helper/config files into
 `stateRoot/supervisor-entrypoints/<config-digest>` and starts only that protected
 entrypoint/config snapshot. The release executor then independently reads and
 hashes those snapshot files through open descriptors and copies them beneath
@@ -533,3 +536,10 @@ in depth, while protected tracker credentials and OS separation are the actual
 identity boundary. Hooks use the release id as their
 provider-side idempotency key; uncertain apply responses are resolved through
 `status`, never a blind second apply.
+
+The same rule applies when a detached release worker loses liveness after its
+launch barrier opens, or tracker authority changes during a release. The PM
+supervisor records the attempt as deployment-blocked (worker-loss exit `125`)
+and requires protected provider `status` reconciliation; a later Todo status
+does not retroactively authorize the uncertain attempt or permit a blind
+re-apply.

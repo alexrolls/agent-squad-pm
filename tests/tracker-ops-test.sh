@@ -45,6 +45,7 @@ cat > feat/feature.md <<'EOF'
 ## 1 Add form [Planned]
 
 **Assignee:** —
+**Labels:** human-work, needs-review
 
 Build the form.
 
@@ -148,6 +149,59 @@ refuse "denial with bad id refused"     "invalid denial id"             bash -c 
 check "state moves the task"      grep -q '^## 1 Add form \[Review\]$' "$T"
 check "state retry is idempotent" grep -q '^## 1 Add form \[Review\]$' "$T"
 
+# -- Blocked is enterable by the team but only a human may move it outbound ---
+check "Blocked board authority is directional and human-owned" python3 - "skill/config/statuses.config.json" <<'PY'
+import json,sys
+board=json.load(open(sys.argv[1]))
+statuses={item['name']:item for item in board['tasks']['statuses']}
+assert 'Blocked' in statuses['Planned']['transitions']
+blocked=statuses['Blocked']
+assert blocked['owner'] == {'role': 'human'}
+assert blocked['transitions'] == ['Planned', 'Active', 'Review']
+assert blocked['transitionAuthority']['enter']['roles'] == ['team-lead', 'pm-agent']
+assert blocked['transitionAuthority']['exit'] == {'roles': ['human'], 'automation': False}
+PY
+cat > held.md <<'EOF'
+# Directional authority [Active]
+
+## 1 Queued [Planned]
+
+**Assignee:** —
+
+## 2 Working [Active]
+
+**Assignee:** backend
+
+## 3 Reviewing [Review]
+
+**Assignee:** reviewer
+
+## 4 Already held [Blocked]
+
+**Assignee:** backend
+EOF
+"$OPS" state held.md#1 Blocked
+"$OPS" state held.md#2 Blocked
+"$OPS" state held.md#3 Blocked
+check "Planned may enter Blocked" grep -q '^## 1 Queued \[Blocked\]$' held.md
+check "Active may enter Blocked"  grep -q '^## 2 Working \[Blocked\]$' held.md
+check "Review may enter Blocked"  grep -q '^## 3 Reviewing \[Blocked\]$' held.md
+"$OPS" state held.md#4 Blocked >/dev/null
+refuse "broker refuses Blocked to Planned" "outbound \[Blocked\].*human-only" \
+  "$OPS" state held.md#1 Planned
+refuse "broker refuses Blocked to Active" "outbound \[Blocked\].*human-only" \
+  "$OPS" state held.md#2 Active
+refuse "broker refuses Blocked to Review" "outbound \[Blocked\].*human-only" \
+  "$OPS" state held.md#3 Review
+refuse "claim cannot release Blocked" "outbound \[Blocked\].*human-only" \
+  "$OPS" claim held.md#4 backend --to Active --claim-id claim-human-hold
+refuse "integration cannot release Blocked" "outbound \[Blocked\].*human-only" \
+  "$OPS" integrate held.md#4 abc1234
+refuse "integration broker cannot release Blocked" "outbound \[Blocked\].*human-only" \
+  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen held.md#4 Active
+check "all refused outbound transitions preserve Blocked" \
+  test "$(grep -c '\[Blocked\]$' held.md)" -eq 4
+
 # -- integrate: terminal move + hash citation + extra body -----------------------
 printf 'VALIDATE_TEST green. Merged: a.py\n' | "$OPS" integrate "$T#1" abc1234 -
 check "integrate terminal status" grep -q '^## 1 Add form \[Ready to deploy\]$' "$T"
@@ -168,13 +222,24 @@ assert byid['$T#1']['status'] == 'Ready to deploy'
 assert byid['$T#2']['status'] == 'Planned'
 assert byid['$T#1']['assignee'] == 'backend'
 assert byid['$T#2']['assignee'] is None
+assert byid['$T#1']['labels'] == ['human-work', 'needs-review']
 assert '[design-note]' not in byid['$T#1']['description']
 assert '**Assignee:**' not in byid['$T#1']['description']
+assert '**Labels:**' not in byid['$T#1']['description']
 assert any('design-note' in c['body'] for c in byid['$T#1']['comments'])
 assert any(c['body'].startswith('[progress]') for c in byid['$T#2']['comments'])
 assert byid['$T#2']['blockedBy'] == ['$T#1'], byid['$T#2'].get('blockedBy')
 assert byid['$T#1']['blockedBy'] == []
 "
+
+STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='["human-work"]' "$OPS" export "$T" filtered-tasks.json
+check "ignored label filters autonomous feature export" python3 -c "
+import json
+d=json.load(open('filtered-tasks.json'))
+assert [task['taskId'] for task in d['tasks']] == ['$T#2']
+"
+refuse "malformed ignored-label policy fails closed" "must be a JSON list" \
+  env STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='{}' "$OPS" export "$T" filtered-tasks.json
 
 # -- board scan: generic statuses, parent grouping, routing inputs ---------------
 mkdir -p blocked

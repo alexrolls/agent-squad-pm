@@ -11,15 +11,19 @@ cron / service timer
   -> protected external pm-agent.py --once
   -> tracker-ops.sh scan (adapter-normalized discovery)
   -> one isolated integration worktree per [feature]
-  -> launch-team.sh gate-team + dispatch.sh --once
+  -> task-hold.py sync + launch-team.sh gate-team + dispatch.sh --once
   -> release-feature.py after every [task] is integrated
 ```
 
 `--once` is the scheduler primitive. `--watch` is a convenience for a dedicated
-host. The `scan` call is discovery-only and requests the configured semantic
-`queued`/`blocked` kinds; the shipped board maps those task kinds to Linear
-`Todo`/`Blocked`. A registered unfinished run is not expected to remain in those
-discovery states. Before every reconcile, the supervisor instead performs an
+host. The `scan` call is discovery-only and requests `observeStatusKinds`, which
+must be exactly the semantic `queued` and `blocked` kinds; the shipped board maps
+those task kinds to Linear `Todo`/`Blocked`. `launchStatusKinds` is separately
+fixed to `queued`, so observation never becomes authority to start Blocked work.
+Before grouping or routing, the supervisor excludes every task
+whose labels case-insensitively match `ignoredTaskLabels` (shipped value:
+`human-work`). Discovery never becomes durable authority for a registered run.
+Before every reconcile, the supervisor performs an
 exhaustive `export <featureId>` and re-authorizes that run from its full current
 [task] set. An unreadable/empty export, lost opt-in, explicit disablement,
 conflicting routing metadata, or preset drift pauses the run. A durable registry
@@ -27,7 +31,8 @@ entry is never standing authority.
 
 The supervisor is deliberately not an LLM. It discovers, routes, deduplicates,
 bootstraps, and invokes deterministic state machines. A team-lead is launched
-when a blocker, comment, routing exception, or delivery decision needs judgment.
+when a hold, comment, routing exception, dependency-impact review, resume review,
+or delivery decision needs judgment.
 
 ## Enable and schedule
 
@@ -96,6 +101,14 @@ configuration checks Todo/queued and Blocked work every three minutes. Existing
 external configs that specify only `pollSeconds` remain supported for migration;
 setting both fields is rejected as ambiguous.
 
+`observeStatusKinds`, `launchStatusKinds`, and `blockedTaskPolicy` intentionally
+have no permissive variants. Autonomous delivery requires observation of exactly
+`queued` plus `blocked`, launches exactly `queued`, and enforces a task-scoped,
+human-exit, no-automatic-resume hold that continues independent work, refreshes
+all communication, propagates only lead-confirmed direct dependencies, and uses
+a fresh attempt on resume. Undifferentiated observation/launch configuration is
+rejected because seeing a status is not authority to launch it.
+
 The printed crontab line intentionally contains no credentials and cannot copy
 the interactive shell environment into cron. Provision tracker and deployment
 variables through the scheduler's secret facility, a service unit, or a
@@ -148,6 +161,18 @@ Discovery returns only generic records: `featureId`, `taskId`, generic and raw
 status, description, comments, blockers, routing hints, and revision. A [task]
 without a `featureId` is quarantined and never launched.
 
+`ignoredTaskLabels` is an adapter-neutral, case-insensitive list of exact label
+names. It defaults to `["human-work"]`. New matching tasks and orphans are
+excluded without tracker mutation or escalation. In a mixed [feature], only the matching
+tasks are removed from autonomous routing and dispatch; non-matching siblings
+continue normally. If every task in a registered run becomes human-owned, the
+run pauses out of autonomous scope. Removing the label restores normal
+status-specific handling on the next exhaustive scan. If the label appears on
+an in-flight task, reconciliation stops its authenticated managed workers and
+fences publication, integration, progress projection, and release; independent
+tasks continue. An escaped process may survive outside lifecycle authority, but
+its output remains unauthorized.
+
 Put initial adapter-neutral metadata in a [task] description:
 
 ```text
@@ -162,9 +187,11 @@ disablement, or preset change in a comment carrying the adapter's sortable
 The latest comparable comment wins over the baseline. Missing ordering,
 same-revision conflicts, unknown automation values, and conflicting latest
 values fail closed and receive an idempotent `[escalation]`; they never fall
-through to a guessed specialist team. With `requireMetadataOptIn: true` (the safe
-default), only the latest `automation: enabled` value launches. With no explicit
-preset, `defaultTeamPreset` applies. The selected preset,
+through to a guessed specialist team. With `requireMetadataOptIn: true`, only
+the latest `automation: enabled` value launches. The shipped project policy sets
+it to `false`, so non-ignored work is eligible unless the latest metadata
+explicitly says `automation: disabled`. With no explicit preset,
+`defaultTeamPreset` applies. The selected preset,
 branch, integration worktree, and run id are durable. If the latest preset changes,
 the existing run pauses rather than being rerouted in place.
 
@@ -177,8 +204,110 @@ or out-of-scope runs cannot dispatch, integrate, or enter the release executor.
 A later exhaustive export can resume only the same registered route after its
 original preset and all eligibility conditions match again.
 
+## Blocked lifecycle and continuous portfolio progress
+
+`[Blocked]` is a task-scoped human lock, not a global stop condition. As soon as
+a dispatch or portfolio reconcile observes it, `task-hold.py` records a durable
+hold and full communication snapshot. If the [task] is in flight,
+`launch-team.sh stop-task` stops worker processes whose protected lifecycle
+identity matches that [task], and the broker revokes only that [task]'s active
+publication capabilities. Gate roles,
+the PM loop, sibling workers, independent queued [tasks], and other [features]
+continue. A held [task] is rejected by the outbox and integration brokers even
+if a stale process survives outside managed lifecycle authority.
+
+The supervisor never writes an outbound `[Blocked]` transition. This applies to
+the PM supervisor, dispatcher, team-lead, deterministic tracker port, and
+artifact brokers, without exception. Only a human may change that state in the
+project-management tool. In broker mode no LLM has tracker credentials; for
+end-to-end enforcement, configure the tool's workflow permissions so outbound
+Blocked transitions are available only to human principals and denied to every
+automation identity. Normalized exports do not authenticate the transition
+actor. If the tool cannot enforce this ACL or provide verified transition
+provenance, keep autonomous portfolio automation disabled for that tool.
+
+### Dependency propagation
+
+- A queued [task] with an unfinished non-Blocked dependency remains naturally
+  unclaimable. Do not infer a clearance for it.
+- Independent queued [tasks] remain claimable, including siblings of a held
+  [task]. A blocked-only discovered [feature] does not consume the new-feature
+  launch budget.
+- For a queued, `[Active]`, or `[Review]` [task], consider only direct
+  adapter-normalized `blockedBy` edges whose source is currently `[Blocked]`.
+  Project-management prose, labels, titles, comments, and similarity never
+  establish dependencies.
+- The supervisor writes a local review request and routes the team-lead. The
+  lead publishes:
+
+  ```text
+  [dependency-hold]
+  blocked-by: <sorted direct taskIds>
+  graph-digest: <sha256 binding current task status/revision/edges/sources>
+  verdict: blocked|partially-actionable|independent
+  reason: <why implementation can or cannot continue>
+
+  — team-lead
+  ```
+
+  Only `blocked`, authenticated by the local published broker receipt and still
+  matching a fresh exhaustive graph, permits the deterministic broker to enter
+  `[Blocked]`. `partially-actionable` and `independent` persist an exact
+  graph-bound clearance that lets a queued dependent be claimed or an in-flight
+  dependent keep running.
+  A stale graph or missing receipt is no authority and triggers another review.
+
+### Human resume barrier
+
+A human move of a held [task] from `[Blocked]` to the configured queued status
+does not resurrect the old worker. It moves the local hold to
+`resume-review-pending`. The
+supervisor preserves the blocked snapshot, writes a new resume snapshot, and
+diffs title, description, every comment by stable id/body/author/time/revision
+(including additions, edits, and deletions), and adapter-provided normalized
+attachment metadata.
+The lead must read both snapshots in full and publish:
+
+```text
+[resume-review]
+hold-id: <exact hold id>
+communication-digest: <digest of current non-resolution communication>
+verdict: unchanged|requirements-changed|needs-human
+summary: <changes, open questions, and design impact>
+
+— team-lead
+```
+
+The broker accepts this control marker only with a local published receipt that
+binds the exact body, task, feature, role, and verified launched-role
+capability. A raw project-management comment with the same marker or claimed
+signature cannot impersonate the protocol. Resolution markers themselves are
+excluded from the communication digest, so publishing a verdict does not create
+a self-invalidating snapshot.
+
+`unchanged` may clear the barrier. `requirements-changed` requires a later
+broker-authenticated `[resume-plan]`, followed by a later principal-architect
+`[design-approved]` with no newer pushback. `needs-human` remains held. In every
+case the previous attempt worktree must be clean; dirty work stays preserved
+until explicitly salvaged or quarantined and is never silently deleted. Once
+clear, the old claim is archived and the dispatcher starts attempt N+1 with a
+fresh packet containing the hold and both snapshot paths.
+
+A human move from `[Blocked]` directly to a working/review status is treated as
+manual takeover: the local hold remains closed to automation. Moving it to the
+queued status later starts the normal resume barrier.
+
+### Integration and release
+
+Hold state is rechecked against a fresh tracker export at publication and
+integration boundaries. A held [task] cannot publish ordinary artifacts,
+authorize or finalize integration, or be counted as finished. Consequently its
+parent [feature] cannot enter production until the human-resume path completes
+and every [task] is integrated. This is feature-local backpressure: independent
+[features] continue through integration and release.
+
 A deployed feature ID is not a permanent tombstone. If a later portfolio scan
-finds new or reopened queued/blocked work under that feature, the supervisor
+finds new or reopened queued work under that feature, the supervisor
 first uses the active tracker adapter to reopen the terminal [feature] to the
 configured nonterminal queue/working status, with exact readback. It then creates
 a new numbered generation with a new run ID, team ID, feature branch, and team
@@ -206,13 +335,31 @@ pointer cannot redirect production source provenance.
 
 - A repository-global lease serializes scans and has bounded stale recovery.
 - Every child command has the configured `operationTimeoutSeconds` deadline;
-  timeout terminates its whole process group before the pass reports failure.
-- The release executor has a separate `releaseTimeoutSeconds` deadline so
-  provider apply/verify hooks may use their own longer bounded timeouts without
-  being killed by the shorter tracker/dispatch deadline. It must exceed the
-  entire configured plan/attestation/status/apply/verify/rollback path. Startup
-  refuses an enabled deployment when the outer deadline is shorter than that
-  conservative sum; the shipped default is 7200 seconds.
+  timeout sends bounded TERM→KILL to its launcher-managed process group before
+  the pass reports failure. A child that deliberately escapes with `setsid`, a
+  double-fork, or an external supervisor requires the mandatory OS sandbox,
+  cgroup/container, or service-job boundary for complete descendant containment.
+- Production handoffs run as identity-bound detached jobs under the protected
+  lifecycle root. A pass waits only for a short fast-completion window, then
+  releases the scan lease; later passes poll the same job and never start a
+  duplicate. Loss of tracker/run authority writes a protected cancellation
+  request which makes the worker terminate its exact release process group.
+  The release child waits behind an inherited launch barrier until its PID,
+  dedicated session, and process group are authenticated in protected lifecycle
+  state. A stale protected heartbeat causes the next pass to cancel that exact
+  group, even if the detached worker died. If the supervisor stops after launch
+  but before saving its run registry, the next pass reconstructs the one
+  deterministic job from protected state instead of launching a duplicate.
+  Only cancellation before the inherited launch barrier opens is recorded as a
+  safe cancellation. Once release may have started, authority loss or worker
+  liveness loss records an uncertain completed attempt and blocks deployment
+  until protected provider-state reconciliation proves the outcome.
+- The detached worker enforces the separate `releaseTimeoutSeconds` deadline so
+  provider apply/verify hooks may use longer bounded timeouts without blocking
+  board scans. It must exceed the entire configured
+  plan/attestation/status/apply/verify/rollback path. Startup refuses an enabled
+  deployment when the outer deadline is shorter than that conservative sum;
+  the shipped default is 7200 seconds.
 - The run registry is atomically replaced and reconstructs unfinished work.
 - `maxFeaturesPerPass` bounds cold starts; existing eligible runs are reconciled first.
 - A failed adapter read, malformed record, preflight, claim, or launch stops the
@@ -224,12 +371,14 @@ pointer cannot redirect production source provenance.
   see `reference/guardrails.md` for the exact coverage boundary.
 - Project-management text is untrusted data. It is never interpolated into a
   shell command, filesystem path, role command, or deployment hook.
-- Marker names and claimed authors are routing/gate evidence, not authenticated
-  security identities. They never grant production authority; automatic
-  production additionally requires the external delivery attestation described
-  in `reference/deployment.md`.
-- `[Blocked]` work always reaches a lead pass. Only dependency blocks with the
-  latest legal `resume-status` may use the existing deterministic auto-unblock.
+- Most marker names and claimed authors are routing/gate evidence, not
+  authenticated security identities. Hold-control markers are narrower: they
+  require matching local published broker receipts, but still grant no
+  production authority. Automatic production additionally requires the
+  external delivery attestation described in `reference/deployment.md`.
+- `[Blocked]` work always reaches task-scoped hold processing. No dependency
+  state, comment, marker, or role can move it outbound; only a human can return
+  it to the queued resume barrier.
 
 See `reference/guardrails.md` for authority boundaries and
 `reference/deployment.md` for the production transaction.
