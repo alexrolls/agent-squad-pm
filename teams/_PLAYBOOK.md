@@ -127,12 +127,14 @@ integration, QA's approval is last, file lists must equal the diff.
 
 ## Escalation
 
-The architect (as `team-lead`) runs the supervision loop and the unblock ladder
+The architect (as `team-lead`) runs the supervision loop, the non-Blocked
+recovery ladder, and task-hold analysis
 from `reference/orchestration.md`. Scope and business-rule questions go to the
 TPM first; the TPM escalates to the human when the answer is not derivable from
 the approved [feature]. Technical rulings are the architect's, and final — but
 the architect never overrides the integrator's validation failures or QA's gate
-verdict.
+verdict. No agent moves `[Blocked]` outbound; only a human may return it to the
+queued resume-review barrier. Other queued [tasks] continue meanwhile.
 
 ## Appendix — message templates
 

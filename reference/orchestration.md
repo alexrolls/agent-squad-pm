@@ -5,7 +5,7 @@ works one [feature] together. This file is the **shared mechanics**; each role's
 (`roles/<role>.md`) says who does what. Both are composed into every agent's startup
 prompt, so every teammate runs the same protocol.
 
-Two principles rule everything:
+Three principles rule everything:
 
 1. **The project-management tool is the single source of durable truth.** Statuses and
    structured comments on [tasks] are the only binding state. Every operation goes
@@ -34,6 +34,8 @@ Two principles rule everything:
 ├── pids/tasks/<instance>.pid    # non-authoritative task marker; never PID/signal authority
 ├── worktrees/<role>#<attempt>-<safe-task-key>/ # isolated task working copies
 ├── executions/<safe-task-key>.json # packet, branch, worktree, attempt, model profile
+├── task-holds.json                 # durable task-scoped Blocked/resume registry
+├── holds/<safe-task-key>/          # immutable blocked/resume snapshots and lead requests
 ├── integrations/<safe-task-key>.json # recoverable merge/tracker transaction
 ├── integrations/.prepared/      # broker-authorized intent written before any Git mutation
 ├── integrations/history/        # superseded transactions + recovery evidence (never erased)
@@ -156,8 +158,9 @@ nothing else: markers, gates, reviews, and statuses are identical in both modes.
   not parallel-only optimizations. The next claim waits for integration.
 - **`parallel`.** The dispatcher computes a ready wave and launches up to
   `MAX_ACTIVE_IMPLEMENTERS` fresh task instances. Every candidate must have an
-  approved design, terminal blockers, and non-conflicting declared files and
-  resources. The integrator remains serialized in dependency order.
+  approved design, terminal blockers or fresh graph-bound partial/independent
+  clearances for currently Blocked direct sources, and non-conflicting declared
+  files and resources. The integrator remains serialized in dependency order.
 
 - **Concurrency cap — `MAX_ACTIVE_IMPLEMENTERS` (parallel only).** Bounds how
   many [tasks] may be in implementer hands at once; `null` defaults to 2.
@@ -180,17 +183,14 @@ nothing else: markers, gates, reviews, and statuses are identical in both modes.
     confirms its divergence sweep of N (see *Sweep timing* below).
   - **Freeze protocol — rework preempts.** If N gets `[review-findings]`
     while N+1 is being implemented: the lead sends a supersession assignment
-    (park N+1 at a clean point — its WIP is safe in its own worktree — switch
-    to N's worktree, deliver the rework and a fresh `[review-request]` before
-    idling), moves N+1 `Active → Blocked` with the comment
-    `Parked (pipelined): preempted by rework on <N>. Resume on <N> re-entering [Review].`
-    (this parked comment deliberately carries **no** `resume-status:` — the lead
-    owns the resume assignment and performs the `Blocked → Active` move directly
-    when N re-enters `[Review]`; the dispatcher must not auto-resume a parked task),
-    and when N re-enters `[Review]`, moves N+1 `Blocked → Active` with a
-    fresh resume assignment. Oldest [task] first, always; one implementer
-    never holds two [tasks] hot at once. A parked [task] reads as **Parked**
-    in the supervision loop, not Stuck.
+    (checkpoint N+1 at a clean point in its own worktree, exit that assignment,
+    switch to N's worktree, deliver the rework and a fresh `[review-request]`
+    before idling). N+1 remains `[Active]`; this scheduling pause is recorded as
+    a local runtime event and **must not** misuse `[Blocked]`, because only a
+    human can move a Blocked task outbound. When N re-enters `[Review]`, the lead
+    issues a fresh assignment for N+1. Oldest [task] first, always; one
+    implementer never holds two [tasks] hot at once. A cleanly preempted [task]
+    reads as **Parked** in the supervision loop, not Stuck.
   - **Sweep timing.** Under `parallel` (any cap), the principal-architect's
     divergence sweep for a [task] runs at **`[Review]` entry** instead of
     post-integration — every `[divergence]` comment exists by then. Rework
@@ -247,6 +247,13 @@ its own submission, but the feature-level tracker-text evaluator
 validates only the exact envelope/timeline and does not authenticate a remote
 commenter/signature. Production authenticity comes only from the external
 attestor or exact-manifest verifier.
+Three hold-control markers are stricter: `[dependency-hold]`, `[resume-review]`,
+and `[resume-plan]` are acted on only when the local broker has a matching
+published receipt for the exact feature, task, body fields, delivery, and
+verified launched-role capability. Text copied directly into the
+project-management tool—even with a team-lead signature—has no such receipt and
+cannot stop a dependent or clear a resume barrier. These receipts authenticate
+only the local workflow command; they grant no production authority.
 When a marker's only allowed role is the [task]'s own implementer, an
 **independent verifier** from the roster substitutes—no role approves its own
 work; none available → `[andon]`.
@@ -269,6 +276,9 @@ pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
 | `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |
 | `[design-approved]` | principal-architect | Gate open. Carries a **numbered architecture checklist** — the items the architecture review will verify — plus any binding conditions. The lead delivers the checklist in the assignment; reviewer/QA Phase-1 checklists start from it (add items, never subtract). |
 | `[design-pushback]` | principal-architect | Gate closed. Lists required changes; implementer revises the `[design-note]` and re-pings. |
+| `[dependency-hold]` | team-lead | Dependency-impact verdict for a queued or in-flight direct dependent. Binds the sorted currently Blocked source ids and fresh graph digest; verdict is `blocked`, `partially-actionable`, or `independent`. Only receipt-backed `blocked` may authorize entry to `[Blocked]`; the other verdicts clear only that exact graph for claim/continuation. |
+| `[resume-review]` | team-lead | Human-resume communication verdict bound to the exact hold id and current communication digest: `unchanged`, `requirements-changed`, or `needs-human`. It cannot move `[Blocked]` outbound; it only governs the queued resume barrier after a human did so. |
+| `[resume-plan]` | team-lead | Revised implementation plan after a `requirements-changed` resume verdict. It must be later than that verdict and followed by a later principal-architect `[design-approved]` before a clean-worktree hold can clear. |
 | `[api-ready]` | backend | Contract available for frontend: endpoints, request/response shapes. Also sent by mailbox. |
 | `[divergence]` | implementer | What was done differently from the [task]/design note and why. Additive — **never edit the original [task] description.** |
 | `[review-request]` | implementer | Ready for review: what changed, list of changed files, an **evidence record per validated command** (see *Evidence and re-execution*), an explicit `NOT validated:` section for anything not run (with reason), and any index-only staging operation performed. A claimed result without its evidence record **is** NOT validated. Written when moving to `[Review]`. |
@@ -366,14 +376,23 @@ The board (`config/statuses.config.json`, composed into your startup prompt) ass
 every status an owner. **Whenever you move an item into a status, notify the new
 owner's mailbox** (and, as always, the move itself lands as tracker state). If the
 owner is a `{"team": ...}`, send to that team's lead, who dispatches internally.
-The owner of a status is the only role that works items sitting in it and the only
-one that performs its outbound transitions.
+The owner of a status is the only party that works items sitting in it and the only
+one that performs its outbound transitions, subject to any narrower explicit
+`transitionAuthority` rule. On the shipped board `[Blocked]` is owned by `human`:
+the authenticated team-lead/PM supervisor may enter it, but no Startup Factory
+role or deterministic component may move it outbound. Only a human acts in the
+project-management tool; broker mode keeps those credentials away from LLMs.
+The operator must also configure a tracker workflow ACL that restricts outbound
+Blocked moves to human principals, because a normalized adapter snapshot cannot
+authenticate who made an external transition.
 
 ## Claiming a [task]
 
 1. The locked dispatcher reads the [task] in full via the adapter.
-2. It verifies status `[Planned]`, terminal blockers, an approved design, an
-   available concurrency slot, and non-conflicting declared resources. If not,
+2. It verifies status `[Planned]`, no active task hold, terminal blockers or
+   fresh graph-bound partial/independent clearances for currently Blocked direct
+   sources, an approved design, an available concurrency slot, and
+   non-conflicting declared resources. If not,
    it leaves the task unclaimed and routes the reason to the team-lead.
    No implementer self-claims in either execution mode.
 3. The dispatcher sets assignee = the concrete role AND moves
@@ -405,10 +424,17 @@ approved design → dispatcher claim → fresh task packet + task worktree
         (sequential: runs here; parallel: already ran at [Review] entry)
 ```
 
+At any point, observing `[Blocked]` interrupts only that [task]'s lane: stop its
+managed workers, revoke its publication capabilities, and reject its outbox and
+integration activity. All independent lanes continue. A human return to queued
+must clear the communication-diff resume barrier before a fresh attempt can
+re-enter this pipeline.
+
 Gates live in comments; statuses move only along the `transitions` graph in
 `config/statuses.config.json`. Default board: `[Planned] → [Active] → [Review] →
 [Ready to deploy]`, rework `[Review] → [Active]`, and `[Blocked]` as the parking
-status for stuck work (owner: team-lead — see lifecycle Scenario 7).
+status for stuck work (owner: human; authorized automation may enter but never
+exit it — see lifecycle Scenario 7).
 
 ## Dual review
 
@@ -495,7 +521,8 @@ branches.
    SIGKILL recovery recognizes an exact in-progress merge or exact landed
    two-parent commit and resumes without a reset or duplicate commit.
 4. Under the dispatch lease, `bin/finalize-integrations.sh` fresh-exports the
-   tracker, recomputes the canonical review-envelope digest, revalidates every
+   tracker, rejects any active task hold, recomputes the canonical
+   review-envelope digest, revalidates every
    base/head/package/request binding and current approval marker/file list,
    performs the idempotent terminal move, emits the integration event, removes
    the clean task worktree, then—and only then—marks the transaction `completed`.
@@ -531,6 +558,9 @@ the release transaction described by `reference/deployment.md`.
   independently, and moves the [feature] terminal only on verified success. In
   broker mode, `tracker-ops.sh` refuses that terminal write unless the release
   executor flag is present; credential and OS isolation remain the real boundary.
+- Any held or manually taken-over [task] keeps its [feature] ineligible for
+  release because the [task] is unfinished. That feature-local wait does not
+  prevent independent [features] from integrating or deploying.
 - Automatic mode requires an external, digest-pinned `verifyDelivery` attestor
   bound to the exact feature commit and integration-evidence digest; tracker
   role signatures alone never open production.
@@ -551,7 +581,12 @@ Detect:
   path — monitor it like anyone else). **A teammate that goes idle while you are
   still waiting on its artifact is Stuck immediately** — the delivery contract was
   violated; do not wait out `STUCK_AFTER_MINUTES`, go straight to rung 1.
-- **Parked** — a [task] sitting in `[Blocked]` with no new comment past the threshold; the team-lead owns driving it out.
+- **Parked** — a clean local scheduling pause (for example pipelined rework
+  preemption) while the [task] remains `[Active]`; it is not `[Blocked]`.
+- **Held** — a [task] in `[Blocked]`, `resume-review-pending`, or manual takeover.
+  Its task workers must be stopped and its publication/integration authority
+  fenced. The lead may analyze, request a human decision, or prepare the resume
+  review, but never move it out of `[Blocked]`.
 - **Conflict** — two claimants on one [task]; contradictory `[divergence]` notes
   across [tasks]; a merge conflict reported by the integrator; a deadlock
   (A waits on B waits on A).
@@ -559,12 +594,19 @@ Detect:
   record reports the bound PID/start identity dead. Files below `pids/` are
   agent-writable markers only and must never be used as process authority.
 
-Unblock ladder — in order, one rung at a time:
+Authenticated lifecycle stop sends bounded TERM→KILL to the launcher-managed
+process group/session. It is not an OS containment boundary: `setsid`, a
+double-fork, or an external supervisor can escape ordinary group signaling.
+Autonomous mode therefore requires its sandbox/cgroup/container/service job to
+contain every descendant; broker fences still reject stale escaped output.
+
+Recovery ladder for non-Blocked work — in order, one rung at a time:
 1. **Message** the agent (mailbox + tracker comment) with a concrete instruction.
 2. **Decide** — make a binding process decision. Technical disputes are delegated
    to the principal-architect, whose ruling is final.
-3. **Reassign** — `[handoff]` comment summarizing state, move the [task] back to
-   `[Planned]`, clear the assignee, relaunch a fresh agent for it.
+3. **Reassign** — `[handoff]` comment summarizing state; when the current
+   transition is legal and the [task] is not human-held, move it back to
+   `[Planned]`, clear the assignee, and relaunch a fresh agent.
 4. **Kill & relaunch** — quarantine the dead instance's working copy first (see
    *Recovery* → *Relaunch hygiene*), then
    `bin/launch-team.sh relaunch <team> <featureId> <role>` (or respawn in the
@@ -572,6 +614,11 @@ Unblock ladder — in order, one rung at a time:
 5. **Escalate** — `[escalation]` comment + append to `ESCALATIONS.md`. Reserved for
    scope/business-rule questions, destructive actions, or after
    `ESCALATE_AFTER_ATTEMPTS` failed rungs.
+
+Never apply this ladder to bypass a `[Blocked]` hold. Independent work continues
+while the human decides. After a human returns the [task] to queued, the lead
+publishes the exact receipt-backed `[resume-review]`; changed requirements also
+need `[resume-plan]` and a later architect approval before a clean fresh attempt.
 
 The Lead never overrides an integrator validation failure or a principal-architect
 veto — the andon cord outranks the Lead. During autonomous operation the Lead never
@@ -607,10 +654,12 @@ it against the approved design. Gate-role recovery remains tracker-driven.
 
 ## Andon cord
 
-Pull it — stop, write an `[andon]` comment, notify the team-lead by mailbox — when:
+Pull it — stop the affected action/[task], write an `[andon]` comment, notify the team-lead by mailbox — when:
 a [task] is in an unexpected status; an adapter operation fails; validation fails;
 you are blocked or see contradictory instructions. Never work around a failure,
-never fabricate a result, never claim a status you did not verify.
+never fabricate a result, never claim a status you did not verify. The PM loop
+and independent [tasks]/[features] continue unless the failure invalidates their
+shared authority or source snapshot.
 
 ## Capability matrix
 

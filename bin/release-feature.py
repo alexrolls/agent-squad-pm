@@ -54,6 +54,7 @@ DANGEROUS_ENVIRONMENT_PREFIXES = (
 )
 MAX_CREDENTIAL_FILE_BYTES = 1024 * 1024
 MAX_PROTECTED_CONFIG_BYTES = 16 * 1024 * 1024
+BUILTIN_TRACKER_ADAPTERS = {"Linear", "Jira", "GitHubIssues", "Markdown"}
 os.umask(0o077)
 
 
@@ -750,11 +751,14 @@ def validate_trusted_file(path: Path, expected_digest: object, label: str, *, al
 
 
 def trusted_file_specs() -> dict[str, tuple[Path, Path]]:
-    return {
+    specs = {
         "release-feature.py": (Path(__file__).resolve(), Path("bin/release-feature.py")),
         "policy-check.py": ((SKILL_DIR / "bin" / "policy-check.py").resolve(), Path("bin/policy-check.py")),
         "tracker-ops.sh": ((SKILL_DIR / "bin" / "tracker-ops.sh").resolve(), Path("bin/tracker-ops.sh")),
         "finalize-integrations.sh": ((SKILL_DIR / "bin" / "finalize-integrations.sh").resolve(), Path("bin/finalize-integrations.sh")),
+        "task-hold.py": ((SKILL_DIR / "bin" / "task-hold.py").resolve(), Path("bin/task-hold.py")),
+        "outbox_capability.py": ((SKILL_DIR / "bin" / "outbox_capability.py").resolve(), Path("bin/outbox_capability.py")),
+        "broker_evidence.py": ((SKILL_DIR / "bin" / "broker_evidence.py").resolve(), Path("bin/broker_evidence.py")),
         "runtime-state.py": ((SKILL_DIR / "bin" / "runtime-state.py").resolve(), Path("bin/runtime-state.py")),
         "task_metadata.py": ((SKILL_DIR / "bin" / "task_metadata.py").resolve(), Path("bin/task_metadata.py")),
         "product_acceptance.py": ((SKILL_DIR / "bin" / "product_acceptance.py").resolve(), Path("bin/product_acceptance.py")),
@@ -765,6 +769,32 @@ def trusted_file_specs() -> dict[str, tuple[Path, Path]]:
         "team.config.md": ((SKILL_DIR / "config" / "team.config.md").resolve(), Path("config/team.config.md")),
         "project-management.config.md": ((SKILL_DIR / "config" / "project-management.config.md").resolve(), Path("config/project-management.config.md")),
     }
+    pm_config_path = SKILL_DIR / "config" / "project-management.config.md"
+    try:
+        pm_config_text = pm_config_path.read_text()
+    except OSError as exc:
+        raise ReleaseError(f"cannot read project-management config: {exc}") from exc
+    pm_values: dict[str, str | None] = {}
+    for match in re.finditer(r"^([A-Z_]+)=(.*)$", pm_config_text, re.MULTILINE):
+        name = match.group(1)
+        if name in pm_values:
+            raise ReleaseError(f"duplicate project-management setting {name}")
+        value = match.group(2).split("#", 1)[0].strip().strip('"')
+        pm_values[name] = None if value == "null" else value
+    tracker_adapter = os.environ.get("TRACKER_ADAPTER") or pm_values.get(
+        "PRODUCT_MANAGEMENT_TOOL"
+    )
+    if not isinstance(tracker_adapter, str) or not re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_-]{0,63}", tracker_adapter
+    ):
+        raise ReleaseError("trusted code requires a valid configured tracker adapter")
+    if tracker_adapter not in BUILTIN_TRACKER_ADAPTERS:
+        relative = Path("extensions", "tracker-backends", f"{tracker_adapter}.py")
+        specs[f"tracker-backend.{tracker_adapter}.py"] = (
+            SKILL_DIR / relative,
+            relative,
+        )
+    return specs
 
 
 def skill_path(relative: str) -> Path:
@@ -1193,14 +1223,19 @@ def materialize_trusted_code(
     """
 
     bundle = state_root / "trusted-code" / config_digest.removeprefix("sha256:")
-    for directory in (state_root / "trusted-code", bundle, bundle / "bin", bundle / "config"):
+    specs = trusted_file_specs()
+    trusted_directories = {
+        state_root / "trusted-code",
+        bundle,
+        *((bundle / relative).parent for _, relative in specs.values()),
+    }
+    for directory in sorted(trusted_directories, key=lambda item: (len(item.parts), str(item))):
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = directory.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise ReleaseError(f"trusted code directory is unsafe: {directory}")
         if info.st_uid not in {0, os.geteuid()} or stat.S_IMODE(info.st_mode) & 0o077:
             raise ReleaseError(f"trusted code directory must be private and executor-owned: {directory}")
-    specs = trusted_file_specs()
     for name, (_, relative) in specs.items():
         destination = bundle / relative
         expected = configured_digests[name]
@@ -1999,6 +2034,27 @@ def safe_task_key(value: str) -> str:
     return f"{slug}-{hashlib.sha256(value.encode()).hexdigest()[:10]}"
 
 
+def ignored_task_labels() -> set[str]:
+    raw = os.environ.get(
+        "STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON", '["human-work"]'
+    )
+    try:
+        values = json.loads(raw)
+    except ValueError as exc:
+        raise ReleaseError("ignored-task label policy is invalid JSON") from exc
+    if not isinstance(values, list) or any(
+        not isinstance(item, str) or not item.strip() or item != item.strip()
+        for item in values
+    ):
+        raise ReleaseError(
+            "ignored-task label policy must be a JSON array of canonical strings"
+        )
+    canonical = [item.casefold() for item in values]
+    if len(canonical) != len(set(canonical)):
+        raise ReleaseError("ignored-task label policy contains a duplicate")
+    return set(canonical)
+
+
 def verify_integrations(
     snapshot: dict,
     workspace: Path,
@@ -2021,6 +2077,15 @@ def verify_integrations(
         raise ReleaseError("release requires at least one integrated [task] and one commit-requiring terminal status")
     if any(task.get("status") not in terminals for task in tasks):
         raise ReleaseError("not every [task] is in the commit-requiring terminal status")
+    ignored = ignored_task_labels()
+    for task in tasks:
+        labels = task.get("labels") or []
+        if not isinstance(labels, list) or any(not isinstance(item, str) for item in labels):
+            raise ReleaseError("tracker snapshot contains malformed task labels")
+        if ignored.intersection(item.strip().casefold() for item in labels):
+            raise ReleaseError(
+                "a [task] is labeled for human work; production delivery is stopped"
+            )
     integrations = workspace / "integrations"
     if integrations.is_symlink() or not integrations.is_dir():
         raise ReleaseError("release requires a non-symlink integration transaction directory")
@@ -2281,11 +2346,18 @@ def project_transaction(
     )
 
 
-def finish_feature(repository: Path, feature_id: str, tracker_env: dict[str, str]) -> None:
+def finish_feature(
+    repository: Path,
+    feature_id: str,
+    tracker_env: dict[str, str],
+    before_transition=None,
+) -> None:
     board = load_json(skill_path("config/statuses.config.json"), "status config")
     terminals = [status["name"] for status in board.get("features", {}).get("statuses", []) if status.get("terminal")]
     if len(terminals) != 1:
         raise ReleaseError("production completion requires exactly one terminal [feature] status")
+    if before_transition is not None:
+        before_transition()
     subprocess_text(
         [str(skill_path("bin/tracker-ops.sh")), "feature-state", feature_id, terminals[0]],
         repository,
@@ -2504,6 +2576,15 @@ def execute(args: argparse.Namespace) -> int:
         raise ReleaseError("feature branch did not resolve to a full commit hash")
 
     tracker_env = read_environment(config, "trackerEnvironmentAllowlist", repository)
+    lifecycle_authority = os.environ.get("STARTUP_FACTORY_LIFECYCLE_STATE_ROOT")
+    if lifecycle_authority:
+        # Internal broker authority is deliberately not a deployment-provider
+        # credential and is never forwarded to hooks.  It is required by the
+        # pinned integration finalizer to honor Blocked holds during release.
+        tracker_env["STARTUP_FACTORY_LIFECYCLE_STATE_ROOT"] = lifecycle_authority
+    tracker_env["STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON"] = json.dumps(
+        sorted(ignored_task_labels()), separators=(",", ":")
+    )
     tracker_env.setdefault("TRACKER_PROJECT_ROOT", str(repository))
     tracker_env["STARTUP_FACTORY_RELEASE_EXECUTOR"] = "1"
     environment = str(config["environment"])
@@ -2738,10 +2819,69 @@ def execute(args: argparse.Namespace) -> int:
         elif transaction.get("deliveryAttestationDigest") is not None:
             raise ReleaseError("approval-required transaction unexpectedly contains an automatic delivery attestation")
 
+        def revalidate_tracker_release_authority(boundary: str) -> None:
+            """Rebind production/terminal authority to a fresh exhaustive export."""
+            boundary_path = release_dir / ("tracker-authority-%s.json" % boundary)
+            subprocess_text(
+                [
+                    str(skill_path("bin/tracker-ops.sh")),
+                    "export",
+                    args.feature,
+                    str(boundary_path),
+                ],
+                repository,
+                tracker_env,
+                "%s tracker authority snapshot" % boundary,
+            )
+            boundary_snapshot = load_json(
+                boundary_path, "%s tracker authority snapshot" % boundary
+            )
+            boundary_digest = verify_integrations(
+                boundary_snapshot,
+                workspace,
+                repository,
+                args.team,
+                args.feature,
+                tracker_env,
+                trusted_base_ref,
+                commit,
+                trusted_generation_predecessor,
+                release_dir / ("integration-evidence-%s.json" % boundary),
+            )
+            if boundary_digest != integration_evidence_digest:
+                raise ReleaseError(
+                    "terminal task/integration evidence changed at the %s boundary"
+                    % boundary
+                )
+            try:
+                boundary_product = evaluate_product_acceptance(
+                    boundary_snapshot,
+                    feature_id=args.feature,
+                    commit=commit,
+                    integration_evidence_digest=integration_evidence_digest,
+                )
+            except ProductAcceptancePending as exc:
+                raise AwaitingAuthorization(
+                    "product authority changed at the %s boundary: %s"
+                    % (boundary, exc)
+                ) from exc
+            if boundary_product.digest != product_acceptance_digest:
+                raise AwaitingAuthorization(
+                    "product authority digest changed at the %s boundary" % boundary
+                )
+
         if transaction.get("phase") == "succeeded":
+            revalidate_tracker_release_authority("already-succeeded-close")
             release_target_lease(target_active_file, release_id)
             project_transaction(transaction, release_dir, repository, args.feature, tracker_env)
-            finish_feature(repository, args.feature, tracker_env)
+            finish_feature(
+                repository,
+                args.feature,
+                tracker_env,
+                before_transition=lambda: revalidate_tracker_release_authority(
+                    "already-succeeded-terminal-write"
+                ),
+            )
             print(f"release-feature: {release_id} already succeeded")
             return 0
         if transaction.get("phase") == "rolled-back":
@@ -3159,6 +3299,7 @@ def execute(args: argparse.Namespace) -> int:
                         "a fresh exact-manifest approval is required"
                     )
             def revalidate_apply_authority() -> None:
+                revalidate_tracker_release_authority("apply-process")
                 revalidate_bound_repository_identity(repository)
                 boundary_head = git_text(
                     repository,
@@ -3283,6 +3424,7 @@ def execute(args: argparse.Namespace) -> int:
         if observed.get("artifactDigest") != transaction.get("artifactDigest"):
             raise ReleaseError("deployed artifact digest does not match the release plan")
 
+        revalidate_tracker_release_authority("pre-verify")
         transaction.update({"phase": "verifying", "updatedAt": now()})
         atomic_json(transaction_file, transaction)
         verification_result = run_hook(
@@ -3338,6 +3480,7 @@ def execute(args: argparse.Namespace) -> int:
                 release_target_lease(target_active_file, release_id, require_owner=True)
             raise ReleaseError("production verification failed")
 
+        revalidate_tracker_release_authority("post-verify-success")
         transaction.update({
             "phase": "succeeded", "verifiedAt": now(), "updatedAt": now(),
             "verificationDigest": canonical_digest(verification),
@@ -3345,7 +3488,14 @@ def execute(args: argparse.Namespace) -> int:
         atomic_json(transaction_file, transaction)
         release_target_lease(target_active_file, release_id, require_owner=True)
         project_transaction(transaction, release_dir, repository, args.feature, tracker_env)
-        finish_feature(repository, args.feature, tracker_env)
+        finish_feature(
+            repository,
+            args.feature,
+            tracker_env,
+            before_transition=lambda: revalidate_tracker_release_authority(
+                "terminal-feature-write"
+            ),
+        )
         print(f"release-feature: {release_id} succeeded at {commit}")
         return 0
 

@@ -38,8 +38,10 @@ set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 exec 4<&0
 exec python3 - "$SKILL_DIR" "$@" <<'PYEOF'
-import hashlib, json, os, re, stat, subprocess, sys, time, urllib.request, urllib.error, urllib.parse
+import hashlib, importlib.util, json, os, re, stat, subprocess, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import date, datetime, timezone
+
+sys.dont_write_bytecode = True
 
 try:
     sys.stdin = os.fdopen(4)
@@ -73,6 +75,7 @@ PM_CONFIG = read_config_keys(os.path.join(SKILL_DIR, 'config', 'project-manageme
 ADAPTER = os.environ.get('TRACKER_ADAPTER') or PM_CONFIG.get('PRODUCT_MANAGEMENT_TOOL')
 if not ADAPTER:
     die("no adapter: set PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md")
+
 try:
     OPERATION_TIMEOUT = int(os.environ.get('TRACKER_OPERATION_TIMEOUT_SECONDS', '60'))
 except ValueError:
@@ -137,6 +140,16 @@ def feature_generic_of(raw):
         if s.get('tool', {}).get(ADAPTER) == raw:
             return s['name']
     return None
+
+def assert_automated_task_transition(current_name, target_name):
+    """Fail closed when an automated operation tries to release a human hold."""
+    if current_name == target_name:
+        return
+    current = status_by_name(current_name)
+    if current.get('kind') == 'blocked':
+        die("outbound [Blocked] transition [%s] → [%s] is human-only; "
+            "move the ticket directly in the project-management tool — andon"
+            % (current_name, target_name))
 
 def read_body(path):
     if path in (None, '-'):
@@ -329,6 +342,29 @@ def normalize_task_record(raw, context, feature_field=False):
             die("%s has a malformed featureTitle — andon" % context)
     return value
 
+def ignored_task_labels_from_environment():
+    raw = os.environ.get('STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON')
+    if raw is None:
+        return set()
+    try:
+        values = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        die("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON is not valid JSON — andon")
+    if not isinstance(values, list):
+        die("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON must be a JSON list — andon")
+    labels = set()
+    for value in values:
+        if not isinstance(value, str) or not value or value != value.strip():
+            die("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON contains a malformed label — andon")
+        canonical = value.casefold()
+        if canonical in labels:
+            die("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON contains a duplicate label — andon")
+        labels.add(canonical)
+    return labels
+
+def task_has_ignored_label(task, ignored_labels):
+    return bool(ignored_labels.intersection(label.casefold() for label in task.get('labels') or []))
+
 # ---- adapter backends --------------------------------------------------------
 def http_json(url, payload=None, headers=None, method=None):
     data = json.dumps(payload).encode() if payload is not None else None
@@ -497,6 +533,9 @@ class Linear:
     def current_status(self, task_id):
         d = self.gql('query($id: String!) { issue(id: $id) { state { name } } }', {'id': task_id})
         return generic_of(d['issue']['state']['name']) if d.get('issue') else None
+
+    def current_labels(self, task_id):
+        return [item['name'] for item in self.issue_connection(task_id, 'labels')]
 
     def integration_comment_exists(self, task_id, commit):
         return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
@@ -839,6 +878,13 @@ class Jira:
         issue = self.api('/rest/api/3/issue/%s?fields=status' % task_id)
         return generic_of(issue['fields']['status']['name'])
 
+    def current_labels(self, task_id):
+        issue = self.api('/rest/api/3/issue/%s?fields=labels' % task_id)
+        labels = issue.get('fields', {}).get('labels') or []
+        if not isinstance(labels, list) or any(not isinstance(item, str) for item in labels):
+            die("Jira returned malformed task labels — andon")
+        return labels
+
     def integration_comment_exists(self, task_id, commit):
         return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
 
@@ -1042,6 +1088,16 @@ class GitHubIssues:
             if (closed and issue['state'] == 'CLOSED') or (not closed and wanted == label):
                 return status['name']
         return None
+
+    def current_labels(self, task_id):
+        issue = json.loads(self.gh('issue', 'view', str(task_id), '--json', 'labels'))
+        labels = issue.get('labels') or []
+        if not isinstance(labels, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get('name'), str)
+            for item in labels
+        ):
+            die("GitHub returned malformed task labels — andon")
+        return [item['name'] for item in labels]
 
     def integration_comment_exists(self, task_id, commit):
         return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
@@ -1526,6 +1582,20 @@ class Markdown:
             die("no task %s in %s — andon" % (num, path))
         return generic_of('[%s]' % match.group(2))
 
+    def current_labels(self, task_id):
+        path, num = self.split_task_id(task_id)
+        text = self.load(path)
+        match = self.section_pattern(num).search(text)
+        if not match:
+            die("no task %s in %s — andon" % (num, path))
+        start = match.start()
+        next_match = re.search(r'^## [0-9]+ ', text[match.end():], re.M)
+        end = match.end() + next_match.start() if next_match else len(text)
+        labels = re.search(r'^\*\*Labels:\*\*\s*(.*)$', text[start:end], re.M)
+        if not labels or labels.group(1).strip() in ('', '-', '—'):
+            return []
+        return [item.strip() for item in labels.group(1).split(',') if item.strip()]
+
     def integration_comment_exists(self, task_id, commit):
         return self.comment_exists(task_id, 'Integrated: commit %s.' % commit)
 
@@ -1564,7 +1634,11 @@ class Markdown:
         marker = marker_m.group(1) if marker_m else 'note'
         content = body[len(marker):].lstrip(' :') if marker_m else body
         lines = content.split('\n')
-        if marker in ('[product-approval]', '[product-pushback]') or body.startswith('[DENIED ACTION]'):
+        if marker in (
+            '[product-approval]', '[product-pushback]',
+            '[resume-review]', '[resume-plan]', '[dependency-hold]',
+            '[design-approved]', '[design-pushback]',
+        ) or body.startswith('[DENIED ACTION]'):
             # The release gate parses an exact structured envelope, and a
             # denied-action audit record must keep its marker literal. Preserve
             # both byte-for-byte (apart from Markdown quote prefixes) instead of
@@ -1650,8 +1724,11 @@ class Markdown:
                 die("Markdown task %s has duplicate managed progress blocks — andon" % num)
             am = re.search(r'^\*\*Assignee:\*\* (.*)$', section, re.M)
             bb = re.search(r'^\*\*BlockedBy:\*\* (.*)$', section, re.M)
+            lm = re.search(r'^\*\*Labels:\*\* (.*)$', section, re.M)
             blocked_by = ['%s#%s' % (feature_id, n.strip().lstrip('#'))
                           for n in bb.group(1).split(',') if n.strip()] if bb else []
+            labels = ([label.strip() for label in lm.group(1).split(',') if label.strip()]
+                      if lm and lm.group(1).strip() not in ('-', '—') else [])
             _blocks, _cur, _cur_revision, _offset = [], [], None, 0
             for _raw_line in section.splitlines(keepends=True):
                 _l = _raw_line.rstrip('\r\n')
@@ -1685,7 +1762,7 @@ class Markdown:
                     if _l.startswith('<!-- agent-squad:') and _l.endswith(':end -->'):
                         managed = False
                     continue
-                if _l.startswith('> ') or re.match(r'^\*\*(Assignee|BlockedBy):\*\*', _l):
+                if _l.startswith('> ') or re.match(r'^\*\*(Assignee|BlockedBy|Labels):\*\*', _l):
                     continue
                 description_lines.append(_l)
             description = re.sub(r'\n{3,}', '\n\n', '\n'.join(description_lines)).strip()
@@ -1710,7 +1787,7 @@ class Markdown:
                           'status': generic_of(raw), 'statusRaw': raw,
                           'assignee': (am.group(1).strip() if am and am.group(1).strip() not in ('-', '—') else None),
                           'description': description, 'comments': comments,
-                          'blockedBy': blocked_by, 'labels': [],
+                          'blockedBy': blocked_by, 'labels': labels,
                           'updatedAt': datetime.fromtimestamp(os.path.getmtime(self.contained_path(feature_id)), timezone.utc).isoformat(),
                           'revision': str(os.stat(self.contained_path(feature_id)).st_mtime_ns)})
         return tasks
@@ -1738,9 +1815,82 @@ class Markdown:
         return items
 
 BACKENDS = {'Linear': Linear, 'Jira': Jira, 'GitHubIssues': GitHubIssues, 'Markdown': Markdown}
-if ADAPTER not in BACKENDS:
-    die("adapter '%s' has no tracker-ops backend — use the adapter doc's Operations table directly" % ADAPTER)
-backend = BACKENDS[ADAPTER]()
+if ADAPTER in BACKENDS:
+    backend = BACKENDS[ADAPTER]()
+else:
+    if not re.match(r'^[A-Za-z][A-Za-z0-9_-]{0,63}$', ADAPTER):
+        die("custom adapter name must match [A-Za-z][A-Za-z0-9_-]{0,63}")
+    backend_root = os.path.join(SKILL_DIR, 'extensions', 'tracker-backends')
+    custom_backend = os.path.join(backend_root, ADAPTER + '.py')
+    for component in (
+            os.path.join(SKILL_DIR, 'extensions'),
+            backend_root,
+            custom_backend):
+        if os.path.islink(component):
+            die("custom tracker backend path contains a symlink: %s" % component)
+    try:
+        backend_stat = os.stat(custom_backend)
+    except OSError as e:
+        die("adapter '%s' has no tracker-ops backend; expected extensions/tracker-backends/%s.py: %s"
+            % (ADAPTER, ADAPTER, e))
+    if not stat.S_ISREG(backend_stat.st_mode):
+        die("custom tracker backend must be a regular Python file: %s" % custom_backend)
+    spec = importlib.util.spec_from_file_location(
+        'startup_factory_tracker_backend_' + hashlib.sha256(ADAPTER.encode()).hexdigest(),
+        custom_backend,
+    )
+    if spec is None or spec.loader is None:
+        die("cannot load custom tracker backend: %s" % custom_backend)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        backend = module.Backend({
+            'adapter': ADAPTER,
+            'feature_statuses': FEATURE_STATUSES,
+            'operation_timeout_seconds': OPERATION_TIMEOUT,
+            'pm_config': dict(PM_CONFIG),
+            'skill_dir': SKILL_DIR,
+            'task_statuses': TASK_STATUSES,
+        })
+    except Exception as e:
+        die("cannot initialize custom tracker backend %s: %s" % (custom_backend, e))
+    required_backend_methods = {
+        'comment', 'comment_exists', 'current_feature_status', 'current_labels',
+        'current_status', 'export', 'integration_comment_exists', 'scan',
+        'set_assignee', 'set_feature_state', 'set_state', 'update_comment',
+        'upsert_deployment', 'upsert_digest', 'upsert_progress',
+    }
+    missing_methods = sorted(
+        name for name in required_backend_methods
+        if not callable(getattr(backend, name, None))
+    )
+    if missing_methods:
+        die("custom tracker backend is incomplete; missing methods: %s" %
+            ', '.join(missing_methods))
+
+def assert_task_not_ignored(task_id):
+    ignored = ignored_task_labels_from_environment()
+    if not ignored:
+        return
+    if not hasattr(backend, 'current_labels'):
+        die("adapter '%s' cannot verify ignored labels at the mutation boundary — andon" % ADAPTER)
+    labels = backend.current_labels(task_id)
+    if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+        die("adapter '%s' returned malformed current labels — andon" % ADAPTER)
+    if ignored.intersection(label.strip().casefold() for label in labels):
+        die("task %s is labeled for human work; automated mutation is refused — andon" % task_id)
+
+def fresh_task_status(task_id, expected=None):
+    current = backend.current_status(task_id)
+    if current is None:
+        die("cannot reverse-map the current status of %s — andon" % task_id)
+    if status_by_name(current).get('kind') == 'blocked':
+        die("task %s is authoritatively [Blocked]; automated mutation is refused — andon" % task_id)
+    if expected is not None and current != expected:
+        die("task %s changed from expected [%s] to [%s] before mutation — andon"
+            % (task_id, expected, current))
+    assert_task_not_ignored(task_id)
+    return current
 
 # ---- operations ----------------------------------------------------------------
 def op_state(args):
@@ -1750,10 +1900,12 @@ def op_state(args):
     current_name = backend.current_status(args[0])
     if current_name is None:
         die("cannot reverse-map the current status of %s — andon" % args[0])
+    assert_automated_task_transition(current_name, target['name'])
     if current_name != target['name']:
         current = status_by_name(current_name)
         if target['name'] not in current.get('transitions', []):
             die("illegal [task] transition [%s] → [%s] — andon" % (current_name, target['name']))
+        fresh_task_status(args[0], current_name)
         backend.set_state(args[0], target)
         observed = backend.current_status(args[0])
         if observed != target['name']:
@@ -1821,6 +1973,7 @@ def op_task_reopen(args):
     current_name = backend.current_status(task_id)
     if current_name is None:
         die("cannot reverse-map the current status of %s — andon" % task_id)
+    assert_automated_task_transition(current_name, target_name)
     if current_name == target_name:
         print("%s already reopened → [%s]" % (task_id, target_name))
         return
@@ -1829,6 +1982,7 @@ def op_task_reopen(args):
         die("task-reopen requires a commit-requiring terminal source status, observed [%s] — andon" % current_name)
     # This is deliberately narrower than ordinary `state`: only the broker may
     # reopen an integrated task after durable supersede/revert evidence exists.
+    fresh_task_status(task_id, current_name)
     backend.set_state(task_id, target)
     observed = backend.current_status(task_id)
     if observed != target_name:
@@ -1875,6 +2029,7 @@ def op_upsert_progress(args):
     body = read_body(args[1] if len(args) == 2 else None)
     if not body.lstrip().startswith('[progress]'):
         die("upsert-progress body must begin with [progress]")
+    fresh_task_status(args[0])
     cid = backend.upsert_progress(args[0], body)
     print("progress updated on %s%s" % (args[0], " (id: %s)" % cid if cid else ""))
 
@@ -1916,10 +2071,14 @@ def op_claim(args):
     if expected != init['name']:
         die("claim expected status must be the board's initial status [%s]" % init['name'])
     if to is None:
-        if len(init['transitions']) != 1:
-            die("initial status '%s' has %d outbound transitions — pass --to <Status>"
-                % (init['name'], len(init['transitions'])))
-        to = init['transitions'][0]
+        working_targets = [
+            name for name in init['transitions']
+            if status_by_name(name).get('kind') == 'working'
+        ]
+        if len(working_targets) != 1:
+            die("initial status '%s' has %d working transitions — pass --to <Status>"
+                % (init['name'], len(working_targets)))
+        to = working_targets[0]
     target = status_by_name(to)
     if to not in init['transitions']:
         die("claim must follow the board: '%s' is not in %s.transitions — andon" % (to, init['name']))
@@ -1928,15 +2087,22 @@ def op_claim(args):
         die("invalid claim id '%s'" % claim_id)
     token = "claim-id: %s" % claim_id
     current = backend.current_status(task_id)
+    if current is None:
+        die("cannot reverse-map the current status of %s — andon" % task_id)
+    assert_automated_task_transition(current, to)
+    assert_task_not_ignored(task_id)
     if current == to and backend.comment_exists(task_id, token):
         print("%s claim %s already recorded → [%s]" % (task_id, claim_id, to))
         return
     if current != expected:
         die("claim conflict: expected [%s], observed [%s] for %s — no launch" % (expected, current, task_id))
     if not backend.comment_exists(task_id, token):
+        fresh_task_status(task_id, expected)
         backend.comment(task_id, "[claim]\n%s\nrole: %s\ntarget-status: %s\n\n— dispatcher" % (token, role, to))
     if hasattr(backend, 'set_assignee'):
+        fresh_task_status(task_id, expected)
         backend.set_assignee(task_id, role)
+    fresh_task_status(task_id, expected)
     backend.set_state(task_id, target)
     observed = backend.current_status(task_id)
     if observed != to:
@@ -1999,15 +2165,20 @@ def op_integrate(args):
     current_name = backend.current_status(task_id)
     if current_name is None:
         die("cannot reverse-map the current status of %s — andon" % task_id)
+    assert_automated_task_transition(current_name, term['name'])
+    assert_task_not_ignored(task_id)
     if current_name != term['name']:
         current = status_by_name(current_name)
         if term['name'] not in current.get('transitions', []):
             die("integration cannot skip [%s] → [%s] — andon" % (current_name, term['name']))
+        fresh_task_status(task_id, current_name)
         backend.set_state(task_id, term)
         observed = backend.current_status(task_id)
         if observed != term['name']:
             die("integration status did not read back as [%s] — andon" % term['name'])
+    fresh_task_status(task_id, term['name'])
     if not backend.integration_comment_exists(task_id, commit):
+        fresh_task_status(task_id, term['name'])
         backend.comment(task_id, body)
     print("%s → [%s] (commit %s)" % (task_id, term['name'], commit))
 
@@ -2019,6 +2190,7 @@ def op_export(args):
     if not isinstance(tasks, list):
         die("adapter returned a malformed feature export — andon")
     normalized, seen = [], set()
+    ignored_labels = ignored_task_labels_from_environment()
     for index, task in enumerate(tasks):
         value = normalize_task_record(
             task, "feature export record %d" % (index + 1))
@@ -2026,6 +2198,8 @@ def op_export(args):
             die("adapter returned a duplicate task identity '%s' in feature export — andon"
                 % value['taskId'])
         seen.add(value['taskId'])
+        if task_has_ignored_label(value, ignored_labels):
+            continue
         normalized.append(value)
     tasks = normalized
     payload = {'featureId': feature_id, 'adapter': ADAPTER,
@@ -2055,6 +2229,7 @@ def op_scan(args):
     if not isinstance(items, list):
         die("adapter returned a malformed board scan — andon")
     normalized, orphans, seen = [], [], set()
+    ignored_labels = ignored_task_labels_from_environment()
     for index, item in enumerate(items):
         value = normalize_task_record(
             item, "board scan record %d" % (index + 1), feature_field=True)
@@ -2065,6 +2240,8 @@ def op_scan(args):
             die("adapter returned duplicate task identity '%s' in board scan — andon"
                 % value['taskId'])
         seen.add(value['taskId'])
+        if task_has_ignored_label(value, ignored_labels):
+            continue
         value['routingHints'] = {'labels': list(value.get('labels') or []), 'teamPreset': None}
         (normalized if value.get('featureId') else orphans).append(value)
     payload = {

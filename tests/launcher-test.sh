@@ -554,6 +554,170 @@ print(matches[0])
 PY
 }
 
+SESSION_SLEEPER="$TMP/session-sleeper.py"
+cat > "$SESSION_SLEEPER" <<'PY'
+import os
+import pathlib
+import sys
+import time
+
+os.setsid()
+pathlib.Path(sys.argv[1]).touch()
+time.sleep(30)
+PY
+
+spawn_lifecycle_sleep() { # print PID of a detached, dedicated session leader
+  local ready_dir ready pid
+  ready_dir="$(mktemp -d "$TMP/session-ready.XXXXXX")"
+  ready="$ready_dir/ready"
+  pid="$(/bin/sh -c '"$1" "$2" "$3" </dev/null >/dev/null 2>&1 & printf "%s\n" "$!"' \
+    lifecycle-session-sleeper "$(command -v python3)" "$SESSION_SLEEPER" "$ready")"
+  for _i in $(seq 1 40); do [ -f "$ready" ] && break; sleep 0.05; done
+  [ -f "$ready" ] || { kill "$pid" 2>/dev/null || true; return 1; }
+  rm -f "$ready"; rmdir "$ready_dir"
+  printf '%s\n' "$pid"
+}
+
+TERM_IGNORER="$TMP/term-ignorer.py"
+cat > "$TERM_IGNORER" <<'PY'
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+os.setsid()
+child_ready = pathlib.Path(str(sys.argv[1]) + ".child")
+child_code = """
+import pathlib, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(sys.argv[1]).touch()
+time.sleep(30)
+"""
+child = subprocess.Popen([sys.executable, "-c", child_code, str(child_ready)])
+for _ in range(200):
+    if child_ready.exists():
+        break
+    time.sleep(0.01)
+else:
+    child.kill()
+    raise SystemExit("child did not install its TERM handler")
+pathlib.Path(sys.argv[1]).write_text(
+    f"{os.getpid()} {child.pid}\n", encoding="ascii"
+)
+time.sleep(30)
+PY
+
+spawn_term_ignoring_process() { # ready-file -> detached PID
+  /bin/sh -c '"$1" "$2" "$3" </dev/null >/dev/null 2>&1 & printf "%s\n" "$!"' \
+    lifecycle-term-ignorer "$(command -v python3)" "$TERM_IGNORER" "$1"
+}
+
+register_lifecycle_process() { # team category instance pid
+  python3 .claude/skills/pm/bin/process-lifecycle.py register \
+    --root "$LIFECYCLE_ROOT" --repo "$PWD" \
+    --team "$1" --category "$2" --instance "$3" --kind background --pid "$4" >/dev/null
+}
+
+record_count() { # team instance
+  python3 - "$LIFECYCLE_ROOT" "$1" "$2" <<'PY'
+import json, pathlib, sys
+root, team, instance = sys.argv[1:]
+count = 0
+for path in pathlib.Path(root, "records").glob("*.json"):
+    record = json.loads(path.read_text())
+    count += record["team"] == team and record["instance"] == instance
+print(count)
+PY
+}
+
+active_capability_count() { # team execution-kind task-id
+  python3 - "$PWD" "$1" "$2" "$3" <<'PY'
+import json, pathlib, subprocess, sys
+repo, team, kind, task = sys.argv[1:]
+common = pathlib.Path(subprocess.check_output(
+    ["git", "-C", repo, "rev-parse", "--git-common-dir"], text=True
+).strip())
+if not common.is_absolute():
+    common = pathlib.Path(repo, common)
+broker = common.resolve() / "startup-factory-broker"
+records = broker / "outbox-capabilities"
+active = broker / "outbox-active"
+count = 0
+for pointer in active.glob("*.id"):
+    capability_id = pointer.read_text().strip()
+    record = json.loads((records / (capability_id + ".json")).read_text())
+    count += (
+        record.get("team") == team
+        and record.get("executionKind") == kind
+        and record.get("taskId") == task
+    )
+print(count)
+PY
+}
+
+# A tmux pane is only a presentation/supervisor identity.  The task itself is
+# bound to a separate authenticated session/group so descendants cannot escape
+# merely because their pane wrapper exits.
+if [ "${TEAM_RUNNER:-auto}" != "background" ] && [ "$tmux_usable" = yes ]; then
+  TMUX_GROUP_WRAPPER="$TMP/tmux-group-wrapper.py"
+  cat > "$TMUX_GROUP_WRAPPER" <<'PY'
+import os
+import sys
+
+child = os.fork()
+if child == 0:
+    os.execv(sys.executable, [sys.executable, sys.argv[1], sys.argv[2]])
+_, status = os.waitpid(child, 0)
+raise SystemExit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+PY
+  TMUX_STOP_TEAM=stop-task-tmux
+  TMUX_STOP_TASK='T-tmux-child'
+  TMUX_STOP_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key "$TMUX_STOP_TASK")"
+  TMUX_STOP_INSTANCE="backend--$TMUX_STOP_KEY--a1"
+  TMUX_STOP_SESSION="team-$TMUX_STOP_TEAM"
+  TMUX_STOP_READY="$TMP/tmux-stop-ready"
+  tmux kill-session -t "$TMUX_STOP_SESSION" 2>/dev/null || true
+  tmux new-session -d -s "$TMUX_STOP_SESSION" -n _hub
+  printf -v _tmux_python_q '%q' "$(command -v python3)"
+  printf -v _tmux_wrapper_q '%q' "$TMUX_GROUP_WRAPPER"
+  printf -v _tmux_ignorer_q '%q' "$TERM_IGNORER"
+  printf -v _tmux_ready_q '%q' "$TMUX_STOP_READY"
+  tmux_stop_pane_info="$(tmux new-window -d -P -F '#{pane_id}|#{pane_pid}' \
+    -t "$TMUX_STOP_SESSION" -n "$TMUX_STOP_INSTANCE" \
+    "exec $_tmux_python_q $_tmux_wrapper_q $_tmux_ignorer_q $_tmux_ready_q")"
+  TMUX_STOP_PANE="${tmux_stop_pane_info%%|*}"
+  TMUX_STOP_PANE_PID="${tmux_stop_pane_info#*|}"
+  for _i in $(seq 1 100); do [ -s "$TMUX_STOP_READY" ] && break; sleep 0.02; done
+  read -r TMUX_STOP_LEADER_PID TMUX_STOP_CHILD_PID < "$TMUX_STOP_READY"
+  python3 .claude/skills/pm/bin/process-lifecycle.py register \
+    --root "$LIFECYCLE_ROOT" --repo "$PWD" --team "$TMUX_STOP_TEAM" \
+    --category task --instance "$TMUX_STOP_INSTANCE" --kind tmux --pid "$TMUX_STOP_LEADER_PID" \
+    --tmux-session "$TMUX_STOP_SESSION" --tmux-window "$TMUX_STOP_INSTANCE" \
+    --tmux-pane "$TMUX_STOP_PANE" --tmux-pane-pid "$TMUX_STOP_PANE_PID" >/dev/null
+  mkdir -p ".teamwork/$TMUX_STOP_TEAM/pids/tasks"
+  printf 'managed\n' > ".teamwork/$TMUX_STOP_TEAM/pids/tasks/$TMUX_STOP_INSTANCE.pid"
+  "$LAUNCH" stop-task "$TMUX_STOP_TEAM" "$TMUX_STOP_TASK" >/dev/null
+  for _i in $(seq 1 80); do
+    if ! kill -0 "$TMUX_STOP_LEADER_PID" 2>/dev/null \
+        && ! kill -0 "$TMUX_STOP_CHILD_PID" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  check "tmux stop-task terminates dedicated task group leader" bash -c "! kill -0 '$TMUX_STOP_LEADER_PID' 2>/dev/null"
+  check "tmux stop-task SIGKILL terminates TERM-resistant child" bash -c "! kill -0 '$TMUX_STOP_CHILD_PID' 2>/dev/null"
+  check "tmux stop-task retires protected group lifecycle" test "$(record_count "$TMUX_STOP_TEAM" "$TMUX_STOP_INSTANCE")" -eq 0
+  tmux_stop_observed_pane="$(tmux display-message -p -t "$TMUX_STOP_PANE" '#{pane_id}' 2>/dev/null || true)"
+  if [ "$tmux_stop_observed_pane" = "$TMUX_STOP_PANE" ]; then
+    echo "FAIL: tmux stop-task left its verified pane live"; FAILURES=$((FAILURES+1))
+  else
+    echo "ok: tmux stop-task retires its verified pane"
+  fi
+  tmux kill-session -t "$TMUX_STOP_SESSION" 2>/dev/null || true
+else
+  echo "skip: tmux task process-group stop test"
+fi
+
 TEAM_RUNNER=background "$LAUNCH" start lifecycle-workspace FEAT-LIFE backend >/dev/null
 workspace_record="$(record_for lifecycle-workspace backend)"
 workspace_agent_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$workspace_record")"
@@ -617,6 +781,137 @@ wait "$identity_agent_pid" 2>/dev/null || true
 rm -f "$identity_record"
 
 sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="cat {prompt_file} > backend-received.txt"|' "$CFG_LIFECYCLE"
+
+# -- task-scoped stop: exact collision-safe task selection, stale retirement, idempotence --
+STOP_TASK_TEAM=stop-task-scope
+STOP_TASK_ID='T/blocked 42'
+STOP_TASK_SIBLING_ID='T blocked 42'
+STOP_TASK_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key "$STOP_TASK_ID")"
+STOP_TASK_SIBLING_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key "$STOP_TASK_SIBLING_ID")"
+STOP_TASK_INSTANCE_1="backend--$STOP_TASK_KEY--a1"
+STOP_TASK_INSTANCE_2="senior-qa-engineer--$STOP_TASK_KEY--a2"
+STOP_TASK_STALE_INSTANCE="reviewer--$STOP_TASK_KEY--a3"
+STOP_TASK_TERM_INSTANCE="frontend--$STOP_TASK_KEY--a4"
+STOP_TASK_SIBLING_INSTANCE="backend--$STOP_TASK_SIBLING_KEY--a1"
+STOP_TASK_GATE_INSTANCE=team-lead
+STOP_TASK_PID_1="$(spawn_lifecycle_sleep)"
+STOP_TASK_PID_2="$(spawn_lifecycle_sleep)"
+STOP_TASK_STALE_PID="$(spawn_lifecycle_sleep)"
+STOP_TASK_TERM_READY="$TMP/stop-task-term-ready"
+STOP_TASK_TERM_PID="$(spawn_term_ignoring_process "$STOP_TASK_TERM_READY")"
+STOP_TASK_SIBLING_PID="$(spawn_lifecycle_sleep)"
+STOP_TASK_GATE_PID="$(spawn_lifecycle_sleep)"
+for _i in $(seq 1 40); do [ -f "$STOP_TASK_TERM_READY" ] && break; sleep 0.05; done
+check "TERM-resistant lifecycle fixture installed its signal handler" test -f "$STOP_TASK_TERM_READY"
+read -r STOP_TASK_TERM_REPORTED_LEADER STOP_TASK_TERM_CHILD_PID < "$STOP_TASK_TERM_READY"
+check "TERM-resistant fixture reports authenticated group leader" test "$STOP_TASK_TERM_REPORTED_LEADER" = "$STOP_TASK_TERM_PID"
+check "TERM-resistant lifecycle fixture started a child" kill -0 "$STOP_TASK_TERM_CHILD_PID"
+register_lifecycle_process "$STOP_TASK_TEAM" task "$STOP_TASK_INSTANCE_1" "$STOP_TASK_PID_1"
+register_lifecycle_process "$STOP_TASK_TEAM" task "$STOP_TASK_INSTANCE_2" "$STOP_TASK_PID_2"
+register_lifecycle_process "$STOP_TASK_TEAM" task "$STOP_TASK_STALE_INSTANCE" "$STOP_TASK_STALE_PID"
+register_lifecycle_process "$STOP_TASK_TEAM" task "$STOP_TASK_TERM_INSTANCE" "$STOP_TASK_TERM_PID"
+register_lifecycle_process "$STOP_TASK_TEAM" task "$STOP_TASK_SIBLING_INSTANCE" "$STOP_TASK_SIBLING_PID"
+register_lifecycle_process "$STOP_TASK_TEAM" gate "$STOP_TASK_GATE_INSTANCE" "$STOP_TASK_GATE_PID"
+mkdir -p ".teamwork/$STOP_TASK_TEAM/pids/tasks" ".teamwork/$STOP_TASK_TEAM/pids"
+printf 'managed\n' > ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_INSTANCE_1.pid"
+printf 'managed\n' > ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_INSTANCE_2.pid"
+printf 'managed\n' > ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_STALE_INSTANCE.pid"
+printf 'managed\n' > ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_TERM_INSTANCE.pid"
+printf 'managed\n' > ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_SIBLING_INSTANCE.pid"
+printf 'managed\n' > ".teamwork/$STOP_TASK_TEAM/pids/$STOP_TASK_GATE_INSTANCE.pid"
+python3 .claude/skills/pm/bin/outbox_capability.py mint \
+  --repo "$PWD" --workspace "$PWD/.teamwork/$STOP_TASK_TEAM" --team "$STOP_TASK_TEAM" \
+  --feature FEAT-STOP --role backend --kind task --task "$STOP_TASK_ID" \
+  --attempt 1 --instance "$STOP_TASK_INSTANCE_1" >/dev/null
+python3 .claude/skills/pm/bin/outbox_capability.py mint \
+  --repo "$PWD" --workspace "$PWD/.teamwork/$STOP_TASK_TEAM" --team "$STOP_TASK_TEAM" \
+  --feature FEAT-STOP --role backend --kind task --task "$STOP_TASK_SIBLING_ID" \
+  --attempt 1 --instance "$STOP_TASK_SIBLING_INSTANCE" >/dev/null
+python3 .claude/skills/pm/bin/outbox_capability.py mint \
+  --repo "$PWD" --workspace "$PWD/.teamwork/$STOP_TASK_TEAM" --team "$STOP_TASK_TEAM" \
+  --feature FEAT-STOP --role team-lead --kind gate --task - \
+  --attempt 0 --instance "$STOP_TASK_GATE_INSTANCE" >/dev/null
+kill "$STOP_TASK_STALE_PID"
+for _i in $(seq 1 40); do kill -0 "$STOP_TASK_STALE_PID" 2>/dev/null || break; sleep 0.05; done
+
+"$LAUNCH" stop-task "$STOP_TASK_TEAM" "$STOP_TASK_ID" >/dev/null
+for _i in $(seq 1 40); do
+  if ! kill -0 "$STOP_TASK_PID_1" 2>/dev/null \
+      && ! kill -0 "$STOP_TASK_PID_2" 2>/dev/null \
+      && ! kill -0 "$STOP_TASK_TERM_PID" 2>/dev/null \
+      && ! kill -0 "$STOP_TASK_TERM_CHILD_PID" 2>/dev/null; then break; fi
+  sleep 0.05
+done
+check "stop-task stops every live role and attempt for the task" bash -c "! kill -0 '$STOP_TASK_PID_1' 2>/dev/null && ! kill -0 '$STOP_TASK_PID_2' 2>/dev/null"
+check "stop-task process-group TERM stops the task leader" bash -c "! kill -0 '$STOP_TASK_TERM_PID' 2>/dev/null"
+check "stop-task identity-bound group SIGKILL stops TERM-resistant child" bash -c "! kill -0 '$STOP_TASK_TERM_CHILD_PID' 2>/dev/null"
+check "stop-task leaves sibling task process live" kill -0 "$STOP_TASK_SIBLING_PID"
+check "stop-task never stops gate role" kill -0 "$STOP_TASK_GATE_PID"
+check "stop-task retires first live lifecycle record" test "$(record_count "$STOP_TASK_TEAM" "$STOP_TASK_INSTANCE_1")" -eq 0
+check "stop-task retires every matching attempt record" test "$(record_count "$STOP_TASK_TEAM" "$STOP_TASK_INSTANCE_2")" -eq 0
+check "stop-task retires stale matching record" test "$(record_count "$STOP_TASK_TEAM" "$STOP_TASK_STALE_INSTANCE")" -eq 0
+check "stop-task retires TERM-resistant lifecycle record after SIGKILL" test "$(record_count "$STOP_TASK_TEAM" "$STOP_TASK_TERM_INSTANCE")" -eq 0
+check "stop-task preserves sibling lifecycle record" test "$(record_count "$STOP_TASK_TEAM" "$STOP_TASK_SIBLING_INSTANCE")" -eq 1
+check "stop-task preserves gate lifecycle record" test "$(record_count "$STOP_TASK_TEAM" "$STOP_TASK_GATE_INSTANCE")" -eq 1
+check "stop-task removes first matching task marker" test ! -e ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_INSTANCE_1.pid"
+check "stop-task removes all matching task markers" test ! -e ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_STALE_INSTANCE.pid"
+check "stop-task removes TERM-resistant task marker" test ! -e ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_TERM_INSTANCE.pid"
+check "stop-task preserves sibling task marker" test -e ".teamwork/$STOP_TASK_TEAM/pids/tasks/$STOP_TASK_SIBLING_INSTANCE.pid"
+check "stop-task preserves gate marker" test -e ".teamwork/$STOP_TASK_TEAM/pids/$STOP_TASK_GATE_INSTANCE.pid"
+check "stop-task revokes target task capabilities" test "$(active_capability_count "$STOP_TASK_TEAM" task "$STOP_TASK_ID")" -eq 0
+check "stop-task preserves sibling task capabilities" test "$(active_capability_count "$STOP_TASK_TEAM" task "$STOP_TASK_SIBLING_ID")" -eq 1
+check "stop-task preserves gate capabilities" test "$(active_capability_count "$STOP_TASK_TEAM" gate -)" -eq 1
+if "$LAUNCH" stop-task "$STOP_TASK_TEAM" "$STOP_TASK_ID" >/dev/null 2>&1; then
+  echo "ok: stop-task is idempotent after lifecycle records are retired"
+else
+  echo "FAIL: repeated stop-task was not idempotent"; FAILURES=$((FAILURES+1))
+fi
+check "repeated stop-task still leaves sibling live" kill -0 "$STOP_TASK_SIBLING_PID"
+check "repeated stop-task still leaves gate live" kill -0 "$STOP_TASK_GATE_PID"
+"$LAUNCH" stop "$STOP_TASK_TEAM" >/dev/null
+
+# Refuse the whole task stop before signalling if any matching protected
+# identity has changed, so one forged record cannot produce a partial stop.
+STOP_TASK_BAD_TEAM=stop-task-identity
+STOP_TASK_BAD_ID='T-identity-stop'
+STOP_TASK_BAD_KEY="$(python3 .claude/skills/pm/bin/runtime-state.py key "$STOP_TASK_BAD_ID")"
+STOP_TASK_GOOD_INSTANCE="backend--$STOP_TASK_BAD_KEY--a1"
+STOP_TASK_BAD_INSTANCE="reviewer--$STOP_TASK_BAD_KEY--a2"
+STOP_TASK_GOOD_PID="$(spawn_lifecycle_sleep)"
+STOP_TASK_BAD_PID="$(spawn_lifecycle_sleep)"
+register_lifecycle_process "$STOP_TASK_BAD_TEAM" task "$STOP_TASK_GOOD_INSTANCE" "$STOP_TASK_GOOD_PID"
+register_lifecycle_process "$STOP_TASK_BAD_TEAM" task "$STOP_TASK_BAD_INSTANCE" "$STOP_TASK_BAD_PID"
+mkdir -p ".teamwork/$STOP_TASK_BAD_TEAM/pids/tasks"
+printf 'managed\n' > ".teamwork/$STOP_TASK_BAD_TEAM/pids/tasks/$STOP_TASK_GOOD_INSTANCE.pid"
+printf 'managed\n' > ".teamwork/$STOP_TASK_BAD_TEAM/pids/tasks/$STOP_TASK_BAD_INSTANCE.pid"
+stop_task_good_record="$(record_for "$STOP_TASK_BAD_TEAM" "$STOP_TASK_GOOD_INSTANCE")"
+stop_task_bad_record="$(record_for "$STOP_TASK_BAD_TEAM" "$STOP_TASK_BAD_INSTANCE")"
+python3 - "$stop_task_bad_record" "$LIFECYCLE_ROOT/record-auth.key" <<'PY'
+import hashlib, hmac, json, sys
+record_path, key_path = sys.argv[1:]
+record = json.load(open(record_path))
+record["processIdentity"] = "forged-task-stop-identity"
+record.pop("auth")
+payload = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+record["auth"] = hmac.new(open(key_path, "rb").read(), payload, hashlib.sha256).hexdigest()
+open(record_path, "w").write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+if "$LAUNCH" stop-task "$STOP_TASK_BAD_TEAM" "$STOP_TASK_BAD_ID" >stop-task-identity.out 2>&1; then
+  echo "FAIL: stop-task accepted a protected identity mismatch"; FAILURES=$((FAILURES+1))
+elif grep -q 'identity mismatch' stop-task-identity.out; then
+  echo "ok: stop-task refuses a protected identity mismatch"
+else
+  echo "FAIL: stop-task identity mismatch returned wrong error: $(cat stop-task-identity.out)"; FAILURES=$((FAILURES+1))
+fi
+check "stop-task identity preflight leaves valid matching process live" kill -0 "$STOP_TASK_GOOD_PID"
+check "stop-task identity preflight never signals mismatched PID" kill -0 "$STOP_TASK_BAD_PID"
+check "failed stop-task preserves matching marker" test -e ".teamwork/$STOP_TASK_BAD_TEAM/pids/tasks/$STOP_TASK_GOOD_INSTANCE.pid"
+kill "$STOP_TASK_GOOD_PID" "$STOP_TASK_BAD_PID" 2>/dev/null || true
+for _i in $(seq 1 40); do
+  if ! kill -0 "$STOP_TASK_GOOD_PID" 2>/dev/null && ! kill -0 "$STOP_TASK_BAD_PID" 2>/dev/null; then break; fi
+  sleep 0.05
+done
+rm -f "$stop_task_good_record" "$stop_task_bad_record"
 
 # -- status + stop --------------------------------------------------------------
 # Capture first (grep -q closes the pipe early → SIGPIPE on the writer under pipefail).

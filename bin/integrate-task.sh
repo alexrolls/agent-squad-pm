@@ -17,6 +17,15 @@ read_key() {
   printf '%s' "$value"
 }
 
+# Broker authorization must use the protected hold authority even when this
+# script is invoked directly rather than through the PM supervisor.
+if [ -z "${STARTUP_FACTORY_LIFECYCLE_STATE_ROOT:-}" ]; then
+  configured_lifecycle_root="$(read_key BROKER_LIFECYCLE_ROOT)"
+  if [ -n "$configured_lifecycle_root" ]; then
+    export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$configured_lifecycle_root"
+  fi
+fi
+
 git_unprivileged() {
   local args=(-i "PATH=${PATH:-/usr/bin:/bin}" "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_NOSYSTEM=1")
   [ -z "${TMPDIR-}" ] || args+=("TMPDIR=$TMPDIR")
@@ -49,8 +58,9 @@ transaction="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --
 preparations="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "integrations/.prepared")"
 preparation="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "integrations/.prepared/$key.json")"
 preparation_history="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "integrations/.prepared-history")"
-mkdir -p "$(dirname "$transaction")" "$preparations" "$preparation_history"
-python3 - "$repo" "$workspace" "$(dirname "$transaction")" "$preparations" "$preparation_history" <<'PY'
+merge_snapshot="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "pm/integration-merge-snapshot.json")"
+mkdir -p "$(dirname "$transaction")" "$preparations" "$preparation_history" "$(dirname "$merge_snapshot")"
+python3 - "$repo" "$workspace" "$(dirname "$transaction")" "$preparations" "$preparation_history" "$(dirname "$merge_snapshot")" <<'PY'
 import os, stat, sys
 repo=os.path.realpath(sys.argv[1])
 workspace=os.path.realpath(sys.argv[2])
@@ -61,6 +71,130 @@ for raw in sys.argv[2:]:
     if os.path.islink(raw) or not stat.S_ISDIR(os.lstat(raw).st_mode):
         raise SystemExit("integrate-task: workspace/integrations may not be symlinks")
 PY
+
+assert_task_not_held() {
+  local protected_rc=0
+  python3 "$SKILL_DIR/bin/task-hold.py" check \
+    --repo "$repo" --workspace "$workspace" --team "$team" --feature "$feature" \
+    --task "$task" || protected_rc=$?
+  [ "$protected_rc" -eq 0 ] || die "task is held by protected Blocked authority; merge/integration is stopped"
+  python3 - "$workspace" "$feature" "$task" <<'PY'
+import hashlib,json,os,re,stat,sys
+from pathlib import Path
+workspace,feature,task=sys.argv[1:]; path=Path(workspace)/"task-holds.json"
+def fail(message): raise SystemExit("integrate-task: "+message)
+def key(value):
+    slug=re.sub(r"[^a-zA-Z0-9]+","-",value).strip("-").lower()[:32] or "task"
+    return "%s-%s"%(slug,hashlib.sha256(value.encode()).hexdigest()[:10])
+try: before=os.lstat(path)
+except FileNotFoundError: raise SystemExit(0)
+except OSError as exc: fail("cannot inspect task hold registry: %s"%exc)
+if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+    fail("task hold registry must be a non-symlink regular file")
+if before.st_size<=0 or before.st_size>64*1024*1024:
+    fail("task hold registry must contain 1..67108864 bytes")
+fd=None
+try:
+    fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)); opened=os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino):
+        fail("task hold registry changed during integration")
+    content=b""
+    while len(content)<=64*1024*1024:
+        block=os.read(fd,min(1024*1024,64*1024*1024+1-len(content)))
+        if not block: break
+        content+=block
+    if len(content)>64*1024*1024: fail("task hold registry exceeds the 64 MiB safety limit")
+except OSError as exc: fail("cannot securely read task hold registry: %s"%exc)
+finally:
+    if fd is not None: os.close(fd)
+try: data=json.loads(content.decode("utf-8"))
+except (UnicodeError,ValueError) as exc: fail("invalid task hold registry: %s"%exc)
+records=data.get("tasks") if isinstance(data,dict) else None
+if not isinstance(data,dict) or data.get("schemaVersion")!=1 or data.get("featureId")!=feature or not isinstance(records,dict):
+    fail("task hold registry schema/feature scope mismatch")
+states={"blocked","resume-review-pending","manual-takeover","resumed"}; seen=set()
+for record_key,record in records.items():
+    if not isinstance(record_key,str) or not isinstance(record,dict): fail("malformed task hold record")
+    record_task=record.get("taskId")
+    if not isinstance(record_task,str) or not record_task or record_task in seen:
+        fail("task hold registry has a missing or duplicate task identity")
+    seen.add(record_task)
+    if record_key!=key(record_task) or record.get("taskKey")!=record_key:
+        fail("task hold registry task identity/key mismatch")
+    if record.get("state") not in states: fail("task hold registry contains an unknown task state")
+record=records.get(key(task))
+if record is not None and record.get("taskId")!=task: fail("task hold registry entry/task mismatch")
+if record is not None and record.get("state") in {"blocked","resume-review-pending","manual-takeover"}:
+    fail("task %s is held (%s); merge/integration is stopped"%(task,record.get("state")))
+PY
+}
+
+assert_tracker_task_review_authorized() {
+  [ ! -L "$merge_snapshot" ] || die "fresh merge snapshot path is a symlink"
+  [ ! -e "$merge_snapshot" ] || [ -f "$merge_snapshot" ] || die "fresh merge snapshot path is not a regular file"
+  if ! env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+    "$SKILL_DIR/bin/tracker-ops.sh" export "$feature" "$merge_snapshot" >/dev/null; then
+    die "fresh tracker export unavailable; merge/integration remains stopped"
+  fi
+  python3 - "$merge_snapshot" "$SKILL_DIR/config/statuses.config.json" "$feature" "$task" <<'PY'
+import json,os,stat,sys
+snapshot_raw,board_raw,feature,task=sys.argv[1:]
+def fail(message): raise SystemExit("integrate-task: "+message)
+def read_regular(path,label,limit):
+    try: before=os.lstat(path)
+    except OSError as exc: fail("%s unavailable: %s"%(label,exc))
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_size<=0 or before.st_size>limit:
+        fail("%s must be a bounded non-symlink regular file"%label)
+    fd=None
+    try:
+        fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)); opened=os.fstat(fd)
+        if (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino): fail("%s changed while reading"%label)
+        raw=b""
+        while len(raw)<=limit:
+            part=os.read(fd,min(1024*1024,limit+1-len(raw)))
+            if not part: break
+            raw+=part
+        if len(raw)>limit: fail("%s exceeds its safety limit"%label)
+    except OSError as exc: fail("cannot securely read %s: %s"%(label,exc))
+    finally:
+        if fd is not None: os.close(fd)
+    try: return json.loads(raw.decode("utf-8"))
+    except (UnicodeError,ValueError) as exc: fail("invalid %s: %s"%(label,exc))
+payload=read_regular(snapshot_raw,"fresh tracker snapshot",64*1024*1024)
+board=read_regular(board_raw,"status configuration",1024*1024)
+if not isinstance(payload,dict) or payload.get("featureId")!=feature:
+    fail("fresh tracker snapshot feature scope mismatch")
+tasks=payload.get("tasks")
+if not isinstance(tasks,list) or any(not isinstance(item,dict) for item in tasks):
+    fail("fresh tracker snapshot tasks are malformed")
+ids=[str(item.get("taskId") or "") for item in tasks]
+if any(not value for value in ids) or len(ids)!=len(set(ids)):
+    fail("fresh tracker snapshot task identities are missing or duplicated")
+matches=[item for item in tasks if str(item.get("taskId"))==task]
+if len(matches)!=1: fail("task is absent or duplicated in the fresh tracker snapshot")
+try: ignored_raw=json.loads(os.environ.get("STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON", '["human-work"]'))
+except ValueError: fail("ignored-task label policy is not valid JSON")
+if not isinstance(ignored_raw,list) or any(not isinstance(item,str) or not item.strip() for item in ignored_raw):
+    fail("ignored-task label policy must be a JSON array of non-empty strings")
+if len({item.strip().casefold() for item in ignored_raw}) != len(ignored_raw):
+    fail("ignored-task label policy contains duplicate labels")
+labels=matches[0].get("labels") or []
+if not isinstance(labels,list) or any(not isinstance(item,str) for item in labels):
+    fail("fresh tracker task labels are malformed")
+if {item.strip().casefold() for item in ignored_raw}.intersection(item.strip().casefold() for item in labels):
+    fail("task is labeled for human work; merge/integration is stopped")
+try:
+    review=[item["name"] for item in board["tasks"]["statuses"] if item.get("kind")=="review"]
+except (KeyError,TypeError): fail("status configuration has no semantic task statuses")
+if len(review)!=1: fail("status configuration must define exactly one semantic review status")
+if matches[0].get("status")!=review[0]:
+    fail("task %s is no longer in semantic review in the authoritative tracker; merge/integration is stopped"%task)
+PY
+}
+
+# Do not even prepare new integration intent for a task already stopped by the
+# PM authority. The same check is repeated at every later mutation boundary.
+assert_task_not_held
 
 # Rebuild the immutable execution identity rather than trusting arbitrary fields
 # copied from the producer-owned transaction.
@@ -266,6 +400,7 @@ PY
     "$tasks_snapshot" "$task" "$review_base_commit" "$task_branch_head" "$review_package_digest")"
   [ -z "$(git_unprivileged -C "$repo" status --porcelain -uall)" ] || die "feature-branch checkout is dirty"
 
+  assert_task_not_held
   python3 - "$preparation" "$team" "$feature" "$task" "$key" "$role" "$attempt" "$branch" "$worktree" \
     "$base_commit" "$review_base_commit" "$task_branch_head" "$execution_digest" "$package" \
     "$review_package_digest" "$approval_evidence_digest" <<'PY'
@@ -349,6 +484,8 @@ else
     [ "$merge_head" = "$task_branch_head" ] || die "an unrelated merge is in progress"
   else
     [ -z "$(git_unprivileged -C "$repo" status --porcelain -uall)" ] || die "feature-branch checkout is dirty"
+    assert_task_not_held
+    assert_tracker_task_review_authorized
     if ! git_unprivileged -C "$repo" merge --no-ff --no-commit "$branch"; then
       git_unprivileged -C "$repo" merge --abort >/dev/null 2>&1 || true
       die "merge conflict; return the task branch to the worker"
@@ -363,6 +500,11 @@ else
     git_unprivileged -C "$repo" merge --abort >/dev/null 2>&1 || true
     reset_preparation_authorization
     die "broker authorization expired before commit; merge safely aborted for fresh authorization"
+  fi
+  if ! assert_task_not_held || ! assert_tracker_task_review_authorized; then
+    git_unprivileged -C "$repo" merge --abort >/dev/null 2>&1 \
+      || die "task became held/Blocked and the in-progress merge could not be safely aborted"
+    die "task became held/Blocked during integration validation; merge safely aborted before commit"
   fi
 trailers="$(printf '%s\n' \
   "Feature-Id: $feature" \
@@ -390,6 +532,11 @@ printf '%s\n' "$commit_message" | grep -Fqx "Integration-Preparation: $preparati
 printf '%s\n' "$commit_message" | grep -Fqx "Authorization-Snapshot-SHA256: $authorization_snapshot_digest" \
   || die "recovered integration commit lacks its fresh broker authorization binding"
 
+# If a hold landed immediately after the commit, preserve the landed commit as
+# recoverable Git state but stop before publishing completion evidence or the
+# integration transaction. A later unblocked retry recognizes the exact commit.
+assert_task_not_held
+assert_tracker_task_review_authorized
 body="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "artifacts/$key/integration-completion.md")"
 body_temp="$body.tmp.$$"
 if [ -n "$supplied_body" ]; then
@@ -430,6 +577,8 @@ print("integration-" + hashlib.sha256(canonical).hexdigest()[:32])
 PY
 )"
 
+assert_task_not_held
+assert_tracker_task_review_authorized
 python3 - "$transaction" "$transaction_id" "$team" "$feature" "$task" "$key" "$role" "$attempt" \
   "$branch" "$worktree" "$base_commit" "$task_branch_head" "$commit" "$execution_digest" \
   "$review_base_commit" "$package" "$review_package_digest" "$approval_evidence_digest" "$body" "$completion_body_digest" <<'PY'
@@ -472,6 +621,8 @@ with os.fdopen(fd, "w") as handle:
 os.replace(temp, path)
 PY
 
+assert_task_not_held
+assert_tracker_task_review_authorized
 [ -f "$preparation" ] && [ ! -L "$preparation" ] || die "prepared authorization disappeared before handoff"
 [ ! -e "$preparation_history/$preparation_id.json" ] || die "prepared history collision for $preparation_id"
 mv "$preparation" "$preparation_history/$preparation_id.json"

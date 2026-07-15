@@ -3,14 +3,34 @@
 # Zero LLM per cycle. Logic spec: reference/dispatch.md.
 #
 # Usage:
-#   dispatch.sh <team> <featureId> --once [--dry-run] [--unblock=auto|suggest|off]
-#   dispatch.sh <team> <featureId> --watch [--unblock=...]
+#   dispatch.sh <team> <featureId> --once [--dry-run]
+#   dispatch.sh <team> <featureId> --watch
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$SKILL_DIR/config/team.config.md"
 PM_CONFIG="$SKILL_DIR/config/project-management.config.md"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON="$(python3 - \
+  "$SKILL_DIR/config/automation.config.json" \
+  "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON-}" <<'PY'
+import json,sys
+config_path,override=sys.argv[1:]
+if override:
+    try: value=json.loads(override)
+    except ValueError: raise SystemExit("dispatch: ignored-label policy override is invalid JSON")
+else:
+    value=json.load(open(config_path)).get("ignoredTaskLabels", ["human-work"])
+if not isinstance(value,list) or any(not isinstance(item,str) or not item.strip() or item!=item.strip() for item in value):
+    raise SystemExit("dispatch: ignored-label policy must be a JSON array of canonical strings")
+canonical=[item.casefold() for item in value]
+if len(canonical)!=len(set(canonical)):
+    raise SystemExit("dispatch: ignored-label policy contains a case-insensitive duplicate")
+print(json.dumps(value,separators=(",",":")))
+PY
+)"
+export STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON
 
 die() { echo "dispatch: $*" >&2; exit 1; }
 
@@ -117,6 +137,17 @@ task_any_live() { # task_any_live <team> <taskId> -> any role/attempt process fo
   die "protected lifecycle lookup failed for task $2 (workspace PID markers are never authority)"
 }
 
+stop_task_or_quarantine() { # <team> <workspace> <taskId>
+  local stop_team="$1" stop_workspace="$2" stop_task="$3"
+  if "$SKILL_DIR/bin/launch-team.sh" stop-task "$stop_team" "$stop_task"; then
+    return 0
+  fi
+  echo "dispatch: task $stop_task could not be fully signaled; revoking publication authority and continuing isolated work" >&2
+  python3 "$SKILL_DIR/bin/outbox_capability.py" revoke-task \
+    --repo "$REPO_ROOT" --workspace "$stop_workspace" --team "$stop_team" --task "$stop_task" >/dev/null \
+    || die "task $stop_task stop failed and publication authority could not be revoked"
+}
+
 next_mailbox_file() { # next_mailbox_file <mailbox-dir> -> path with next free NNN
   local mb="$1" max=0 n f
   mkdir -p "$mb"
@@ -126,13 +157,6 @@ next_mailbox_file() { # next_mailbox_file <mailbox-dir> -> path with next free N
     [ "$n" -gt "$max" ] && max=$n
   done
   printf '%s/%03d-dispatcher.md' "$mb" $((max + 1))
-}
-
-adapter_default_unblock() {
-  local a; a="$(grep -m1 '^PRODUCT_MANAGEMENT_TOOL=' "$PM_CONFIG" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)"
-  local effective="${TRACKER_ADAPTER:-$a}"
-  [ -n "$effective" ] || die "cannot determine tracker adapter (PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md or TRACKER_ADAPTER env)"
-  case "$effective" in Linear|Jira|GitHubIssues) echo auto ;; *) echo suggest ;; esac
 }
 
 working_feature_status() {
@@ -146,6 +170,23 @@ print(matches[0])
 PY
 }
 
+task_status_names() {
+  python3 - "$SKILL_DIR/config/statuses.config.json" <<'PY'
+import json,sys
+board=json.load(open(sys.argv[1]))
+by_kind={}
+for item in board.get("tasks",{}).get("statuses",[]):
+    kind=item.get("kind")
+    if kind:
+        by_kind.setdefault(kind,[]).append(str(item.get("name")))
+for kind in ("queued","blocked","working","review"):
+    values=by_kind.get(kind,[])
+    if len(values)!=1:
+        raise SystemExit("dispatch: task status kind %r must resolve exactly once" % kind)
+    print(values[0])
+PY
+}
+
 claim_id_for() { # team feature task role attempt target -> deterministic bounded id
   python3 - "$@" <<'PY'
 import hashlib,sys
@@ -156,8 +197,8 @@ print("dispatch-" + hashlib.sha256("\0".join(
 PY
 }
 
-dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
-  local team="$1" fid="$2" dry="$3" unblock="$4"
+dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no>
+  local team="$1" fid="$2" dry="$3"
   local dir lock tasks_file; dir="$(teamroot "$team")"
   lock="$(team_path "$dir" dispatch.lock)"
   tasks_file="$(team_path "$dir" tasks.json)"
@@ -191,13 +232,105 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   fi
   printf '%s\n' "$$" > "$lock/owner.pid"
   trap 'rm -f "$lock/owner.pid"; rmdir "$lock" 2>/dev/null || true' RETURN
+  local status_fields queued_status blocked_status working_status review_status
+  status_fields="$(task_status_names)"
+  queued_status="$(printf '%s\n' "$status_fields" | sed -n '1p')"
+  blocked_status="$(printf '%s\n' "$status_fields" | sed -n '2p')"
+  working_status="$(printf '%s\n' "$status_fields" | sed -n '3p')"
+  review_status="$(printf '%s\n' "$status_fields" | sed -n '4p')"
+
+  # Holds must observe the complete authoritative feature, including work that
+  # is reserved from autonomous claiming with an ignored label.
+  env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+    "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
   if [ "$dry" != "yes" ]; then
-    # The dispatcher is the credentialed integration broker. Finalize exact,
-    # validated merge transactions before observing the next tracker snapshot.
+    local hold_result hold_actions hold_action hold_task hold_graph changed=no
+    hold_result="$(python3 "$SKILL_DIR/bin/task-hold.py" sync \
+      --repo "$REPO_ROOT" --workspace "$dir" --tasks "$tasks_file" --feature "$fid" --team "$team" \
+      --blocked-status "$blocked_status" --queued-status "$queued_status" \
+      --inflight-status "$queued_status" --inflight-status "$working_status" --inflight-status "$review_status" \
+      --ignored-labels-json "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-[]}")"
+    hold_actions="$(python3 - "$hold_result" <<'PY'
+import json,sys
+value=json.loads(sys.argv[1])
+for task in value.get("stopTasks",[]):
+    print("stop\t%s\t" % task)
+for item in value.get("blockDependents",[]):
+    print("block\t%s\t%s" % (item["taskId"],item["graphDigest"]))
+PY
+)"
+    while IFS="$(printf '\t')" read -r hold_action hold_task hold_graph; do
+      [ -n "$hold_action" ] || continue
+      case "$hold_action" in
+        stop)
+          echo "dispatch: stopping task-scoped workers for human-held $hold_task"
+          stop_task_or_quarantine "$team" "$dir" "$hold_task"
+          ;;
+        block)
+          # The team-lead verdict is advisory until the broker re-exports the
+          # exact graph and authenticated marker immediately before mutation.
+          env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+            "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
+          python3 "$SKILL_DIR/bin/task-hold.py" validate-dependent \
+            --repo "$REPO_ROOT" --workspace "$dir" --tasks "$tasks_file" --feature "$fid" --team "$team" \
+            --task "$hold_task" --graph-digest "$hold_graph" \
+            --blocked-status "$blocked_status" \
+            --inflight-status "$queued_status" --inflight-status "$working_status" --inflight-status "$review_status" \
+            --ignored-labels-json "$STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON" >/dev/null
+          echo "dispatch: lead-confirmed dependency prevents $hold_task; moving it to [$blocked_status]"
+          env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+            "$SKILL_DIR/bin/tracker-ops.sh" state "$hold_task" "$blocked_status"
+          # Make the durable hold visible to every broker before attempting to
+          # signal the worker. Even if process termination later fails closed,
+          # no publication or integration can pass this registry/status fence.
+          env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+            "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
+          python3 "$SKILL_DIR/bin/task-hold.py" sync \
+            --repo "$REPO_ROOT" --workspace "$dir" --tasks "$tasks_file" --feature "$fid" --team "$team" \
+            --blocked-status "$blocked_status" --queued-status "$queued_status" \
+            --inflight-status "$queued_status" --inflight-status "$working_status" --inflight-status "$review_status" \
+            --ignored-labels-json "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-[]}" >/dev/null
+          stop_task_or_quarantine "$team" "$dir" "$hold_task"
+          changed=yes
+          ;;
+        *) die "task-hold returned unknown action '$hold_action'" ;;
+      esac
+    done <<EOF
+$hold_actions
+EOF
+    if [ "$changed" = "yes" ]; then
+      env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+        "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
+      python3 "$SKILL_DIR/bin/task-hold.py" sync \
+        --repo "$REPO_ROOT" --workspace "$dir" --tasks "$tasks_file" --feature "$fid" --team "$team" \
+        --blocked-status "$blocked_status" --queued-status "$queued_status" \
+        --inflight-status "$queued_status" --inflight-status "$working_status" --inflight-status "$review_status" \
+        --ignored-labels-json "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-[]}" >/dev/null
+    fi
+
+    # Only after task-scoped stops and durable holds are established may the
+    # credentialed brokers publish artifacts or finalize integration evidence.
     "$SKILL_DIR/bin/finalize-integrations.sh" "$team" "$fid"
     "$SKILL_DIR/bin/process-outbox.sh" "$team" "$fid"
+    env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+      "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
+
+    # Close the observation race created by broker/finalizer work. If a human
+    # moved a task to Blocked or reserved it with an ignored label during this
+    # pass, establish the hold and stop that exact task before planning returns.
+    hold_result="$(python3 "$SKILL_DIR/bin/task-hold.py" sync \
+      --repo "$REPO_ROOT" --workspace "$dir" --tasks "$tasks_file" --feature "$fid" --team "$team" \
+      --blocked-status "$blocked_status" --queued-status "$queued_status" \
+      --inflight-status "$queued_status" --inflight-status "$working_status" --inflight-status "$review_status" \
+      --ignored-labels-json "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-[]}")"
+    while IFS= read -r hold_task; do
+      [ -n "$hold_task" ] || continue
+      echo "dispatch: final authority fence stopping task-scoped workers for $hold_task"
+      stop_task_or_quarantine "$team" "$dir" "$hold_task"
+    done <<EOF
+$(python3 -c 'import json,sys; [print(item) for item in json.loads(sys.argv[1]).get("stopTasks", [])]' "$hold_result")
+EOF
   fi
-  "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
   if [ "$dry" != "yes" ]; then
     "$SKILL_DIR/bin/sync-progress.sh" "$team" "$fid" "$tasks_file"
   fi
@@ -207,28 +340,14 @@ dispatch_once() { # dispatch_once <team> <featureId> <dry:yes|no> <unblock>
   max_active="$(read_key MAX_ACTIVE_IMPLEMENTERS)"
   local planner_args=(--skill "$SKILL_DIR" --workdir "$dir" --team "$team" --feature "$fid" --stuck-minutes "$stuck" --execution "$execution")
   [ -z "$max_active" ] || planner_args+=(--max-active "$max_active")
+  planner_args+=(--ignored-labels-json "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-[]}")
   plan="$(python3 "$SKILL_DIR/bin/dispatch-plan.py" "${planner_args[@]}")"
   if [ -z "$plan" ]; then echo "dispatch: nothing actionable"; return 0; fi
   local action arg detail extra
   while IFS="$(printf '\t')" read -r action arg detail extra; do
     case "$action" in
-      unblock)
-        case "$unblock" in
-          off)     echo "plan: unblock $arg — suppressed (--unblock=off)" ;;
-          suggest) echo "plan: unblock $arg — SUGGESTED (confirm and move via the team-lead; see reference/dispatch.md)" ;;
-          auto)
-            echo "plan: unblock $arg → [$detail] (all blockers terminal)"
-            if [ "$dry" != "yes" ]; then
-              "$SKILL_DIR/bin/tracker-ops.sh" state "$arg" "$detail"
-              printf 'Auto-unblocked by dispatcher: every blocking [task] reached the terminal status. Resuming to [%s].\n\n— dispatcher (on behalf of team-lead)\n' "$detail" \
-                | "$SKILL_DIR/bin/tracker-ops.sh" comment "$arg" -
-            fi ;;
-          *) die "unknown --unblock mode '$unblock'" ;;
-        esac ;;
-      unblock-no-rs)
-        echo "plan: unblock $arg — NO RESUME STATUS (lead must resume; add 'resume-status: <Status>' to the block comment)" ;;
-      blocked-sensitive)
-        echo "plan: keep $arg [Blocked] — block-kind '$detail' requires an authorized lead/human decision; auto-unblock forbidden" ;;
+      blocked-hold)
+        echo "plan: keep $arg [Blocked] — human-held; Startup Factory cannot move it outbound" ;;
       launch)
         local concrete; concrete="$(resolve_role "$team" "$arg")"
         local _ck; _ck="$(role_cmd_key "$concrete")"
@@ -271,12 +390,49 @@ matches=[str(s.get("name")) for s in board["tasks"]["statuses"] if s.get("kind")
 if len(matches)!=1: raise SystemExit("dispatch: task working status must resolve exactly once")
 print(matches[0])
 PY
-)"
+            )"
             claim_id="$(claim_id_for "$team" "$fid" "$detail" "$claim_role" "$extra" "$claim_target")"
+            env -u STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON \
+              "$SKILL_DIR/bin/tracker-ops.sh" export "$fid" "$tasks_file" >/dev/null
+            python3 - "$tasks_file" "$detail" "$queued_status" \
+              "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-[]}" <<'PY'
+import json,sys
+path,task_id,queued,ignored_raw=sys.argv[1:]
+payload=json.load(open(path)); tasks=payload.get("tasks")
+if not isinstance(tasks,list): raise SystemExit("dispatch: fresh claim snapshot is malformed")
+matches=[item for item in tasks if isinstance(item,dict) and str(item.get("taskId"))==task_id]
+if len(matches)!=1: raise SystemExit("dispatch: claim task is absent or duplicated in fresh snapshot")
+task=matches[0]
+if task.get("status")!=queued: raise SystemExit("dispatch: claim task is no longer queued")
+try: ignored=json.loads(ignored_raw)
+except ValueError: raise SystemExit("dispatch: ignored-label policy is invalid JSON")
+if not isinstance(ignored,list) or any(not isinstance(item,str) or not item.strip() for item in ignored):
+    raise SystemExit("dispatch: ignored-label policy must be a JSON string array")
+labels=task.get("labels") or []
+if not isinstance(labels,list) or any(not isinstance(item,str) for item in labels):
+    raise SystemExit("dispatch: fresh claim task labels are malformed")
+if {item.strip().casefold() for item in ignored}.intersection(item.strip().casefold() for item in labels):
+    raise SystemExit("dispatch: claim task became human-owned; no claim or launch")
+PY
+            local claim_authority_args=(authorize-claim --repo "$REPO_ROOT" \
+              --workspace "$dir" --team "$team" --feature "$fid" --tasks "$tasks_file" \
+              --task "$detail" --queued-status "$queued_status" --blocked-status "$blocked_status")
+            while IFS= read -r terminal_status; do
+              claim_authority_args+=(--terminal-status "$terminal_status")
+            done < <(python3 - "$SKILL_DIR/config/statuses.config.json" <<'PY'
+import json,sys
+board=json.load(open(sys.argv[1]))
+for status in board["tasks"]["statuses"]:
+    if status.get("terminal"): print(status["name"])
+PY
+)
+            python3 "$SKILL_DIR/bin/task-hold.py" "${claim_authority_args[@]}" >/dev/null
+            "$SKILL_DIR/bin/tracker-ops.sh" claim "$detail" "$claim_role" --to "$claim_target" --claim-id "$claim_id"
+            # Persist the local identity only after the tracker claim succeeds;
+            # a failed remote claim can never leave a stale local claim record.
             python3 "$SKILL_DIR/bin/runtime-state.py" claim --workspace "$dir" \
               --team "$team" --feature "$fid" --task "$detail" --role "$claim_role" \
               --attempt "$extra" --claim-id "$claim_id" --target "$claim_target" >/dev/null
-            "$SKILL_DIR/bin/tracker-ops.sh" claim "$detail" "$claim_role" --claim-id "$claim_id"
             # Keep the feature lifecycle deterministic: the first successful
             # task claim also advances a queued feature into its working state.
             "$SKILL_DIR/bin/tracker-ops.sh" feature-state "$fid" "$(working_feature_status)"
@@ -300,25 +456,27 @@ $plan
 EOF
 }
 
-[ $# -ge 3 ] || die "usage: dispatch.sh <team> <featureId> --once|--watch [--dry-run] [--unblock=auto|suggest|off]"
+[ $# -ge 3 ] || die "usage: dispatch.sh <team> <featureId> --once|--watch [--dry-run]"
 TEAM="$1"; FID="$2"; MODE="$3"; shift 3
-DRY=no; UNBLOCK="$(adapter_default_unblock)"
+DRY=no
 for opt in "$@"; do
   case "$opt" in
     --dry-run) DRY=yes ;;
-    --unblock=*) UNBLOCK="${opt#*=}" ;;
+    --unblock=auto|--unblock=suggest|--unblock=off)
+      echo "dispatch: warning — $opt is deprecated and ignored; [Blocked] exits are human-only" >&2 ;;
+    --unblock=*) die "unknown legacy unblock option $opt" ;;
     *) die "unknown option $opt" ;;
   esac
 done
 case "$MODE" in
-  --once) dispatch_once "$TEAM" "$FID" "$DRY" "$UNBLOCK" ;;
+  --once) dispatch_once "$TEAM" "$FID" "$DRY" ;;
   --watch)
     [ "$DRY" = "no" ] || die "--watch does not combine with --dry-run"
     INTERVAL="$(read_key POLL_INTERVAL_SECONDS)"; INTERVAL="${INTERVAL:-120}"
     echo "dispatch: watching (every ${INTERVAL}s) — this shell is the loop owner; keep it alive (tmux/nohup)"
     while true; do
       before="$(python3 "$SKILL_DIR/bin/runtime-state.py" count --workspace "$(teamroot "$TEAM")")"
-      dispatch_once "$TEAM" "$FID" no "$UNBLOCK" || echo "dispatch: pass failed — retrying next interval" >&2
+      dispatch_once "$TEAM" "$FID" no || echo "dispatch: pass failed — retrying next interval" >&2
       after="$(python3 "$SKILL_DIR/bin/runtime-state.py" count --workspace "$(teamroot "$TEAM")")"
       [ "$after" != "$before" ] && continue
       python3 "$SKILL_DIR/bin/runtime-state.py" wait --workspace "$(teamroot "$TEAM")" --count "$after" --timeout "$INTERVAL" >/dev/null

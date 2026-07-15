@@ -50,6 +50,13 @@ Rules that hold for every board:
   recoverable from the integration transaction record.
 - **"Next status" means a status listed in the current status's `transitions`.** Any
   other move is illegal — an **andon cord** condition (see `lifecycle.md`).
+- **A listed transition is not sufficient authority.** `transitionAuthority`
+  may narrow who can enter or exit a status. On the shipped board `[Blocked]`
+  can be entered by the verified team-lead/PM supervisor, is owned by `human`,
+  and can be exited only by a human project-management action. Startup Factory
+  never authors an outbound Blocked move. The operator must enforce the human
+  actor with the project-management tool's workflow ACL; normalized status data
+  alone does not prove transition provenance.
 
 ### The default board (shipped)
 
@@ -59,10 +66,10 @@ Tasks:
 
 | Status | Owner (default) | Transitions to | Notes |
 |---|---|---|---|
-| `[Planned]` | team-lead | Active | initial |
+| `[Planned]` | team-lead | Active, Blocked | initial; entering Blocked requires its explicit authority |
 | `[Active]` | implementer | Review, Blocked | |
 | `[Review]` | reviewer | Active, Ready to deploy, Blocked | rework returns to Active |
-| `[Blocked]` | team-lead | Planned, Active, Review | work is stuck; owner unblocks |
+| `[Blocked]` | human | Planned, Active, Review | task-scoped human lock; listed exits normalize human actions only |
 | `[Ready to deploy]` | integrator | — | terminal; `requiresCommit` |
 
 This table is an **example** — the JSON is authoritative. Projects add, rename, or
@@ -98,6 +105,9 @@ comment. The full workflow-role rules and required content live in
 | `[design-note]` | Implementer's proposed approach before any code. |
 | `[design-approved]` | Principal-architect gate open; carries architecture checklist. |
 | `[design-pushback]` | Principal-architect gate closed; lists required changes. |
+| `[dependency-hold]` | Team-lead verdict bound to exact direct Blocked sources and current graph digest. Receipt-backed `blocked` may authorize a queued or in-flight dependent to enter `[Blocked]`; other verdicts clear only that graph for claim/continuation. |
+| `[resume-review]` | Team-lead verdict over the full blocked/current communication diff, bound to an exact hold and current digest after a human returns the [task] to queued. |
+| `[resume-plan]` | Team-lead revised plan after changed requirements; requires a later principal-architect design verdict. |
 | `[api-ready]` | Backend contract available for frontend. |
 | `[divergence]` | What was done differently from the plan, and why. |
 | `[review-request]` | Implementation complete; ready for review. |
@@ -124,3 +134,9 @@ comment. The full workflow-role rules and required content live in
 3. **Status moves follow the configured `transitions` graph.** Never skip, invent, or reverse a move the board does not define.
 4. **Reads are cheap, writes are deliberate.** Confirm the current status before a write
    when `STRICT_STATUS=true`.
+5. **Blocked is task-scoped and human-exited.** Stop/fence only the matching
+   [task], keep independent queued work moving, and refuse every automated
+   outbound Blocked transition.
+6. **Dependencies are first-class data.** Only the adapter-normalized
+   `blockedBy` relationship may affect scheduling or dependency propagation;
+   never infer an edge from comment prose.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import tarfile
@@ -173,6 +174,69 @@ class ReleaseLifecycleTest(unittest.TestCase):
                 )
             time.sleep(0.7)
             self.assertFalse(sentinel.exists())
+
+    def test_outer_termination_reaps_term_resistant_provider_hook(self) -> None:
+        """A stale-worker SIGTERM must not strand a privileged hook session."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            hook_pid = root / "hook.pid"
+            hook = root / "hook.sh"
+            hook.write_text(
+                "#!/bin/sh\n"
+                "trap '' TERM INT\n"
+                f"printf '%s\\n' \"$$\" > '{hook_pid}'\n"
+                "while :; do sleep 30; done\n"
+            )
+            hook.chmod(0o700)
+            driver = root / "driver.py"
+            driver.write_text(
+                "import importlib.util, pathlib, sys\n"
+                f"path=pathlib.Path({str(ROOT / 'bin' / 'release-feature.py')!r})\n"
+                "sys.path.insert(0,str(path.parent))\n"
+                "spec=importlib.util.spec_from_file_location('release_signal_test',path)\n"
+                "module=importlib.util.module_from_spec(spec); "
+                "sys.modules[spec.name]=module; spec.loader.exec_module(module)\n"
+                "module.install_release_signal_handlers()\n"
+                "try:\n"
+                f" module.run_process_group([{str(hook)!r}],cwd=pathlib.Path({str(root)!r}),"
+                "env={'PATH':'/usr/bin:/bin'},timeout=30)\n"
+                "except module.ReleaseInterrupted:\n"
+                " raise SystemExit(143)\n"
+            )
+            executor = subprocess.Popen(
+                [sys.executable, str(driver)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not hook_pid.exists() and time.monotonic() < deadline:
+                    if executor.poll() is not None:
+                        break
+                    time.sleep(0.02)
+                if not hook_pid.exists():
+                    stdout, stderr = executor.communicate(timeout=1)
+                    self.fail(
+                        "provider hook did not start: "
+                        f"exit={executor.returncode} stdout={stdout!r} stderr={stderr!r}"
+                    )
+                provider_pid = int(hook_pid.read_text().strip())
+                os.killpg(executor.pid, signal.SIGTERM)
+                executor.wait(timeout=8)
+                self.assertEqual(executor.returncode, 143)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(provider_pid, 0)
+            finally:
+                if executor.poll() is None:
+                    os.killpg(executor.pid, signal.SIGKILL)
+                    executor.wait(timeout=2)
+                if executor.stdout is not None:
+                    executor.stdout.close()
+                if executor.stderr is not None:
+                    executor.stderr.close()
 
     def test_security_json_rejects_duplicate_keys(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate JSON key"):

@@ -300,11 +300,13 @@ def _read_protected(path: Path, label: str, maximum: int = 65536) -> bytes:
         raise CapabilityError("cannot read %s: %s" % (label, exc)) from exc
 
 
-def verify_entry(
+def _verify_entry(
     repository: str,
     workspace: str,
     entry: Dict[str, Any],
     producer_body_digest: str,
+    *,
+    require_active: bool,
 ) -> Dict[str, Any]:
     capability = entry.get("producerCapability")
     if not isinstance(capability, dict):
@@ -343,12 +345,15 @@ def verify_entry(
         raise CapabilityError("invalid capability record schema")
     if record.get("id") != capability_id:
         raise CapabilityError("capability record identity mismatch")
-    active_id = _read_protected(active / (_active_key(record) + ".id"), "active capability", 256)
-    if active_id.decode("ascii", errors="strict").strip() != capability_id:
-        raise CapabilityError("producer capability was superseded by a newer launch")
-    now = int(time.time())
-    if isinstance(record.get("expiresAt"), bool) or int(record.get("expiresAt", 0)) <= now:
-        raise CapabilityError("producer capability expired")
+    if require_active:
+        active_id = _read_protected(
+            active / (_active_key(record) + ".id"), "active capability", 256
+        )
+        if active_id.decode("ascii", errors="strict").strip() != capability_id:
+            raise CapabilityError("producer capability was superseded by a newer launch")
+        now = int(time.time())
+        if isinstance(record.get("expiresAt"), bool) or int(record.get("expiresAt", 0)) <= now:
+            raise CapabilityError("producer capability expired")
     if capability.get("expiresAt") != record.get("expiresAt"):
         raise CapabilityError("producer capability expiry mismatch")
     if capability.get("instance") != record.get("instance"):
@@ -384,6 +389,105 @@ def verify_entry(
     }
 
 
+def verify_entry(
+    repository: str,
+    workspace: str,
+    entry: Dict[str, Any],
+    producer_body_digest: str,
+) -> Dict[str, Any]:
+    """Verify a pending producer entry against its currently active capability."""
+    return _verify_entry(
+        repository,
+        workspace,
+        entry,
+        producer_body_digest,
+        require_active=True,
+    )
+
+
+def verify_published_entry(
+    repository: str,
+    workspace: str,
+    entry: Dict[str, Any],
+    producer_body_digest: str,
+) -> Dict[str, Any]:
+    """Authenticate immutable published evidence after its capability expires.
+
+    The protected capability record and HMAC remain durable audit authority;
+    only pending writes require the active pointer and unexpired lease.
+    """
+    return _verify_entry(
+        repository,
+        workspace,
+        entry,
+        producer_body_digest,
+        require_active=False,
+    )
+
+
+def revoke_task(repository: str, workspace: str, team: str, task: str) -> int:
+    """Revoke every active producer capability bound to one task.
+
+    Capability records remain immutable audit evidence.  Removing only their
+    protected active pointers makes every previously signed or subsequently
+    produced entry fail verification without affecting gate roles or sibling
+    tasks.
+    """
+    repo = _repo(repository)
+    workspace_path = Path(workspace)
+    if not workspace_path.is_absolute():
+        raise CapabilityError("canonical workspace path must be absolute")
+    workspace_real = Path(os.path.realpath(workspace_path))
+    if workspace_real != workspace_path or not workspace_real.is_dir():
+        raise CapabilityError("canonical workspace must be a non-symlink directory")
+    _safe_text(team, "team", 63)
+    _safe_text(task, "taskId")
+
+    records, active = state_directories(repo)
+    revoked = 0
+    for pointer in sorted(active.iterdir(), key=lambda item: item.name):
+        try:
+            info = pointer.lstat()
+        except OSError as exc:
+            raise CapabilityError("cannot inspect active capability pointer: %s" % exc) from exc
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077
+        ):
+            raise CapabilityError("active capability pointer is not an owner-only regular file")
+        raw_id = _read_protected(pointer, "active capability", 256)
+        try:
+            capability_id = raw_id.decode("ascii", errors="strict").strip()
+        except UnicodeError as exc:
+            raise CapabilityError("active capability identity is not ASCII") from exc
+        if not CAPABILITY_ID.fullmatch(capability_id):
+            raise CapabilityError("active capability identity is invalid")
+        try:
+            record = json.loads(
+                _read_protected(
+                    records / (capability_id + ".json"), "capability record"
+                )
+            )
+        except (UnicodeError, ValueError) as exc:
+            raise CapabilityError("invalid capability record") from exc
+        if not isinstance(record, dict) or record.get("id") != capability_id:
+            raise CapabilityError("capability record identity mismatch")
+        if pointer.name != _active_key(record) + ".id":
+            raise CapabilityError("active capability pointer identity mismatch")
+        if (
+            record.get("canonicalRepo") == str(repo)
+            and record.get("canonicalWorkspace") == str(workspace_real)
+            and record.get("team") == team
+            and record.get("executionKind") == "task"
+            and record.get("taskId") == task
+        ):
+            pointer.unlink()
+            revoked += 1
+    return revoked
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -398,6 +502,11 @@ def main() -> int:
     mint_parser.add_argument("--attempt", type=int, required=True)
     mint_parser.add_argument("--instance", required=True)
     mint_parser.add_argument("--ttl", type=int, default=DEFAULT_TTL_SECONDS)
+    revoke_parser = subparsers.add_parser("revoke-task")
+    revoke_parser.add_argument("--repo", required=True)
+    revoke_parser.add_argument("--workspace", required=True)
+    revoke_parser.add_argument("--team", required=True)
+    revoke_parser.add_argument("--task", required=True)
     args = parser.parse_args()
     try:
         if args.command == "mint":
@@ -406,6 +515,10 @@ def main() -> int:
                 args.kind, args.task, args.attempt, args.instance, args.ttl,
             )
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+            return 0
+        if args.command == "revoke-task":
+            count = revoke_task(args.repo, args.workspace, args.team, args.task)
+            print(json.dumps({"revoked": count}, sort_keys=True, separators=(",", ":")))
             return 0
     except CapabilityError as exc:
         print("outbox-capability: %s" % exc, file=sys.stderr)

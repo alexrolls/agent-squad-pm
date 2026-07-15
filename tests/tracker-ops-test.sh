@@ -22,6 +22,103 @@ refuse() { # refuse <desc> <needle> <cmd...>
   fi
 }
 
+# -- project-owned custom backend delegation -----------------------------------
+CUSTOM_SKILL="$TMP/custom-skill"
+mkdir -p "$CUSTOM_SKILL/bin" "$CUSTOM_SKILL/config" "$CUSTOM_SKILL/extensions/tracker-backends"
+cp "$SKILL_DIR/bin/tracker-ops.sh" "$CUSTOM_SKILL/bin/"
+cp "$SKILL_DIR/config/statuses.config.json" "$CUSTOM_SKILL/config/"
+cat > "$CUSTOM_SKILL/config/project-management.config.md" <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=Acme
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+cat > "$CUSTOM_SKILL/extensions/tracker-backends/Acme.py" <<'PY'
+import json
+import os
+
+
+class Backend:
+    def __init__(self, context):
+        self.context = context
+
+    def current_status(self, task_id):
+        return os.environ.get('ACME_STATUS', 'Planned')
+
+    def current_labels(self, task_id):
+        return json.loads(os.environ.get('ACME_LABELS', '[]'))
+
+    def current_feature_status(self, feature_id):
+        return 'Planned'
+
+    def _mutation(self, name):
+        path = os.environ.get('CUSTOM_MUTATION_OUT')
+        if path:
+            with open(path, 'a') as handle:
+                handle.write(name + '\n')
+
+    def set_state(self, task_id, target): self._mutation('set_state')
+    def set_assignee(self, task_id, role): self._mutation('set_assignee')
+    def set_feature_state(self, feature_id, target): self._mutation('set_feature_state')
+
+    def comment(self, task_id, body):
+        with open(os.environ['CUSTOM_BACKEND_OUT'], 'w') as handle:
+            handle.write('root=%s\n' % self.context['skill_dir'])
+            handle.write('adapter=%s\n' % self.context['adapter'])
+            handle.write('task=%s\n' % task_id)
+            handle.write('body=%s\n' % body)
+        return 'custom-comment-id'
+
+    def comment_exists(self, task_id, token): return False
+    def integration_comment_exists(self, task_id, commit): return False
+    def update_comment(self, task_id, comment_id, body): self._mutation('update_comment')
+    def upsert_progress(self, task_id, body): self._mutation('upsert_progress')
+    def upsert_digest(self, feature_id, body): self._mutation('upsert_digest')
+    def upsert_deployment(self, feature_id, body): self._mutation('upsert_deployment')
+    def export(self, feature_id): return []
+    def scan(self, statuses): return []
+PY
+CUSTOM_OPS="$CUSTOM_SKILL/bin/tracker-ops.sh"
+printf 'custom body\n' | CUSTOM_BACKEND_OUT="$TMP/custom-backend.out" \
+  "$CUSTOM_OPS" comment ACME-1 -
+check "custom backend receives the absolute skill root" \
+  grep -qx "root=$CUSTOM_SKILL" "$TMP/custom-backend.out"
+check "custom backend receives the selected adapter" \
+  grep -qx 'adapter=Acme' "$TMP/custom-backend.out"
+check "custom backend receives the task primitive" \
+  grep -qx 'task=ACME-1' "$TMP/custom-backend.out"
+check "custom backend receives the core-validated body" \
+  grep -qx 'body=custom body' "$TMP/custom-backend.out"
+
+ln -s Acme.py "$CUSTOM_SKILL/extensions/tracker-backends/AcmeLink.py"
+cat > "$CUSTOM_SKILL/config/project-management.config.md" <<'EOF'
+```
+PRODUCT_MANAGEMENT_TOOL=AcmeLink
+STATUS_CONFIG=config/statuses.config.json
+```
+EOF
+refuse "symlinked custom backend is refused" "contains a symlink" \
+  "$CUSTOM_OPS" scan "$TMP/unused.json" --status Planned
+
+cat > "$CUSTOM_SKILL/extensions/tracker-backends/Incomplete.py" <<'PY'
+class Backend:
+    def __init__(self, context):
+        self.context = context
+PY
+refuse "incomplete custom backend contract is refused" "missing methods" \
+  env TRACKER_ADAPTER=Incomplete "$CUSTOM_OPS" scan "$TMP/unused.json" --status Planned
+
+refuse "custom backend cannot bypass human-only Blocked exit" "human-only" \
+  env TRACKER_ADAPTER=Acme ACME_STATUS=Blocked CUSTOM_MUTATION_OUT="$TMP/custom-mutations" \
+    "$CUSTOM_OPS" state ACME-1 Planned
+refuse "custom backend cannot bypass human-work claim fence" "labeled for human work" \
+  env TRACKER_ADAPTER=Acme ACME_STATUS=Planned ACME_LABELS='["human-work"]' \
+    STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='["human-work"]' \
+    CUSTOM_MUTATION_OUT="$TMP/custom-mutations" \
+    "$CUSTOM_OPS" claim ACME-1 backend
+check "refused custom operations never reach mutation primitives" \
+  test ! -e "$TMP/custom-mutations"
+
 # -- fixture: a skill copy configured for the Markdown adapter ------------------
 cd "$TMP"
 mkdir -p skill/config skill/bin
@@ -45,6 +142,7 @@ cat > feat/feature.md <<'EOF'
 ## 1 Add form [Planned]
 
 **Assignee:** —
+**Labels:** human-work, needs-review
 
 Build the form.
 
@@ -148,6 +246,59 @@ refuse "denial with bad id refused"     "invalid denial id"             bash -c 
 check "state moves the task"      grep -q '^## 1 Add form \[Review\]$' "$T"
 check "state retry is idempotent" grep -q '^## 1 Add form \[Review\]$' "$T"
 
+# -- Blocked is enterable by the team but only a human may move it outbound ---
+check "Blocked board authority is directional and human-owned" python3 - "skill/config/statuses.config.json" <<'PY'
+import json,sys
+board=json.load(open(sys.argv[1]))
+statuses={item['name']:item for item in board['tasks']['statuses']}
+assert 'Blocked' in statuses['Planned']['transitions']
+blocked=statuses['Blocked']
+assert blocked['owner'] == {'role': 'human'}
+assert blocked['transitions'] == ['Planned', 'Active', 'Review']
+assert blocked['transitionAuthority']['enter']['roles'] == ['team-lead', 'pm-agent']
+assert blocked['transitionAuthority']['exit'] == {'roles': ['human'], 'automation': False}
+PY
+cat > held.md <<'EOF'
+# Directional authority [Active]
+
+## 1 Queued [Planned]
+
+**Assignee:** —
+
+## 2 Working [Active]
+
+**Assignee:** backend
+
+## 3 Reviewing [Review]
+
+**Assignee:** reviewer
+
+## 4 Already held [Blocked]
+
+**Assignee:** backend
+EOF
+"$OPS" state held.md#1 Blocked
+"$OPS" state held.md#2 Blocked
+"$OPS" state held.md#3 Blocked
+check "Planned may enter Blocked" grep -q '^## 1 Queued \[Blocked\]$' held.md
+check "Active may enter Blocked"  grep -q '^## 2 Working \[Blocked\]$' held.md
+check "Review may enter Blocked"  grep -q '^## 3 Reviewing \[Blocked\]$' held.md
+"$OPS" state held.md#4 Blocked >/dev/null
+refuse "broker refuses Blocked to Planned" "outbound \[Blocked\].*human-only" \
+  "$OPS" state held.md#1 Planned
+refuse "broker refuses Blocked to Active" "outbound \[Blocked\].*human-only" \
+  "$OPS" state held.md#2 Active
+refuse "broker refuses Blocked to Review" "outbound \[Blocked\].*human-only" \
+  "$OPS" state held.md#3 Review
+refuse "claim cannot release Blocked" "outbound \[Blocked\].*human-only" \
+  "$OPS" claim held.md#4 backend --to Active --claim-id claim-human-hold
+refuse "integration cannot release Blocked" "outbound \[Blocked\].*human-only" \
+  "$OPS" integrate held.md#4 abc1234
+refuse "integration broker cannot release Blocked" "outbound \[Blocked\].*human-only" \
+  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen held.md#4 Active
+check "all refused outbound transitions preserve Blocked" \
+  test "$(grep -c '\[Blocked\]$' held.md)" -eq 4
+
 # -- integrate: terminal move + hash citation + extra body -----------------------
 printf 'VALIDATE_TEST green. Merged: a.py\n' | "$OPS" integrate "$T#1" abc1234 -
 check "integrate terminal status" grep -q '^## 1 Add form \[Ready to deploy\]$' "$T"
@@ -168,13 +319,24 @@ assert byid['$T#1']['status'] == 'Ready to deploy'
 assert byid['$T#2']['status'] == 'Planned'
 assert byid['$T#1']['assignee'] == 'backend'
 assert byid['$T#2']['assignee'] is None
+assert byid['$T#1']['labels'] == ['human-work', 'needs-review']
 assert '[design-note]' not in byid['$T#1']['description']
 assert '**Assignee:**' not in byid['$T#1']['description']
+assert '**Labels:**' not in byid['$T#1']['description']
 assert any('design-note' in c['body'] for c in byid['$T#1']['comments'])
 assert any(c['body'].startswith('[progress]') for c in byid['$T#2']['comments'])
 assert byid['$T#2']['blockedBy'] == ['$T#1'], byid['$T#2'].get('blockedBy')
 assert byid['$T#1']['blockedBy'] == []
 "
+
+STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='["human-work"]' "$OPS" export "$T" filtered-tasks.json
+check "ignored label filters autonomous feature export" python3 -c "
+import json
+d=json.load(open('filtered-tasks.json'))
+assert [task['taskId'] for task in d['tasks']] == ['$T#2']
+"
+refuse "malformed ignored-label policy fails closed" "must be a JSON list" \
+  env STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='{}' "$OPS" export "$T" filtered-tasks.json
 
 # -- board scan: generic statuses, parent grouping, routing inputs ---------------
 mkdir -p blocked

@@ -16,6 +16,7 @@
 #   launch-team.sh validate-board [config-path]                  # validate board config JSON
 #   launch-team.sh status        <team>
 #   launch-team.sh stop          <team>
+#   launch-team.sh stop-task     <team> <taskId>                 # stop only protected workers for one task
 set -euo pipefail
 umask 077
 
@@ -39,6 +40,8 @@ LIFECYCLE_ENABLED=false
 LAUNCHED_PID=""
 LAUNCH_BARRIER_DIR=""
 LAUNCH_BARRIER_FIFO=""
+LAUNCH_GROUP_FILE=""
+LAUNCH_TMUX_WRAPPER=""
 
 die() { echo "launch-team: $*" >&2; exit 1; }
 
@@ -248,13 +251,13 @@ lifecycle_any_live() { # team category [task-key]
   python3 "$SKILL_DIR/bin/process-lifecycle.py" "${args[@]}"
 }
 
-lifecycle_register() { # team category instance kind pid [session window pane]
+lifecycle_register() { # team category instance kind pid [session window pane pane-pid]
   local team="$1" category="$2" instance="$3" kind="$4" pid="$5"
   shift 5
   local args=(register --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT"
     --team "$team" --category "$category" --instance "$instance" --kind "$kind" --pid "$pid")
   if [ "$kind" = tmux ]; then
-    args+=(--tmux-session "$1" --tmux-window "$2" --tmux-pane "$3")
+    args+=(--tmux-session "$1" --tmux-window "$2" --tmux-pane "$3" --tmux-pane-pid "$4")
   fi
   python3 "$SKILL_DIR/bin/process-lifecycle.py" "${args[@]}" >/dev/null
 }
@@ -272,25 +275,41 @@ release_launch_barrier() {
   printf 'go\n' > "$LAUNCH_BARRIER_FIFO" \
     || die "could not release protected launch barrier"
   rm -f "$LAUNCH_BARRIER_FIFO"
+  [ -z "$LAUNCH_GROUP_FILE" ] || rm -f "$LAUNCH_GROUP_FILE"
+  [ -z "$LAUNCH_TMUX_WRAPPER" ] || rm -f "$LAUNCH_TMUX_WRAPPER"
   rmdir "$LAUNCH_BARRIER_DIR"
-  LAUNCH_BARRIER_DIR=""; LAUNCH_BARRIER_FIFO=""
+  LAUNCH_BARRIER_DIR=""; LAUNCH_BARRIER_FIFO=""; LAUNCH_GROUP_FILE=""; LAUNCH_TMUX_WRAPPER=""
 }
 
 remove_launch_barrier() {
   [ -z "$LAUNCH_BARRIER_FIFO" ] || rm -f "$LAUNCH_BARRIER_FIFO"
+  [ -z "$LAUNCH_GROUP_FILE" ] || rm -f "$LAUNCH_GROUP_FILE"
+  [ -z "$LAUNCH_TMUX_WRAPPER" ] || rm -f "$LAUNCH_TMUX_WRAPPER"
   [ -z "$LAUNCH_BARRIER_DIR" ] || rmdir "$LAUNCH_BARRIER_DIR" 2>/dev/null || true
-  LAUNCH_BARRIER_DIR=""; LAUNCH_BARRIER_FIFO=""
+  LAUNCH_BARRIER_DIR=""; LAUNCH_BARRIER_FIFO=""; LAUNCH_GROUP_FILE=""; LAUNCH_TMUX_WRAPPER=""
 }
 
 spawn_managed_background() { # workdir logfile marker team category instance
   local workdir="$1" logfile="$2" marker="$3" team="$4" category="$5" instance="$6" pid
   create_launch_barrier
-  /bin/sh -c '
-    barrier=$1; workdir=$2; shift 2
-    IFS= read -r _ < "$barrier"
-    cd "$workdir"
-    exec "$@"
-  ' launch-guard "$LAUNCH_BARRIER_FIFO" "$workdir" "${EXECUTION_ARGS[@]}" >"$logfile" 2>&1 &
+  # A dedicated POSIX session makes the authenticated lifecycle record an
+  # authority for this worker and all ordinary descendants, never the
+  # launcher's or a sibling's process group.  setsid happens before the child
+  # waits on the protected barrier, so registration can bind PID=PGID=SID
+  # before any repository command executes.
+  python3 -c '
+import os
+import sys
+
+barrier, workdir, *command = sys.argv[1:]
+if not command:
+    raise SystemExit("missing managed execution command")
+os.setsid()
+with open(barrier, "r", encoding="ascii") as handle:
+    handle.readline()
+os.chdir(workdir)
+os.execvp(command[0], command)
+' "$LAUNCH_BARRIER_FIFO" "$workdir" "${EXECUTION_ARGS[@]}" >"$logfile" 2>&1 &
   pid=$!
   if ! lifecycle_register "$team" "$category" "$instance" background "$pid"; then
     kill -KILL "$pid" 2>/dev/null || true
@@ -305,30 +324,126 @@ spawn_managed_background() { # workdir logfile marker team category instance
 
 spawn_managed_tmux() { # workdir marker team category instance env-command
   local workdir="$1" marker="$2" team="$3" category="$4" instance="$5" env_cmd="$6"
-  local session="team-$team" quoted_workdir quoted_marker quoted_barrier shell_cmd pane_info pane pid
+  local session="team-$team" quoted_workdir quoted_marker quoted_barrier quoted_group_file
+  local quoted_wrapper quoted_python shell_cmd pane_info pane pane_pid pid i
   printf -v quoted_workdir '%q' "$workdir"
   printf -v quoted_marker '%q' "$marker"
   create_launch_barrier
+  LAUNCH_GROUP_FILE="$LAUNCH_BARRIER_DIR/group.pid"
+  LAUNCH_TMUX_WRAPPER="$LAUNCH_BARRIER_DIR/tmux-session.py"
+  cat > "$LAUNCH_TMUX_WRAPPER" <<'PY'
+import os
+import pathlib
+import signal
+import sys
+
+group_file, barrier, workdir, marker, instance, *command = sys.argv[1:]
+if not command:
+    raise SystemExit("missing managed tmux execution command")
+child = os.fork()
+if child == 0:
+    os.setsid()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(group_file, flags, 0o600)
+    try:
+        os.write(descriptor, (str(os.getpid()) + "\n").encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    with open(barrier, "r", encoding="ascii") as handle:
+        handle.readline()
+    os.chdir(workdir)
+    os.execvp(command[0], command)
+
+_, status = os.waitpid(child, 0)
+try:
+    pathlib.Path(marker).unlink()
+except FileNotFoundError:
+    pass
+if os.WIFEXITED(status):
+    code = os.WEXITSTATUS(status)
+else:
+    code = 128 + os.WTERMSIG(status)
+print(f"[launch-team] {instance} exited ({code})", flush=True)
+raise SystemExit(code)
+PY
+  chmod 600 "$LAUNCH_TMUX_WRAPPER"
   printf -v quoted_barrier '%q' "$LAUNCH_BARRIER_FIFO"
+  printf -v quoted_group_file '%q' "$LAUNCH_GROUP_FILE"
+  printf -v quoted_wrapper '%q' "$LAUNCH_TMUX_WRAPPER"
+  printf -v quoted_python '%q' "$(command -v python3)"
   tmux has-session -t "$session" 2>/dev/null || tmux new-session -d -s "$session" -n _hub
-  shell_cmd="IFS= read -r _ < $quoted_barrier; cd $quoted_workdir && { $env_cmd; rc=\$?; }; echo '[launch-team] $instance exited ('\$rc')'; rm -f $quoted_marker; exit \$rc"
+  shell_cmd="exec $quoted_python $quoted_wrapper $quoted_group_file $quoted_barrier $quoted_workdir $quoted_marker $instance $env_cmd"
   pane_info="$(tmux new-window -d -P -F '#{pane_id}|#{pane_pid}' -t "$session" -n "$instance" "$shell_cmd")" \
     || { remove_launch_barrier; die "could not create tmux pane for $instance"; }
-  pane="${pane_info%%|*}"; pid="${pane_info#*|}"
-  case "$pid" in ''|*[!0-9]*) tmux kill-pane -t "$pane" 2>/dev/null || true; remove_launch_barrier; die "tmux returned an unsafe pane PID" ;; esac
-  if ! lifecycle_register "$team" "$category" "$instance" tmux "$pid" "$session" "$instance" "$pane"; then
+  pane="${pane_info%%|*}"; pane_pid="${pane_info#*|}"
+  case "$pane_pid" in ''|*[!0-9]*) tmux kill-pane -t "$pane" 2>/dev/null || true; remove_launch_barrier; die "tmux returned an unsafe pane PID" ;; esac
+  for i in $(seq 1 100); do
+    [ -s "$LAUNCH_GROUP_FILE" ] && break
+    if ! tmux display-message -p -t "$pane" '#{pane_id}' >/dev/null 2>&1; then
+      remove_launch_barrier
+      die "tmux session wrapper exited before creating a protected process group for $instance"
+    fi
+    sleep 0.01
+  done
+  [ -s "$LAUNCH_GROUP_FILE" ] \
+    || { tmux kill-pane -t "$pane" 2>/dev/null || true; remove_launch_barrier; die "timed out binding tmux process group for $instance"; }
+  pid="$(cat "$LAUNCH_GROUP_FILE")"
+  case "$pid" in ''|*[!0-9]*) tmux kill-pane -t "$pane" 2>/dev/null || true; remove_launch_barrier; die "tmux wrapper returned an unsafe process-group leader PID" ;; esac
+  if ! lifecycle_register "$team" "$category" "$instance" tmux "$pid" "$session" "$instance" "$pane" "$pane_pid"; then
     kill -KILL "$pid" 2>/dev/null || true
     tmux kill-pane -t "$pane" 2>/dev/null || true
     remove_launch_barrier
-    die "could not bind the tmux pane to protected lifecycle state"
+    die "could not bind the tmux process group and pane to protected lifecycle state"
   fi
   printf 'managed\n' > "$marker"
   release_launch_barrier
   LAUNCHED_PID="$pid"
 }
 
-lifecycle_stop_instance() { # team category instance -> verified TERM/kill-pane only
-  local team="$1" category="$2" instance="$3" record rc fields kind pid session window pane current i
+lifecycle_wait_and_retire() { # team category instance attempts -> 0 gone+retired, 3 still live
+  local team="$1" category="$2" instance="$3" attempts="$4" rc i
+  for i in $(seq 1 "$attempts"); do
+    if lifecycle_probe "$team" "$category" "$instance"; then
+      sleep 0.05
+      continue
+    else
+      rc=$?
+    fi
+    if [ "$rc" -eq 3 ]; then
+      # probe deliberately maps both dead and identity-mismatch to NOT_LIVE.
+      # forget performs the authoritative distinction and refuses to retire a
+      # PID whose protected start identity no longer matches.
+      python3 "$SKILL_DIR/bin/process-lifecycle.py" forget \
+        --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
+        --team "$team" --category "$category" --instance "$instance" >/dev/null \
+        || die "could not retire stopped lifecycle record $team/$instance"
+      return 0
+    fi
+    die "protected lifecycle state became invalid while stopping $team/$instance"
+  done
+  return 3
+}
+
+lifecycle_retire_tmux_pane() { # pane-pid session window pane -> kill only while identity remains exact
+  local pane_pid="$1" session="$2" window="$3" pane="$4" current
+  current="$(tmux display-message -p -t "$pane" '#{pane_pid}|#{session_name}|#{window_name}|#{pane_id}|#{pane_dead}' 2>/dev/null)" \
+    || return 0
+  [ "$current" != "||||" ] || return 0
+  if [ "$current" != "$pane_pid|$session|$window|$pane|0" ] \
+      && [ "${current#*|}" != "$session|$window|$pane|1" ]; then
+    # The task group is already gone.  A missing/reused pane must never turn
+    # stale UI metadata into authority over an unrelated pane.  A dead pane
+    # may report PID 0, but its server-unique pane/session/window identity is
+    # still safe to retire.
+    echo "launch-team: tmux pane $pane changed identity after task stop; leaving it untouched" >&2
+    return 0
+  fi
+  tmux kill-pane -t "$pane" || die "could not stop verified tmux pane $pane"
+}
+
+lifecycle_stop_instance() { # team category instance -> authenticated group TERM/KILL, then tmux pane cleanup
+  local team="$1" category="$2" instance="$3" record rc fields kind pid session window pane pane_pid current
   if record="$(python3 "$SKILL_DIR/bin/process-lifecycle.py" verify \
       --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
       --team "$team" --category "$category" --instance "$instance")"; then
@@ -338,48 +453,53 @@ lifecycle_stop_instance() { # team category instance -> verified TERM/kill-pane 
     [ "$rc" -eq 3 ] && return 3
     die "protected lifecycle verification failed for $team/$instance"
   fi
-  fields="$(printf '%s' "$record" | python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "") for k in ("kind","pid","tmuxSession","tmuxWindow","tmuxPane")))')"
-  IFS=$'\t' read -r kind pid session window pane <<< "$fields"
-  if [ "$kind" = background ]; then
-    if python3 "$SKILL_DIR/bin/process-lifecycle.py" signal \
-        --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
-        --team "$team" --category "$category" --instance "$instance"; then
-      :
-    else
-      rc=$?
-      [ "$rc" -eq 3 ] || die "refusing to signal unverified lifecycle process $team/$instance"
-    fi
-  elif [ "$kind" = tmux ]; then
+  fields="$(printf '%s' "$record" | python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "") for k in ("kind","pid","tmuxSession","tmuxWindow","tmuxPane","tmuxPanePid")))')"
+  IFS=$'\t' read -r kind pid session window pane pane_pid <<< "$fields"
+  case "$kind" in
+    background) ;;
+    tmux)
     current="$(tmux display-message -p -t "$pane" '#{pane_pid}|#{session_name}|#{window_name}|#{pane_id}' 2>/dev/null)" \
-      || return 3
-    [ "$current" = "$pid|$session|$window|$pane" ] \
+      || current=""
+    [ -z "$current" ] || [ "$current" = "$pane_pid|$session|$window|$pane" ] \
       || die "refusing tmux stop: protected pane identity no longer matches $team/$instance"
-    python3 "$SKILL_DIR/bin/process-lifecycle.py" verify \
+    ;;
+    *) die "protected lifecycle record has unsupported kind '$kind'" ;;
+  esac
+
+  if python3 "$SKILL_DIR/bin/process-lifecycle.py" signal \
       --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
-      --team "$team" --category "$category" --instance "$instance" >/dev/null \
-      || die "refusing tmux stop after process identity changed"
-    tmux kill-pane -t "$pane" || die "could not stop verified tmux pane $pane"
+      --team "$team" --category "$category" --instance "$instance" --signal TERM; then
+    :
   else
-    die "protected lifecycle record has unsupported kind '$kind'"
+    rc=$?
+    [ "$rc" -eq 3 ] || die "refusing to signal unverified lifecycle process group $team/$instance"
+  fi
+  if lifecycle_wait_and_retire "$team" "$category" "$instance" 40; then
+    [ "$kind" != tmux ] || lifecycle_retire_tmux_pane "$pane_pid" "$session" "$window" "$pane"
+    return 0
+  else
+    rc=$?
+    [ "$rc" -eq 3 ] || die "protected lifecycle state became invalid while waiting for $team/$instance"
   fi
 
-  for i in $(seq 1 40); do
-    if lifecycle_probe "$team" "$category" "$instance"; then
-      sleep 0.05
-      continue
-    else
-      rc=$?
-    fi
-    if [ "$rc" -eq 3 ]; then
-      python3 "$SKILL_DIR/bin/process-lifecycle.py" forget \
-        --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
-        --team "$team" --category "$category" --instance "$instance" >/dev/null \
-        || die "could not retire stopped lifecycle record $team/$instance"
-      return 0
-    fi
-    die "protected lifecycle state became invalid while stopping $team/$instance"
-  done
-  die "verified process $team/$instance did not stop after SIGTERM"
+  # TERM-resistant descendants are killed only through the authenticated
+  # group authority.  The helper re-verifies the dedicated PID=PGID=SID
+  # binding immediately before SIGKILL; workspace markers and tmux metadata
+  # never select the signal target.
+  if python3 "$SKILL_DIR/bin/process-lifecycle.py" signal \
+      --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
+      --team "$team" --category "$category" --instance "$instance" --signal KILL; then
+    :
+  else
+    rc=$?
+    [ "$rc" -eq 3 ] \
+      || die "refusing SIGKILL because protected lifecycle group identity changed for $team/$instance"
+  fi
+  if lifecycle_wait_and_retire "$team" "$category" "$instance" 40; then
+    [ "$kind" != tmux ] || lifecycle_retire_tmux_pane "$pane_pid" "$session" "$window" "$pane"
+    return 0
+  fi
+  die "verified process group $team/$instance did not stop after identity-bound SIGKILL"
 }
 
 prepare_execution() { # workdir command role team feature preset kind task attempt -> global EXECUTION_ARGS
@@ -873,6 +993,12 @@ launch_task() { # launch_task <team> <featureId> <role> <taskId> <attempt> [pres
   local key; key="$(role_cmd_key "$role")"
   key_is_null "$key" && die "role '$role' is disabled ($key=null)"
   local dir; dir="$(teamroot "$team")" || die "unsafe team workspace"
+  local hold_rc=0
+  python3 "$SKILL_DIR/bin/task-hold.py" check \
+    --repo "$REPO_ROOT" --workspace "$dir" --team "$team" --feature "$fid" --task "$task" \
+    >/dev/null || hold_rc=$?
+  [ "$hold_rc" -eq 0 ] \
+    || die "task '$task' is held; refusing to create or relaunch an implementation attempt"
   local execution
   execution="$(team_path "$dir" "executions/$(task_key "$task").json")" || die "unsafe execution path"
   if [ -f "$execution" ]; then
@@ -1147,6 +1273,100 @@ case "${1:-}" in
     done <<< "$records"
     echo "stopped team $2"
     ;;
+  stop-task)
+    [ $# -eq 3 ] || die "usage: stop-task <team> <taskId>"
+    validate_team_id "$2"
+    dir="$(teamroot "$2")" || die "unsafe team workspace"
+    [ "$LIFECYCLE_ENABLED" = true ] \
+      || die "lifecycle supervision is disabled; refusing to signal from agent-writable workspace markers (stop task processes manually)"
+    key="$(task_key "$3")"
+    records="$(python3 "$SKILL_DIR/bin/process-lifecycle.py" list \
+      --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" --team "$2")" \
+      || die "protected lifecycle records failed authentication; no process was signaled"
+    matching_records="$(printf '%s\n' "$records" | python3 -c '
+import json
+import re
+import sys
+
+key = sys.argv[1]
+pattern = re.compile(r"^[a-z0-9-]+--" + re.escape(key) + r"--a[0-9]+$")
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    record = json.loads(line)
+    if record.get("category") == "task" and pattern.fullmatch(record.get("instance", "")):
+        print(json.dumps(record, sort_keys=True, separators=(",", ":")))
+' "$key")" || die "could not select protected lifecycle records for task $3"
+    if ! printf '%s\n' "$matching_records" | python3 -c '
+import json
+import sys
+
+for line in sys.stdin:
+    if line.strip() and json.loads(line).get("state") == "identity-mismatch":
+        raise SystemExit(1)
+'; then
+      die "protected process identity mismatch for task $3; no process was signaled"
+    fi
+
+    while IFS= read -r record; do
+      [ -n "$record" ] || continue
+      fields="$(printf '%s' "$record" | python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r[k]) for k in ("instance","state")))')"
+      IFS=$'\t' read -r instance state <<< "$fields"
+      if [ "$state" = live ]; then
+        if lifecycle_stop_instance "$2" task "$instance"; then
+          :
+        else
+          rc=$?
+          if [ "$rc" -eq 3 ]; then
+            python3 "$SKILL_DIR/bin/process-lifecycle.py" forget \
+              --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
+              --team "$2" --category task --instance "$instance" >/dev/null \
+              || die "could not retire task lifecycle record $instance after its process exited"
+          else
+            die "could not stop protected task process $instance"
+          fi
+        fi
+      else
+        python3 "$SKILL_DIR/bin/process-lifecycle.py" forget \
+          --root "$LIFECYCLE_STATE_ROOT" --repo "$REPO_ROOT" \
+          --team "$2" --category task --instance "$instance" >/dev/null \
+          || die "could not retire stale task lifecycle record $instance"
+      fi
+    done <<< "$matching_records"
+
+    # A blocked task loses producer authority after all matching workers have
+    # been stopped.  Revocation is task-scoped and idempotent; gate and sibling
+    # capabilities are deliberately outside this command's authority.  If it
+    # fails, the workers stay stopped and the caller receives a hard failure.
+    python3 "$SKILL_DIR/bin/outbox_capability.py" revoke-task \
+      --repo "$REPO_ROOT" --workspace "$dir" --team "$2" --task "$3" >/dev/null \
+      || die "task workers were stopped but outbox capability revocation failed for task $3"
+
+    # Workspace markers never select a signal target.  They are safe to clean
+    # only after protected lifecycle handling, using the same collision-safe
+    # task key and the exact launcher-generated instance grammar.
+    pids_tasks="$(team_path "$dir" pids/tasks)" || die "unsafe task pid path"
+    if [ -d "$pids_tasks" ]; then
+      markers="$(python3 - "$pids_tasks" "$key" <<'PY'
+import pathlib
+import re
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+pattern = re.compile(r"^[a-z0-9-]+--" + re.escape(key) + r"--a[0-9]+[.]pid$")
+for path in directory.iterdir():
+    if pattern.fullmatch(path.name):
+        print(path)
+PY
+)" || die "could not select task process markers for cleanup"
+      while IFS= read -r marker; do
+        [ -n "$marker" ] || continue
+        rm -f -- "$marker"
+      done <<< "$markers"
+    fi
+    echo "stopped task $3 for team $2"
+    ;;
   live-role)
     [ $# -eq 3 ] || die "usage: live-role <team> <role>"
     validate_team_id "$2"; validate_role_id "$3"
@@ -1176,6 +1396,6 @@ case "${1:-}" in
     validate_board "${2:-}"
     ;;
   *)
-    die "usage: launch-team.sh {team|gate-team|preflight|start|start-task|relaunch|compose|compose-task|worktree|worktree-remove|validate-board|status|stop} ..."
+    die "usage: launch-team.sh {team|gate-team|preflight|start|start-task|relaunch|compose|compose-task|worktree|worktree-remove|validate-board|status|stop|stop-task} ..."
     ;;
 esac

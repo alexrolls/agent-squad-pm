@@ -19,7 +19,7 @@
     "statuses": [
       { "name": "Planned", "kind": "queued", "initial": true,
         "owner": { "role": "team-lead" },
-        "transitions": ["Active"],
+        "transitions": ["Active", "Blocked"],
         "tool": { "Linear": "Todo", "Jira": "To Do", "GitHubIssues": "open + label status:planned", "Markdown": "[Planned]" } },
       { "name": "Active", "kind": "working",
         "owner": { "role": "implementer" },
@@ -30,7 +30,11 @@
         "transitions": ["Active", "Ready to deploy", "Blocked"],
         "tool": { "Linear": "In Review", "Jira": "In Review", "GitHubIssues": "open + label status:review", "Markdown": "[Review]" } },
       { "name": "Blocked", "kind": "blocked",
-        "owner": { "role": "team-lead" },
+        "owner": { "role": "human" },
+        "transitionAuthority": {
+          "enter": { "roles": ["team-lead", "pm-agent"] },
+          "exit": { "roles": ["human"], "automation": false }
+        },
         "transitions": ["Planned", "Active", "Review"],
         "tool": { "Linear": "Blocked", "Jira": "Blocked", "GitHubIssues": "open + label status:blocked", "Markdown": "[Blocked]" } },
       { "name": "Ready to deploy", "kind": "integrated", "terminal": true, "requiresCommit": true,
@@ -40,6 +44,9 @@
     ]
   },
   "markers": {
+    "resume-review":         { "authorizedRoles": ["team-lead"] },
+    "resume-plan":           { "authorizedRoles": ["team-lead"] },
+    "dependency-hold":       { "authorizedRoles": ["team-lead"] },
     "design-approved":       { "authorizedRoles": ["principal-architect"] },
     "design-pushback":       { "authorizedRoles": ["principal-architect"] },
     "architecture-approval": { "authorizedRoles": ["principal-architect"] },

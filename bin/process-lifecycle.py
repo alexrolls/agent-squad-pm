@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from typing import Any
 
 NOT_LIVE = 3
 IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]{1,255}$")
-RECORD_KEYS = {
+RECORD_KEYS_V1 = {
     "schemaVersion",
     "team",
     "category",
@@ -43,6 +44,11 @@ RECORD_KEYS = {
     "tmuxWindow",
     "tmuxPane",
     "auth",
+}
+RECORD_KEYS_V2 = RECORD_KEYS_V1 | {
+    "processGroupId",
+    "sessionId",
+    "tmuxPanePid",
 }
 
 
@@ -223,7 +229,11 @@ def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def authenticate(record: dict[str, Any], key: bytes, path: Path) -> None:
-    if set(record) != RECORD_KEYS:
+    expected_keys = {
+        1: RECORD_KEYS_V1,
+        2: RECORD_KEYS_V2,
+    }.get(record.get("schemaVersion"))
+    if expected_keys is None or set(record) != expected_keys:
         fail(f"lifecycle record has an unexpected schema: {path}")
     supplied = record.get("auth")
     if not isinstance(supplied, str) or not re.fullmatch(r"[0-9a-f]{64}", supplied):
@@ -236,14 +246,14 @@ def authenticate(record: dict[str, Any], key: bytes, path: Path) -> None:
 
 
 def validate_record(record: dict[str, Any], path: Path, records: Path) -> None:
-    if record["schemaVersion"] != 1:
+    if record["schemaVersion"] not in {1, 2}:
         fail(f"unsupported lifecycle record version: {path}")
     for label in ("team", "instance"):
         value = record[label]
         if not isinstance(value, str):
             fail(f"lifecycle record {label} must be a string: {path}")
         validate_identifier(label, value)
-    if record["category"] not in {"gate", "task"}:
+    if record["category"] not in {"gate", "task", "release"}:
         fail(f"lifecycle record has an invalid category: {path}")
     if record["kind"] not in {"background", "tmux"}:
         fail(f"lifecycle record has an invalid process kind: {path}")
@@ -263,6 +273,21 @@ def validate_record(record: dict[str, Any], path: Path, records: Path) -> None:
             fail(f"tmux lifecycle record is missing its protected target: {path}")
     elif any(value is not None for value in tmux_values):
         fail(f"background lifecycle record contains a tmux target: {path}")
+    if record["schemaVersion"] == 2:
+        group_values = (record["processGroupId"], record["sessionId"])
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 1
+            for value in group_values
+        ):
+            fail(f"lifecycle record has an unsafe process group: {path}")
+        if group_values != (record["pid"], record["pid"]):
+            fail(f"lifecycle process group is not a dedicated session: {path}")
+        pane_pid = record["tmuxPanePid"]
+        if record["kind"] == "tmux":
+            if not isinstance(pane_pid, int) or isinstance(pane_pid, bool) or pane_pid <= 1:
+                fail(f"tmux lifecycle record has an unsafe pane PID: {path}")
+        elif pane_pid is not None:
+            fail(f"background lifecycle record must not claim a tmux pane PID: {path}")
     expected = record_path(records, record["team"], record["category"], record["instance"])
     if expected.name != path.name:
         fail(f"lifecycle record filename does not match its identity: {path}")
@@ -373,8 +398,48 @@ def process_identity(pid: int) -> str | None:
     return f"ps:{line}"
 
 
+def group_exists(process_group_id: int) -> bool:
+    if not hasattr(os, "killpg"):
+        fail("process-group supervision is unavailable on this platform")
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Existence is established, but an actual signal will still fail
+        # closed rather than being redirected to leader-only authority.
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        fail(f"cannot verify protected process group {process_group_id}: {exc}")
+
+
+def leader_matches_group(record: dict[str, Any], identity: str | None) -> bool:
+    if identity is None:
+        return True
+    if not hmac.compare_digest(identity, record["processIdentity"]):
+        return False
+    try:
+        return (
+            os.getpgid(record["pid"]) == record["processGroupId"]
+            and os.getsid(record["pid"]) == record["sessionId"]
+        )
+    except ProcessLookupError:
+        # The leader exited between its start-identity and group checks.  The
+        # dedicated group remains authoritative while any child still exists.
+        return True
+    except OSError as exc:
+        fail(f"cannot verify protected process-group leader: {exc}")
+
+
 def record_state(record: dict[str, Any]) -> str:
     current = process_identity(record["pid"])
+    if record["schemaVersion"] == 2:
+        if not leader_matches_group(record, current):
+            return "identity-mismatch"
+        return "live" if group_exists(record["processGroupId"]) else "dead"
     if current is None:
         return "dead"
     if not hmac.compare_digest(current, record["processIdentity"]):
@@ -465,6 +530,41 @@ def safe_signal(record: dict[str, Any], signal_number: int) -> None:
             os.close(pidfd)
 
 
+def safe_signal_group(record: dict[str, Any], signal_number: int) -> None:
+    if record["schemaVersion"] != 2:
+        fail("legacy lifecycle record has no authenticated process-group authority")
+    if record["kind"] not in {"background", "tmux"}:
+        fail("unsupported process kind for process-group authority")
+    process_group_id = record["processGroupId"]
+    session_id = record["sessionId"]
+    if process_group_id != record["pid"] or session_id != record["pid"]:
+        fail("refusing non-dedicated process-group authority")
+
+    # A process group belongs to exactly one session for its entire lifetime.
+    # Binding a newly created group and session to the authenticated leader PID
+    # therefore continues to identify descendants after the leader exits.
+    current = process_identity(record["pid"])
+    if not leader_matches_group(record, current):
+        fail("refusing to signal process group: protected leader identity changed")
+    if not group_exists(process_group_id):
+        raise SystemExit(NOT_LIVE)
+
+    # Recheck immediately before killpg.  This is the cross-platform POSIX
+    # equivalent of the leader pidfd guard: no workspace PID/PGID participates,
+    # and a live dedicated group cannot be reused by another session.
+    second = process_identity(record["pid"])
+    if not leader_matches_group(record, second):
+        fail("refusing to signal process group after leader identity changed")
+    if not group_exists(process_group_id):
+        raise SystemExit(NOT_LIVE)
+    try:
+        os.killpg(process_group_id, signal_number)
+    except ProcessLookupError:
+        raise SystemExit(NOT_LIVE)
+    except OSError as exc:
+        fail(f"cannot signal protected process group {process_group_id}: {exc}")
+
+
 def base_context(args: argparse.Namespace) -> tuple[Path, Path, bytes]:
     return initialize(args.root, args.repo)
 
@@ -490,12 +590,41 @@ def cmd_register(args: argparse.Namespace) -> int:
                 f"refusing to replace a live lifecycle record for {args.team}/{args.instance}"
             )
     if args.kind == "tmux":
-        if not (args.tmux_session and args.tmux_window and args.tmux_pane):
-            fail("tmux registration requires session, window, and pane identities")
-    elif args.tmux_session or args.tmux_window or args.tmux_pane:
+        if not (
+            args.tmux_session
+            and args.tmux_window
+            and args.tmux_pane
+            and isinstance(args.tmux_pane_pid, int)
+            and not isinstance(args.tmux_pane_pid, bool)
+            and args.tmux_pane_pid > 1
+        ):
+            fail("tmux registration requires session, window, pane, and pane PID identities")
+    elif args.tmux_session or args.tmux_window or args.tmux_pane or args.tmux_pane_pid:
         fail("background registration must not contain tmux identities")
+    process_group_id: int | None = None
+    session_id: int | None = None
+    if args.kind in {"background", "tmux"}:
+        # The launcher calls setsid before waiting on its launch barrier.  Give
+        # that trusted wrapper a short scheduling window, while refusing any
+        # ordinary/shared process group rather than widening signal authority.
+        for _ in range(100):
+            current = process_identity(args.pid)
+            if current is None:
+                fail(f"cannot bind process group: PID {args.pid} exited")
+            if not hmac.compare_digest(current, identity):
+                fail(f"cannot bind process group: PID {args.pid} identity changed")
+            try:
+                process_group_id = os.getpgid(args.pid)
+                session_id = os.getsid(args.pid)
+            except ProcessLookupError:
+                fail(f"cannot bind process group: PID {args.pid} exited")
+            if process_group_id == args.pid and session_id == args.pid:
+                break
+            time.sleep(0.01)
+        else:
+            fail("lifecycle process must lead a dedicated process group and session")
     payload: dict[str, Any] = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "team": args.team,
         "category": args.category,
         "instance": args.instance,
@@ -507,6 +636,9 @@ def cmd_register(args: argparse.Namespace) -> int:
         "tmuxSession": args.tmux_session,
         "tmuxWindow": args.tmux_window,
         "tmuxPane": args.tmux_pane,
+        "processGroupId": process_group_id,
+        "sessionId": session_id,
+        "tmuxPanePid": args.tmux_pane_pid,
     }
     record = signed(payload, key)
     atomic_write(path, record)
@@ -575,9 +707,13 @@ def cmd_signal(args: argparse.Namespace) -> int:
     if found is None:
         return NOT_LIVE
     _, record = found
-    if record["kind"] != "background":
-        fail("tmux records must be stopped through their identity-bound pane target")
-    safe_signal(record, signal.SIGTERM)
+    signal_number = {
+        "TERM": signal.SIGTERM,
+        "KILL": signal.SIGKILL,
+    }.get(args.signal_name)
+    if signal_number is None:
+        fail("unsupported lifecycle signal")
+    safe_signal_group(record, signal_number)
     return 0
 
 
@@ -612,19 +748,20 @@ def parser() -> argparse.ArgumentParser:
 
     register = common("register")
     register.add_argument("--team", required=True)
-    register.add_argument("--category", required=True, choices=("gate", "task"))
+    register.add_argument("--category", required=True, choices=("gate", "task", "release"))
     register.add_argument("--instance", required=True)
     register.add_argument("--kind", required=True, choices=("background", "tmux"))
     register.add_argument("--pid", required=True, type=int)
     register.add_argument("--tmux-session")
     register.add_argument("--tmux-window")
     register.add_argument("--tmux-pane")
+    register.add_argument("--tmux-pane-pid", type=int)
     register.set_defaults(handler=cmd_register)
 
     for name, handler in (("probe", cmd_probe), ("verify", cmd_verify)):
         child = common(name)
         child.add_argument("--team", required=True)
-        child.add_argument("--category", required=True, choices=("gate", "task"))
+        child.add_argument("--category", required=True, choices=("gate", "task", "release"))
         child.add_argument("--instance", required=True)
         child.set_defaults(handler=handler)
 
@@ -634,19 +771,22 @@ def parser() -> argparse.ArgumentParser:
 
     any_live = common("any-live")
     any_live.add_argument("--team", required=True)
-    any_live.add_argument("--category", required=True, choices=("gate", "task"))
+    any_live.add_argument("--category", required=True, choices=("gate", "task", "release"))
     any_live.add_argument("--task-key")
     any_live.set_defaults(handler=cmd_any_live)
 
     signalling = common("signal")
     signalling.add_argument("--team", required=True)
-    signalling.add_argument("--category", required=True, choices=("gate", "task"))
+    signalling.add_argument("--category", required=True, choices=("gate", "task", "release"))
     signalling.add_argument("--instance", required=True)
+    signalling.add_argument(
+        "--signal", dest="signal_name", choices=("TERM", "KILL"), default="TERM"
+    )
     signalling.set_defaults(handler=cmd_signal)
 
     forget = common("forget")
     forget.add_argument("--team", required=True)
-    forget.add_argument("--category", required=True, choices=("gate", "task"))
+    forget.add_argument("--category", required=True, choices=("gate", "task", "release"))
     forget.add_argument("--instance", required=True)
     forget.add_argument("--allow-identity-mismatch", action="store_true")
     forget.set_defaults(handler=cmd_forget)

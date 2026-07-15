@@ -22,6 +22,9 @@ from task_metadata import is_fast_task, parse_task_metadata
 
 MARKER_RE = re.compile(r"^\s*\[([\w-]+)\]")
 CURRENT_MARKERS = {
+    "resume-review",
+    "resume-plan",
+    "dependency-hold",
     "design-note",
     "design-approved",
     "design-pushback",
@@ -219,12 +222,42 @@ def cmd_sync(args) -> None:
     workspace = Path(args.workspace)
     payload = read_json(Path(args.tasks), {})
     tasks = payload.get("tasks") or []
+    try:
+        ignored_raw = json.loads(args.ignored_labels_json)
+    except ValueError as exc:
+        raise SystemExit("runtime-state: ignored labels must be valid JSON") from exc
+    if not isinstance(ignored_raw, list) or any(
+        not isinstance(item, str) for item in ignored_raw
+    ):
+        raise SystemExit("runtime-state: ignored labels must be a JSON string array")
+    ignored = {item.strip().casefold() for item in ignored_raw}
+    if any(not item for item in ignored) or len(ignored) != len(ignored_raw):
+        raise SystemExit("runtime-state: ignored labels contain an empty or duplicate name")
+    held_statuses = set(args.held_status)
+    automated_tasks, human_tasks, held_tasks = [], [], []
+    for task in tasks:
+        labels = task.get("labels") or []
+        if not isinstance(labels, list) or any(not isinstance(item, str) for item in labels):
+            raise SystemExit("runtime-state: task labels must be a string array")
+        if ignored.intersection(item.strip().casefold() for item in labels):
+            target = human_tasks
+        elif task.get("status") in held_statuses:
+            # A blocked ticket is a hard write fence.  Even managed progress
+            # comments would be automated work on the ticket after the human
+            # hold was raised, so retain it only in the feature digest.
+            target = held_tasks
+        else:
+            target = automated_tasks
+        target.append(task)
     terminal = set(args.terminal)
     projection_path = workspace / "pm-projection.json"
     projection = read_json(projection_path, {"tasks": {}, "digest": None})
     next_projection = json.loads(json.dumps(projection))
 
-    for task in tasks:
+    for task in human_tasks + held_tasks:
+        next_projection.setdefault("tasks", {}).pop(str(task["taskId"]), None)
+
+    for task in automated_tasks:
         task_id = str(task["taskId"])
         stage, summary = derive_stage(task, terminal)
         execution = execution_for(workspace, task_id)
@@ -257,6 +290,12 @@ def cmd_sync(args) -> None:
     digest_lines = ["[digest]", "updated-at: %s" % utc_now()]
     for task in tasks:
         task_id = str(task["taskId"])
+        if task in human_tasks:
+            digest_lines.append(
+                "%s %s - [%s] / human-owned (automation ignored)"
+                % (task_id, task.get("title") or "", task.get("status"))
+            )
+            continue
         stage, summary = derive_stage(task, terminal)
         suffix = " (%s)" % summary if stage in {"blocked", "design-rework", "review-anomaly"} else ""
         digest_lines.append("%s %s - [%s] / %s%s" % (task_id, task.get("title") or "", task.get("status"), stage, suffix))
@@ -334,6 +373,43 @@ def current_comments(task: dict) -> list[str]:
             latest[marker] = body
     ordered = [latest[key] for key in sorted(latest)]
     return ordered + additive
+
+
+def resume_context(workspace: Path, task_id: str) -> dict | None:
+    path = workspace / "task-holds.json"
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit("runtime-state: task hold registry must be a non-symlink regular file")
+    registry = read_json(path, None)
+    if (
+        not isinstance(registry, dict)
+        or registry.get("schemaVersion") != 1
+        or not isinstance(registry.get("tasks"), dict)
+    ):
+        raise SystemExit("runtime-state: task hold registry has an unsupported schema")
+    entry = registry["tasks"].get(safe_key(task_id))
+    if entry is None:
+        return None
+    if not isinstance(entry, dict) or entry.get("taskId") != task_id:
+        raise SystemExit("runtime-state: task hold registry identity mismatch")
+    if entry.get("state") != "resumed":
+        return None
+    required = (
+        "holdId",
+        "generation",
+        "blockedSnapshotPath",
+        "blockedSnapshotDigest",
+        "resumeSnapshotPath",
+        "resumeSnapshotDigest",
+        "resumeRequestPath",
+        "resumeCommunicationDigest",
+        "resumeVerdict",
+        "clearedAt",
+    )
+    if any(entry.get(name) in (None, "") for name in required):
+        raise SystemExit("runtime-state: resumed hold lacks its review evidence")
+    return {name: entry[name] for name in required}
 
 
 def deterministic_claim_id(
@@ -421,6 +497,7 @@ def cmd_packet(args) -> None:
     contracts = Path(args.contracts).read_text() if Path(args.contracts).exists() else "No registered contracts."
     baseline = Path(args.baseline).read_text() if Path(args.baseline).exists() else "No baseline manifest exists; report this as a concern."
     comments = current_comments(task)
+    resumed = resume_context(workspace, args.task)
     packet = {
         "schemaVersion": 1,
         "featureId": args.feature,
@@ -434,6 +511,7 @@ def cmd_packet(args) -> None:
         "metadata": metadata,
         "modelProfile": profile,
         "currentArtifacts": comments,
+        "resumeReview": resumed,
         "validation": {key: value for key, value in config.items() if key.startswith("VALIDATE_") and value},
         "workspace": args.worktree,
         "reportPath": str(report_md),
@@ -461,6 +539,24 @@ def cmd_packet(args) -> None:
         "## Current Binding Artifacts",
         "",
         "\n\n".join(comments) or "None.",
+        "",
+        "## Blocked Resume Evidence",
+        "",
+        (
+            "This is a fresh post-Blocked attempt. Read the complete blocked and resume snapshots, "
+            "the delta request, and the binding review artifacts before changing code.\n\n"
+            "- Hold: `%s`\n- Blocked snapshot: `%s`\n- Resume snapshot: `%s`\n"
+            "- Resume review request: `%s`\n- Verdict: `%s`"
+            % (
+                resumed["holdId"],
+                resumed["blockedSnapshotPath"],
+                resumed["resumeSnapshotPath"],
+                resumed["resumeRequestPath"],
+                resumed["resumeVerdict"],
+            )
+            if resumed
+            else "Not a post-Blocked resume attempt."
+        ),
         "",
         "## Contract Registry",
         "",
@@ -552,6 +648,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--tasks", required=True)
     sync.add_argument("--tracker-ops", required=True)
     sync.add_argument("--terminal", action="append", default=[])
+    sync.add_argument("--held-status", action="append", default=[])
+    sync.add_argument("--ignored-labels-json", default="[]")
     sync.set_defaults(func=cmd_sync)
 
     packet = sub.add_parser("packet")

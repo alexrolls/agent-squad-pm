@@ -25,14 +25,26 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 COMMAND_TIMEOUT_SECONDS = 120
 COMMAND_KILL_GRACE_SECONDS = 5
 RELEASE_TIMEOUT_SECONDS = 7200
+RELEASE_WORKER_INLINE_GRACE_SECONDS = 0.75
+RELEASE_WORKER_LAUNCH_GRACE_SECONDS = 30
+RELEASE_WORKER_HEARTBEAT_STALE_SECONDS = 10
+# release-feature.py may spend up to two bounded grace periods terminating an
+# active provider hook in its own session.  Stale-worker recovery must let that
+# trusted SIGTERM handler finish before it escalates the outer release group.
+RELEASE_ORPHAN_TERM_GRACE_SECONDS = 10
+RELEASE_ORPHAN_KILL_GRACE_SECONDS = 2
 ACTIVE_TRUSTED_PATH = "/usr/bin:/bin"
 TRUSTED_GIT = "/usr/bin/git"
+RELEASE_WORKER = Path(__file__).resolve().with_name("release-worker.py")
 MAX_PROTECTED_HANDOFF_FILE_BYTES = 16 * 1024 * 1024
 RELEASE_SNAPSHOT_FILES = {
     "release-feature.py": Path("bin/release-feature.py"),
     "policy-check.py": Path("bin/policy-check.py"),
     "tracker-ops.sh": Path("bin/tracker-ops.sh"),
     "finalize-integrations.sh": Path("bin/finalize-integrations.sh"),
+    "task-hold.py": Path("bin/task-hold.py"),
+    "outbox_capability.py": Path("bin/outbox_capability.py"),
+    "broker_evidence.py": Path("bin/broker_evidence.py"),
     "runtime-state.py": Path("bin/runtime-state.py"),
     "task_metadata.py": Path("bin/task_metadata.py"),
     "product_acceptance.py": Path("bin/product_acceptance.py"),
@@ -43,6 +55,7 @@ RELEASE_SNAPSHOT_FILES = {
     "team.config.md": Path("config/team.config.md"),
     "project-management.config.md": Path("config/project-management.config.md"),
 }
+BUILTIN_TRACKER_ADAPTERS = {"Linear", "Jira", "GitHubIssues", "Markdown"}
 
 
 class MonitorError(RuntimeError):
@@ -857,6 +870,26 @@ def validate_supervisor_install(project: Path) -> Path:
     else:
         raise MonitorError("automation supervisor Python must live outside the agent repository")
     capture_protected_file(interpreter, "automation supervisor Python")
+    worker = RELEASE_WORKER.resolve()
+    try:
+        worker.relative_to(project)
+    except ValueError:
+        pass
+    else:
+        raise MonitorError(
+            "autonomous cron requires release-worker.py from a protected external installation"
+        )
+    capture_protected_file(worker, "detached release worker")
+    lifecycle_helper = worker.with_name("process-lifecycle.py").resolve()
+    try:
+        lifecycle_helper.relative_to(project)
+    except ValueError:
+        pass
+    else:
+        raise MonitorError(
+            "autonomous cron requires process-lifecycle.py from a protected external installation"
+        )
+    capture_protected_file(lifecycle_helper, "release lifecycle supervisor")
     return interpreter
 
 
@@ -1014,13 +1047,28 @@ def validate_release_handoff(
         raise MonitorError(
             "STARTUP_FACTORY_RELEASE_FEATURE must name bin/release-feature.py in the external skill install"
         )
+    release_env = minimal_release_environment(config)
+    snapshot_files = dict(RELEASE_SNAPSHOT_FILES)
+    pm_values = read_key_values(source_root / "config" / "project-management.config.md")
+    tracker_adapter = release_env.get("TRACKER_ADAPTER") or pm_values.get(
+        "PRODUCT_MANAGEMENT_TOOL"
+    )
+    if not isinstance(tracker_adapter, str) or not re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_-]{0,63}", tracker_adapter
+    ):
+        raise MonitorError("release snapshot requires a valid configured tracker adapter")
+    if tracker_adapter not in BUILTIN_TRACKER_ADAPTERS:
+        snapshot_files[f"tracker-backend.{tracker_adapter}.py"] = Path(
+            "extensions", "tracker-backends", f"{tracker_adapter}.py"
+        )
+
     configured = config.get("trustedCodeDigests")
-    if not isinstance(configured, dict) or set(configured) != set(RELEASE_SNAPSHOT_FILES):
+    if not isinstance(configured, dict) or set(configured) != set(snapshot_files):
         raise MonitorError(
             "trustedCodeDigests must contain the exact protected release helper set"
         )
     captured: dict[str, tuple[bytes, str]] = {}
-    for name, relative in RELEASE_SNAPSHOT_FILES.items():
+    for name, relative in snapshot_files.items():
         expected_digest = configured.get(name)
         if not isinstance(expected_digest, str) or not re.fullmatch(
             r"sha256:[0-9a-f]{64}", expected_digest
@@ -1036,7 +1084,7 @@ def validate_release_handoff(
         return (
             isolated_release_command(resolved.parent, resolved),
             str(config_path.resolve()),
-            minimal_release_environment(config),
+            release_env,
         )
 
     state_root = private_directory(state_root_path, "stateRoot")
@@ -1047,9 +1095,12 @@ def validate_release_handoff(
         snapshot_parent / config_digest.removeprefix("sha256:"),
         "authenticated release snapshot",
     )
-    for directory in (snapshot / "bin", snapshot / "config"):
+    snapshot_directories = {
+        (snapshot / relative).parent for relative in snapshot_files.values()
+    }
+    for directory in sorted(snapshot_directories, key=lambda item: (len(item.parts), str(item))):
         private_directory(directory, "authenticated release snapshot directory")
-    for name, relative in RELEASE_SNAPSHOT_FILES.items():
+    for name, relative in snapshot_files.items():
         value, digest = captured[name]
         executable = relative.suffix == ".sh" or name == "release-feature.py"
         install_protected_snapshot(
@@ -1073,26 +1124,835 @@ def validate_release_handoff(
             snapshot / RELEASE_SNAPSHOT_FILES["release-feature.py"],
         ),
         str(snapshot_config),
-        minimal_release_environment(config),
+        release_env,
     )
 
 
-def resolve_scan_statuses(automation: dict) -> list[str]:
+RELEASE_JOB_IDENTITY_FIELDS = {
+    "jobId",
+    "repository",
+    "runId",
+    "team",
+    "featureId",
+    "attempt",
+    "commandDigest",
+}
+
+
+def command_digest(argv: list[str]) -> str:
+    if not argv or any(not isinstance(item, str) or not item for item in argv):
+        raise MonitorError("release worker command must be a non-empty string array")
+    encoded = json.dumps(
+        argv, sort_keys=False, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def release_job_identity(
+    entry: dict,
+    repository: Path,
+    attempt: int,
+    release_argv: list[str],
+) -> dict:
+    if type(attempt) is not int or not 1 <= attempt <= 1_000_000:
+        raise MonitorError("release attempt must be an integer from 1 to 1000000")
+    material = {
+        "repository": str(repository.resolve()),
+        "runId": str(entry.get("runId") or ""),
+        "team": str(entry.get("team") or ""),
+        "featureId": str(entry.get("featureId") or ""),
+        "attempt": attempt,
+        "commandDigest": command_digest(release_argv),
+    }
+    job_hash = hashlib.sha256(
+        json.dumps(
+            material, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    return {"jobId": "release-" + job_hash[:32], **material}
+
+
+def validate_release_job_identity_shape(identity: object) -> dict:
+    if not isinstance(identity, dict) or set(identity) != RELEASE_JOB_IDENTITY_FIELDS:
+        raise MonitorError("release job identity has an unsupported schema")
+    if (
+        not isinstance(identity.get("repository"), str)
+        or not identity["repository"]
+        or not isinstance(identity.get("runId"), str)
+        or not identity["runId"]
+        or not isinstance(identity.get("team"), str)
+        or not identity["team"]
+        or not isinstance(identity.get("featureId"), str)
+        or not identity["featureId"]
+        or type(identity.get("attempt")) is not int
+        or not 1 <= identity["attempt"] <= 1_000_000
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(identity.get("commandDigest") or ""))
+    ):
+        raise MonitorError("release job identity does not match its registered run")
+    material = {name: identity[name] for name in RELEASE_JOB_IDENTITY_FIELDS - {"jobId"}}
+    expected = "release-" + hashlib.sha256(
+        json.dumps(
+            material, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()[:32]
+    if identity.get("jobId") != expected:
+        raise MonitorError("release job identity digest mismatch")
+    return identity
+
+
+def validate_release_job_identity(
+    identity: object,
+    entry: dict,
+    repository: Path,
+) -> dict:
+    validated = validate_release_job_identity_shape(identity)
+    if (
+        validated["repository"] != str(repository.resolve())
+        or validated["runId"] != str(entry.get("runId") or "")
+        or validated["team"] != str(entry.get("team") or "")
+        or validated["featureId"] != str(entry.get("featureId") or "")
+    ):
+        raise MonitorError("release job identity does not match its registered run")
+    return validated
+
+
+def atomic_private_json(path: Path, value: dict) -> None:
+    if path.is_symlink():
+        raise MonitorError(f"refusing to replace protected symlink {path}")
+    atomic_json(path, value)
+    try:
+        path.chmod(0o600)
+    except OSError as exc:
+        raise MonitorError(f"cannot protect release job state {path}: {exc}") from exc
+
+
+def load_private_json(path: Path, label: str) -> dict:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise MonitorError(f"cannot inspect {label}: {exc}") from exc
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise MonitorError(f"{label} must be an owner-only regular file")
+    raw, _ = capture_protected_file(path, label)
+    try:
+        value = strict_json(raw.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise MonitorError(f"{label} is invalid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise MonitorError(f"{label} must be a JSON object")
+    return value
+
+
+def release_jobs_root(lifecycle_root: Path) -> Path:
+    return private_directory(lifecycle_root / "release-jobs", "release job root")
+
+
+def release_job_directory(lifecycle_root: Path, identity: dict) -> Path:
+    job_id = str(identity.get("jobId") or "")
+    if not re.fullmatch(r"release-[0-9a-f]{32}", job_id):
+        raise MonitorError("release job has an unsafe identity")
+    return release_jobs_root(lifecycle_root) / job_id
+
+
+def validate_release_job_result(value: dict, identity: dict) -> dict:
+    allowed = {
+        "schemaVersion", "identity", "state", "createdAt", "workerPid",
+        "startedAt", "heartbeatAt", "releasePid", "releaseMayHaveStartedAt",
+        "authorityRevokedAt", "exitCode", "completedAt", "cancelledAt", "timedOut",
+        "workerError",
+    }
+    if set(value) - allowed or value.get("schemaVersion") != 1:
+        raise MonitorError("release job result has an unsupported schema")
+    if value.get("identity") != identity:
+        raise MonitorError("release job result identity mismatch")
+    state = value.get("state")
+    if state not in {"launching", "running", "completed", "cancelled"}:
+        raise MonitorError("release job result has an unknown state")
+    for field in ("workerPid", "releasePid"):
+        if field in value and (
+            type(value[field]) is not int or value[field] <= 1
+        ):
+            raise MonitorError(f"release job result has an unsafe {field}")
+    for field in (
+        "createdAt", "startedAt", "heartbeatAt", "releaseMayHaveStartedAt",
+        "authorityRevokedAt", "completedAt", "cancelledAt"
+    ):
+        if field in value and (
+            not isinstance(value[field], str) or not value[field]
+        ):
+            raise MonitorError(f"release job result has an invalid {field}")
+    if state in {"completed", "cancelled"}:
+        if type(value.get("exitCode")) is not int or not isinstance(value.get("completedAt"), str):
+            raise MonitorError("terminal release job result is incomplete")
+    elif "exitCode" in value or "completedAt" in value:
+        raise MonitorError("non-terminal release job result contains terminal fields")
+    if "timedOut" in value and value["timedOut"] is not True:
+        raise MonitorError("release job timedOut must be true when present")
+    if "workerError" in value and not isinstance(value["workerError"], str):
+        raise MonitorError("release job workerError must be a string")
+    if "authorityRevokedAt" in value and state != "completed":
+        raise MonitorError(
+            "only a completed release job may carry revoked-authority evidence"
+        )
+    return value
+
+
+def read_release_job_result(job_dir: Path, identity: dict) -> dict:
+    result = validate_release_job_result(
+        load_private_json(job_dir / "result.json", "release job result"), identity
+    )
+    cancel_path = job_dir / "cancel.json"
+    if cancel_path.exists() or cancel_path.is_symlink():
+        cancellation = load_private_json(
+            cancel_path, "release cancellation request"
+        )
+        if (
+            set(cancellation)
+            != {"schemaVersion", "identity", "requestedAt", "reason"}
+            or cancellation.get("schemaVersion") != 1
+            or cancellation.get("identity") != identity
+            or not isinstance(cancellation.get("requestedAt"), str)
+            or not cancellation["requestedAt"]
+            or cancellation.get("reason")
+            not in {"tracker-authority-changed", "run-paused"}
+        ):
+            raise MonitorError("release cancellation request is ambiguous")
+        # The request is protected authority evidence in its own right. The
+        # worker can finish between the supervisor's non-terminal read and its
+        # cancel write, or between its last poll and terminal result write.
+        # Never let a later Todo transition erase that already-observed loss of
+        # authority for a terminal attempt.
+        if result["state"] == "completed":
+            result = dict(result)
+            result.setdefault("authorityRevokedAt", cancellation["requestedAt"])
+    return result
+
+
+def validate_release_job_directory(
+    job_dir: Path, identity: dict | None = None
+) -> Path:
+    if identity is not None and job_dir.name != identity["jobId"]:
+        raise MonitorError("release job directory does not match its protected identity")
+    try:
+        info = job_dir.lstat()
+    except OSError as exc:
+        raise MonitorError(f"release job directory is unavailable: {exc}") from exc
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise MonitorError("release job directory must be private mode 0700")
+    return job_dir
+
+
+def last_consumed_release_attempt(entry: dict, repository: Path) -> int:
+    last = entry.get("lastReleaseJob")
+    if last is None:
+        return 0
+    required = {"schemaVersion", "identity", "state", "exitCode", "completedAt"}
+    allowed = required | {"authorityRevokedAt"}
+    if (
+        not isinstance(last, dict)
+        or not required.issubset(last)
+        or not set(last).issubset(allowed)
+        or last.get("schemaVersion") != 1
+        or last.get("state") not in {"completed", "cancelled"}
+        or type(last.get("exitCode")) is not int
+        or not isinstance(last.get("completedAt"), str)
+        or (
+            "authorityRevokedAt" in last
+            and (
+                not isinstance(last["authorityRevokedAt"], str)
+                or not last["authorityRevokedAt"]
+                or last.get("state") != "completed"
+            )
+        )
+    ):
+        raise MonitorError("last release job metadata is malformed")
+    identity = validate_release_job_identity(last.get("identity"), entry, repository)
+    return identity["attempt"]
+
+
+def discover_release_job(
+    entry: dict, repository: Path, lifecycle_root: Path
+) -> dict | None:
+    """Recover a job created before the PM registry's atomic save completed."""
+    accounted_attempt = last_consumed_release_attempt(entry, repository)
+    registered_attempt = entry.get("releaseAttempt", 0)
+    if type(registered_attempt) is not int or not 0 <= registered_attempt <= 1_000_000:
+        raise MonitorError("registered release attempt counter is malformed")
+    candidates: list[tuple[dict, Path, dict]] = []
+    root = release_jobs_root(lifecycle_root)
+    try:
+        children = sorted(root.iterdir(), key=lambda child: child.name)
+    except OSError as exc:
+        raise MonitorError(f"cannot enumerate protected release jobs: {exc}") from exc
+    for job_dir in children:
+        if not re.fullmatch(r"release-[0-9a-f]{32}", job_dir.name):
+            raise MonitorError("protected release job root contains an unknown entry")
+        validate_release_job_directory(job_dir)
+        result_path = job_dir / "result.json"
+        if not result_path.exists() and not result_path.is_symlink():
+            try:
+                if any(job_dir.iterdir()):
+                    raise MonitorError(
+                        "incomplete release job directory contains unexpected state"
+                    )
+            except OSError as exc:
+                raise MonitorError(
+                    f"cannot inspect incomplete release job directory: {exc}"
+                ) from exc
+            # The supervisor may have stopped between creating the deterministic
+            # directory and its initial launch record. It is inert and can only
+            # be completed by a future start with the same derived identity.
+            continue
+        try:
+            raw = load_private_json(result_path, "release job result")
+        except MonitorError:
+            # A protected job directory is authoritative state. Corruption or a
+            # half-created foreign entry must stop deployment reconciliation.
+            raise
+        identity = validate_release_job_identity_shape(raw.get("identity"))
+        validate_release_job_directory(job_dir, identity)
+        result = validate_release_job_result(raw, identity)
+        if (
+            identity["repository"] != str(repository.resolve())
+            or identity["runId"] != str(entry.get("runId") or "")
+            or identity["team"] != str(entry.get("team") or "")
+            or identity["featureId"] != str(entry.get("featureId") or "")
+            or identity["attempt"] <= accounted_attempt
+        ):
+            continue
+        candidates.append((identity, job_dir, result))
+    if len(candidates) > 1:
+        raise MonitorError(
+            "multiple unconsumed release jobs match one run; refusing ambiguous recovery"
+        )
+    if not candidates:
+        if registered_attempt > accounted_attempt:
+            raise MonitorError(
+                "release attempt registry has no matching protected job state"
+            )
+        return None
+    identity, _job_dir, result = candidates[0]
+    entry["releaseAttempt"] = max(registered_attempt, identity["attempt"])
+    entry["releaseJob"] = {
+        "schemaVersion": 1,
+        "identity": identity,
+        "startedAt": str(
+            result.get("createdAt")
+            or result.get("startedAt")
+            or result.get("completedAt")
+            or iso_now()
+        ),
+    }
+    entry["releaseJobState"] = "recovered-registry-gap"
+    return entry["releaseJob"]
+
+
+def release_lifecycle_command(
+    action: str,
+    *,
+    lifecycle_root: Path,
+    repository: Path,
+    identity: dict,
+    signal_name: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    argv = [
+        str(Path(sys.executable).resolve()),
+        "-I", "-S", "-E", "-s",
+        str(RELEASE_WORKER.with_name("process-lifecycle.py")),
+        action,
+        "--root", str(lifecycle_root),
+        "--repo", str(repository),
+        "--team", identity["team"],
+        "--category", "release",
+        "--instance", identity["jobId"],
+    ]
+    if action == "signal":
+        if signal_name not in {"TERM", "KILL"}:
+            raise MonitorError("invalid release lifecycle signal")
+        argv += ["--signal", signal_name]
+    try:
+        return subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={
+                "PATH": ACTIVE_TRUSTED_PATH,
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONSAFEPATH": "1",
+            },
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MonitorError("protected release lifecycle command failed") from exc
+
+
+def stop_orphan_release_group(
+    lifecycle_root: Path, repository: Path, identity: dict
+) -> None:
+    probe = release_lifecycle_command(
+        "probe", lifecycle_root=lifecycle_root, repository=repository, identity=identity
+    )
+    if probe.returncode not in {0, 3}:
+        raise MonitorError("protected release lifecycle record is invalid")
+    if probe.returncode == 0:
+        term = release_lifecycle_command(
+            "signal", lifecycle_root=lifecycle_root, repository=repository,
+            identity=identity, signal_name="TERM"
+        )
+        if term.returncode not in {0, 3}:
+            raise MonitorError("could not terminate stale release process group")
+        deadline = time.monotonic() + RELEASE_ORPHAN_TERM_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            probe = release_lifecycle_command(
+                "probe", lifecycle_root=lifecycle_root,
+                repository=repository, identity=identity
+            )
+            if probe.returncode == 3:
+                break
+            if probe.returncode != 0:
+                raise MonitorError("protected release lifecycle record became invalid")
+            time.sleep(0.05)
+        if probe.returncode == 0:
+            killed = release_lifecycle_command(
+                "signal", lifecycle_root=lifecycle_root, repository=repository,
+                identity=identity, signal_name="KILL"
+            )
+            if killed.returncode not in {0, 3}:
+                raise MonitorError("could not kill stale release process group")
+            deadline = time.monotonic() + RELEASE_ORPHAN_KILL_GRACE_SECONDS
+            while time.monotonic() < deadline:
+                probe = release_lifecycle_command(
+                    "probe", lifecycle_root=lifecycle_root,
+                    repository=repository, identity=identity
+                )
+                if probe.returncode == 3:
+                    break
+                if probe.returncode != 0:
+                    raise MonitorError("protected release lifecycle record became invalid")
+                time.sleep(0.05)
+            if probe.returncode == 0:
+                raise MonitorError("stale release process group survived SIGKILL")
+    forgotten = release_lifecycle_command(
+        "forget", lifecycle_root=lifecycle_root, repository=repository, identity=identity
+    )
+    if forgotten.returncode:
+        raise MonitorError("could not retire stale release lifecycle record")
+
+
+def result_age_seconds(result: dict) -> float:
+    raw = result.get("heartbeatAt") or result.get("startedAt") or result.get("createdAt")
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError) as exc:
+        raise MonitorError("release job liveness timestamp is invalid") from exc
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return max(0.0, (utc_now() - stamp).total_seconds())
+
+
+def recover_stale_release_job(
+    entry: dict,
+    repository: Path,
+    lifecycle_root: Path,
+    identity: dict,
+    job_dir: Path,
+    result: dict,
+) -> dict:
+    if result["state"] == "launching":
+        stale = result_age_seconds(result) > RELEASE_WORKER_LAUNCH_GRACE_SECONDS
+    elif result["state"] == "running":
+        stale = result_age_seconds(result) > RELEASE_WORKER_HEARTBEAT_STALE_SECONDS
+    else:
+        return result
+    if not stale:
+        return result
+    request_release_job_cancel(job_dir, identity, "run-paused")
+    stop_orphan_release_group(lifecycle_root, repository, identity)
+    release_may_have_started = bool(result.get("releaseMayHaveStartedAt"))
+    recovered = {
+        "schemaVersion": 1,
+        "identity": identity,
+        "state": "completed" if release_may_have_started else "cancelled",
+        "exitCode": 125 if release_may_have_started else 130,
+        "completedAt": iso_now(),
+        "workerError": (
+            "detached release worker lost liveness after launch; deployment outcome requires reconciliation"
+            if release_may_have_started
+            else "detached release worker lost liveness before launch"
+        ),
+    }
+    if release_may_have_started:
+        recovered["releaseMayHaveStartedAt"] = result["releaseMayHaveStartedAt"]
+        recovered["authorityRevokedAt"] = iso_now()
+    else:
+        recovered["cancelledAt"] = iso_now()
+    atomic_private_json(job_dir / "result.json", recovered)
+    entry["releaseJobState"] = "recovered-stale-worker"
+    return recovered
+
+
+def active_release_job(entry: dict, repository: Path, lifecycle_root: Path) -> tuple[dict, Path, dict] | None:
+    metadata = entry.get("releaseJob")
+    if metadata is None:
+        metadata = discover_release_job(entry, repository, lifecycle_root)
+        if metadata is None:
+            return None
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"schemaVersion", "identity", "startedAt"}
+        or metadata.get("schemaVersion") != 1
+        or not isinstance(metadata.get("startedAt"), str)
+    ):
+        raise MonitorError("registered release job metadata is malformed")
+    identity = validate_release_job_identity(metadata.get("identity"), entry, repository)
+    job_dir = release_job_directory(lifecycle_root, identity)
+    validate_release_job_directory(job_dir, identity)
+    result = read_release_job_result(job_dir, identity)
+    result = recover_stale_release_job(
+        entry, repository, lifecycle_root, identity, job_dir, result
+    )
+    return identity, job_dir, result
+
+
+def start_or_attach_release_job(
+    entry: dict,
+    *,
+    repository: Path,
+    lifecycle_root: Path,
+    release_argv: list[str],
+    release_environment: dict[str, str],
+) -> tuple[dict, Path, dict]:
+    previous_attempt = entry.get("releaseAttempt", 0)
+    if type(previous_attempt) is not int or not 0 <= previous_attempt < 1_000_000:
+        raise MonitorError("registered release attempt counter is malformed")
+    existing = active_release_job(entry, repository, lifecycle_root)
+    if existing is not None:
+        identity, job_dir, result = existing
+        if identity["commandDigest"] != command_digest(release_argv):
+            raise MonitorError("release command changed while a detached job is active")
+        return existing
+
+    attempt = previous_attempt + 1
+    identity = release_job_identity(entry, repository, attempt, release_argv)
+    job_dir = release_job_directory(lifecycle_root, identity)
+    created = False
+    try:
+        job_dir.mkdir(mode=0o700)
+        created = True
+    except FileExistsError:
+        info = job_dir.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise MonitorError("existing release job directory is unsafe")
+    result_path = job_dir / "result.json"
+    if not created and not result_path.exists() and not result_path.is_symlink():
+        try:
+            if any(job_dir.iterdir()):
+                raise MonitorError(
+                    "incomplete release job directory contains unexpected state"
+                )
+        except OSError as exc:
+            raise MonitorError(f"cannot inspect incomplete release job: {exc}") from exc
+        created = True
+    if created:
+        atomic_private_json(
+            result_path,
+            {
+                "schemaVersion": 1,
+                "identity": identity,
+                "state": "launching",
+                "createdAt": iso_now(),
+            },
+        )
+    result = read_release_job_result(job_dir, identity)
+    entry["releaseAttempt"] = attempt
+    entry["releaseJob"] = {
+        "schemaVersion": 1,
+        "identity": identity,
+        "startedAt": str(result.get("createdAt") or result.get("startedAt") or iso_now()),
+    }
+
+    worker_process: subprocess.Popen | None = None
+    if created:
+        worker_log = job_dir / "worker.log"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(worker_log, flags, 0o600)
+        except OSError as exc:
+            raise MonitorError(f"cannot open protected release worker log: {exc}") from exc
+        worker_argv = [
+            str(Path(sys.executable).resolve()),
+            "-I", "-S", "-E", "-s",
+            str(RELEASE_WORKER),
+            "--result", str(result_path),
+            "--log", str(job_dir / "release.log"),
+            "--timeout", str(RELEASE_TIMEOUT_SECONDS),
+            "--identity-json", json.dumps(identity, sort_keys=True, separators=(",", ":")),
+            "--lifecycle-root", str(lifecycle_root),
+            "--repository", str(repository),
+            "--",
+            *release_argv,
+        ]
+        try:
+            worker_process = subprocess.Popen(
+                worker_argv,
+                cwd=repository,
+                env=release_environment,
+                stdin=subprocess.DEVNULL,
+                stdout=descriptor,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as exc:
+            atomic_private_json(
+                result_path,
+                {
+                    "schemaVersion": 1,
+                    "identity": identity,
+                    "state": "completed",
+                    "createdAt": result.get("createdAt", iso_now()),
+                    "exitCode": 125,
+                    "completedAt": iso_now(),
+                    "workerError": "detached release worker could not start",
+                },
+            )
+            raise MonitorError("detached release worker could not start") from exc
+        finally:
+            os.close(descriptor)
+
+    deadline = time.monotonic() + (RELEASE_WORKER_INLINE_GRACE_SECONDS if created else 0)
+    while True:
+        result = read_release_job_result(job_dir, identity)
+        if result["state"] in {"completed", "cancelled"} or time.monotonic() >= deadline:
+            break
+        if worker_process is not None and worker_process.poll() is not None:
+            time.sleep(0.05)
+        else:
+            time.sleep(0.05)
+    if result["state"] == "launching":
+        try:
+            created_at = datetime.fromisoformat(str(result["createdAt"]))
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MonitorError("release job launch timestamp is invalid") from exc
+        if (utc_now() - created_at).total_seconds() > RELEASE_WORKER_LAUNCH_GRACE_SECONDS:
+            raise MonitorError("detached release worker never established its running state")
+    return identity, job_dir, result
+
+
+def request_release_job_cancel(job_dir: Path, identity: dict, reason: str) -> None:
+    if reason not in {"tracker-authority-changed", "run-paused"}:
+        raise MonitorError("unsupported release cancellation reason")
+    path = job_dir / "cancel.json"
+    expected = {
+        "schemaVersion": 1,
+        "identity": identity,
+        "requestedAt": iso_now(),
+        "reason": reason,
+    }
+    if path.exists() or path.is_symlink():
+        current = load_private_json(path, "release cancellation request")
+        if (
+            current.get("schemaVersion") != 1
+            or current.get("identity") != identity
+            or current.get("reason") not in {"tracker-authority-changed", "run-paused"}
+        ):
+            raise MonitorError("existing release cancellation request is ambiguous")
+        return
+    atomic_private_json(path, expected)
+
+
+def finish_release_job(entry: dict, result: dict, *, authority_valid: bool) -> None:
+    entry.pop("releaseJob", None)
+    entry.pop("releaseJobState", None)
+    entry["lastReleaseJob"] = {
+        "schemaVersion": 1,
+        "identity": result["identity"],
+        "state": result["state"],
+        "exitCode": result["exitCode"],
+        "completedAt": result["completedAt"],
+    }
+    if "authorityRevokedAt" in result:
+        entry["lastReleaseJob"]["authorityRevokedAt"] = result[
+            "authorityRevokedAt"
+        ]
+    entry["lastReconciledAt"] = iso_now()
+    if result["state"] == "cancelled":
+        entry["state"] = "running" if entry.get("eligibility") == "eligible" else "paused"
+        return
+    if "authorityRevokedAt" in result or not authority_valid:
+        entry["state"] = "deployment-blocked"
+        raise MonitorError(
+            "production release overlapped revoked tracker authority; protected reconciliation is required"
+        )
+    if result["exitCode"] == 0:
+        entry["state"] = "deployed"
+        entry["deployedAt"] = iso_now()
+    elif result["exitCode"] == 4:
+        entry["state"] = "awaiting-deployment"
+    else:
+        entry["state"] = "deployment-blocked"
+        raise MonitorError(
+            f"production release for {safe_log_value(entry.get('featureId'))} stopped with exit {result['exitCode']}"
+        )
+
+
+def resolve_status_kinds(automation: dict, key: str) -> tuple[list[str], list[str]]:
+    """Resolve adapter-neutral task status kinds to canonical board names."""
     board = load_json(SKILL_DIR / "config" / "statuses.config.json", "status config")
-    kinds = automation.get("scanStatusKinds")
+    kinds = automation.get(key)
     if not isinstance(kinds, list) or not kinds:
-        raise MonitorError("scanStatusKinds must be a non-empty list")
+        raise MonitorError(f"{key} must be a non-empty list of task status kinds")
+    if any(not isinstance(kind, str) or not kind or kind != kind.strip() for kind in kinds):
+        raise MonitorError(f"{key} must contain canonical non-empty task status kinds")
+    if len(set(kinds)) != len(kinds):
+        raise MonitorError(f"{key} must not contain duplicate task status kinds")
     by_kind: dict[str, list[str]] = defaultdict(list)
     for status in board.get("tasks", {}).get("statuses", []):
         if status.get("kind"):
             by_kind[str(status["kind"])].append(str(status.get("name")))
     names: list[str] = []
     for kind in kinds:
-        matches = by_kind.get(str(kind), [])
+        matches = by_kind.get(kind, [])
         if len(matches) != 1:
             raise MonitorError(f"status kind '{kind}' must resolve to exactly one [task] status (found {matches})")
         names.append(matches[0])
-    return names
+    return kinds, names
+
+
+def validate_blocked_task_policy(automation: dict) -> None:
+    """Require the non-negotiable human-controlled, task-scoped hold policy."""
+    policy = automation.get("blockedTaskPolicy")
+    if not isinstance(policy, dict):
+        raise MonitorError("blockedTaskPolicy must be an object")
+    required = {
+        "scope": "task",
+        "exitAuthority": "human",
+        "automaticResume": False,
+        "resumeFromKind": "queued",
+        "dependentPropagation": "lead-confirmed-just-in-time",
+        "continueIndependentWork": True,
+        "refreshAllCommunication": True,
+        "freshAttemptOnResume": True,
+    }
+    missing = sorted(set(required) - set(policy))
+    unknown = sorted(set(policy) - set(required))
+    if missing:
+        raise MonitorError(
+            "blockedTaskPolicy is missing required setting(s): " + ", ".join(missing)
+        )
+    if unknown:
+        raise MonitorError(
+            "blockedTaskPolicy contains unknown setting(s): " + ", ".join(unknown)
+        )
+    for key, expected in required.items():
+        actual = policy[key]
+        if type(actual) is not type(expected) or actual != expected:
+            expected_text = json.dumps(expected, separators=(",", ":"))
+            raise MonitorError(
+                f"blockedTaskPolicy.{key} must be {expected_text} for autonomous delivery"
+            )
+
+
+def resolve_portfolio_policy(automation: dict) -> tuple[list[str], frozenset[str]]:
+    """Validate observation/launch separation and return canonical status names."""
+    if "scanStatusKinds" in automation:
+        raise MonitorError(
+            "scanStatusKinds was replaced by observeStatusKinds and launchStatusKinds"
+        )
+    observe_kinds, observe_names = resolve_status_kinds(automation, "observeStatusKinds")
+    launch_kinds, launch_names = resolve_status_kinds(automation, "launchStatusKinds")
+    if set(observe_kinds) != {"queued", "blocked"} or len(observe_kinds) != 2:
+        raise MonitorError(
+            "observeStatusKinds must contain exactly queued and blocked"
+        )
+    if launch_kinds != ["queued"]:
+        raise MonitorError("launchStatusKinds must contain only queued")
+    if not set(launch_names).issubset(observe_names):
+        raise MonitorError("launchStatusKinds must be a subset of observeStatusKinds")
+    validate_blocked_task_policy(automation)
+    return observe_names, frozenset(launch_names)
+
+
+def has_launch_eligible_task(items: list[dict], launch_statuses: frozenset[str]) -> bool:
+    """Return whether an authoritative normalized snapshot contains queued work."""
+    eligible = False
+    for item in items:
+        if not isinstance(item, dict):
+            raise MonitorError("tracker task record must be an object")
+        status = item.get("status")
+        if not isinstance(status, str) or not status or status != status.strip():
+            raise MonitorError("tracker task status must be a canonical non-empty name")
+        if status in launch_statuses:
+            eligible = True
+    return eligible
+
+
+def ignored_task_labels(automation: dict) -> tuple[str, ...]:
+    """Return canonical case-insensitive labels excluded from autonomous work."""
+    raw = automation.get("ignoredTaskLabels", ["human-work"])
+    if not isinstance(raw, list):
+        raise MonitorError("ignoredTaskLabels must be a list of label names")
+    labels: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str):
+            raise MonitorError("ignoredTaskLabels must contain only label names")
+        label = value.strip()
+        if (
+            not label
+            or label != value
+            or len(label) > 255
+            or any(ord(char) < 32 for char in label)
+        ):
+            raise MonitorError(
+                "ignoredTaskLabels entries must be canonical non-empty label names up to 255 characters"
+            )
+        canonical = label.casefold()
+        if canonical in seen:
+            raise MonitorError("ignoredTaskLabels must not contain case-insensitive duplicates")
+        seen.add(canonical)
+        labels.append(canonical)
+    return tuple(labels)
+
+
+def partition_automated_tasks(
+    items: list[dict], ignored_labels: tuple[str, ...]
+) -> tuple[list[dict], list[dict]]:
+    """Split normalized tracker records into autonomous and human-owned work."""
+    ignored = set(ignored_labels)
+    automated: list[dict] = []
+    human_owned: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise MonitorError("tracker task record must be an object")
+        labels = item.get("labels")
+        if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+            raise MonitorError("tracker task labels must be a list of label names")
+        canonical = {label.strip().casefold() for label in labels}
+        if any(not label for label in canonical):
+            raise MonitorError("tracker task labels must not contain empty names")
+        (human_owned if canonical & ignored else automated).append(item)
+    return automated, human_owned
 
 
 def feature_status_for_kind(kind: str) -> str:
@@ -1632,6 +2492,7 @@ def reconcile_run(
     *,
     project: Path,
     automation_root: Path,
+    lifecycle_root: Path,
     env: dict[str, str],
     release_command: list[str] | None,
     deployment_config: str | None,
@@ -1705,11 +2566,32 @@ def reconcile_run(
     )
     teamwork = read_teamwork_root()
     team_workspace = repo / teamwork / team
-    if not all_integrated(team_workspace / "tasks.json"):
+    integrated = all_integrated(team_workspace / "tasks.json")
+    current_job = active_release_job(entry, repo, lifecycle_root)
+    if not integrated:
+        if current_job is not None:
+            identity, job_dir, result = current_job
+            if result["state"] in {"completed", "cancelled"}:
+                finish_release_job(entry, result, authority_valid=False)
+            else:
+                request_release_job_cancel(
+                    job_dir, identity, "tracker-authority-changed"
+                )
+                entry["state"] = "release-cancelling"
+                entry["lastReconciledAt"] = iso_now()
+                return
         entry["state"] = "running"
         entry["lastReconciledAt"] = iso_now()
         return
     entry["state"] = "ready-to-deploy"
+    if current_job is not None:
+        _identity, _job_dir, result = current_job
+        if result["state"] in {"completed", "cancelled"}:
+            finish_release_job(entry, result, authority_valid=True)
+        else:
+            entry["state"] = "releasing"
+            entry["lastReconciledAt"] = iso_now()
+        return
     if release_command is None:
         entry["state"] = "awaiting-deployment"
         entry["lastReconciledAt"] = iso_now()
@@ -1740,26 +2622,26 @@ def reconcile_run(
     ]
     if deployment_config:
         release_argv += ["--config", deployment_config]
-    release = run(
-        release_argv,
-        cwd=repo,
-        env=release_environment or env,
-        label=f"production release for {safe_log_value(feature_id)}",
-        check=False,
-        timeout_seconds=RELEASE_TIMEOUT_SECONDS,
+    _identity, _job_dir, result = start_or_attach_release_job(
+        entry,
+        repository=repo,
+        lifecycle_root=lifecycle_root,
+        release_argv=release_argv,
+        release_environment={
+            **(release_environment or env),
+            # The isolated release-side finalizer must consult the same
+            # protected hold authority as dispatch and the tracker broker.
+            "STARTUP_FACTORY_LIFECYCLE_STATE_ROOT": str(lifecycle_root),
+            "STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON": env.get(
+                "STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON", '["human-work"]'
+            ),
+        },
     )
-    if release.returncode == 0:
-        entry["state"] = "deployed"
-        entry["deployedAt"] = iso_now()
-    elif release.returncode == 4:
-        entry["state"] = "awaiting-deployment"
+    if result["state"] in {"completed", "cancelled"}:
+        finish_release_job(entry, result, authority_valid=True)
     else:
-        entry["state"] = "deployment-blocked"
+        entry["state"] = "releasing"
         entry["lastReconciledAt"] = iso_now()
-        raise MonitorError(
-            f"production release for {safe_log_value(feature_id)} stopped with exit {release.returncode}"
-        )
-    entry["lastReconciledAt"] = iso_now()
 
 
 def scan_board(project: Path, env: dict[str, str], statuses: list[str], outfile: Path) -> dict:
@@ -1820,7 +2702,8 @@ def one_pass(*, dry_run: bool) -> int:
         print("pm-agent: another live pass owns the monitor lease; skipping")
         return 0
     try:
-        statuses = resolve_scan_statuses(config)
+        statuses, launch_statuses = resolve_portfolio_policy(config)
+        ignored_labels = ignored_task_labels(config)
         if dry_run:
             with tempfile.TemporaryDirectory(prefix="startup-factory-scan-") as temp:
                 scan = scan_board(project, env, statuses, Path(temp) / "scan.json")
@@ -1845,13 +2728,27 @@ def one_pass(*, dry_run: bool) -> int:
             raise MonitorError("reconcileRegisteredRuns must be true or false")
 
         groups: dict[str, list[dict]] = defaultdict(list)
-        for item in scan.get("items") or []:
+        discovered_items, ignored_discovery_items = partition_automated_tasks(
+            scan.get("items") or [], ignored_labels
+        )
+        for item in ignored_discovery_items:
+            print(
+                f"pm-agent: ignored human-owned task {safe_log_value(item.get('taskId'))}"
+            )
+        for item in discovered_items:
             feature_id = item.get("featureId")
             if feature_id is None:
                 continue
             groups[str(feature_id)].append(item)
 
-        for orphan in scan.get("orphans") or []:
+        automated_orphans, ignored_orphans = partition_automated_tasks(
+            scan.get("orphans") or [], ignored_labels
+        )
+        for orphan in ignored_orphans:
+            print(
+                f"pm-agent: ignored human-owned orphan task {safe_log_value(orphan.get('taskId'))}"
+            )
+        for orphan in automated_orphans:
             task_id = str(orphan.get("taskId") or "")
             if not task_id:
                 print("pm-agent: ignored malformed orphan without taskId", file=sys.stderr)
@@ -1946,6 +2843,49 @@ def one_pass(*, dry_run: bool) -> int:
                 pause_registered_run(entry, reason, out_of_scope=True)
                 print(f"pm-agent: paused {safe_log_value(feature_id)}: {reason}")
                 continue
+            items, human_owned = partition_automated_tasks(items, ignored_labels)
+            if not items:
+                # A reservation label added to the last autonomous task is an
+                # active stop signal, not merely a routing exclusion. Reconcile
+                # the full authoritative feature once so task-hold establishes
+                # fences, stops exact workers, and revokes their capabilities
+                # before this registered run is paused.
+                repository = Path(str(entry.get("repository") or "")).expanduser().resolve()
+                expected_repository = managed_path(
+                    automation_root,
+                    "runs",
+                    str(entry.get("workspaceId") or entry.get("runId")),
+                    "repo",
+                    label="registered run workspace",
+                )
+                if repository != expected_repository or not repository.is_dir():
+                    raise MonitorError(
+                        "cannot stop human-owned tasks: registered run workspace is unavailable"
+                    )
+                stop_env = dict(env)
+                stop_env["STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON"] = json.dumps(
+                    list(ignored_labels), separators=(",", ":")
+                )
+                run(
+                    [
+                        tool_path("STARTUP_FACTORY_DISPATCH", "dispatch.sh"),
+                        str(entry.get("team") or ""),
+                        feature_id,
+                        "--once",
+                    ],
+                    cwd=repository,
+                    env=stop_env,
+                    label=f"human-work stop reconciliation for {safe_log_value(feature_id)}",
+                )
+                reason = "every [task] is labeled for human work"
+                pause_registered_run(entry, reason, out_of_scope=True)
+                print(f"pm-agent: paused {safe_log_value(feature_id)}: {reason}")
+                continue
+            if human_owned:
+                print(
+                    f"pm-agent: {safe_log_value(feature_id)} excludes "
+                    f"{len(human_owned)} human-owned task(s)"
+                )
             observed_preset, reason = route(items, config)
             if reason:
                 pause_registered_run(entry, reason)
@@ -1989,6 +2929,27 @@ def one_pass(*, dry_run: bool) -> int:
                 default=str(entry.get("escalationTaskId") or ""),
             )
 
+        # Pausing a registered run also revokes any detached production handoff.
+        # The long-running worker owns its exact release process group and polls
+        # this protected cancellation request; the board-scan lease never waits
+        # for provider cleanup.
+        if not dry_run:
+            for feature_id in sorted(registered_at_start):
+                entry = features[feature_id]
+                if entry.get("state") == "deployed" or entry.get("eligibility") == "eligible":
+                    continue
+                repository = Path(str(entry.get("repository") or "")).expanduser().resolve()
+                current_job = active_release_job(entry, repository, lifecycle_root)
+                if current_job is None:
+                    continue
+                identity, job_dir, result = current_job
+                if result["state"] in {"completed", "cancelled"}:
+                    finish_release_job(entry, result, authority_valid=False)
+                else:
+                    request_release_job_cancel(job_dir, identity, "run-paused")
+                    entry["releaseJobState"] = "cancelling"
+                    entry["lastReconciledAt"] = iso_now()
+
         new_feature_ids: set[str] = set()
         new_count = 0
         limit = integer_setting(config, "maxFeaturesPerPass", 1, 1, 1000)
@@ -1996,10 +2957,16 @@ def one_pass(*, dry_run: bool) -> int:
             previous = features.get(feature_id)
             if previous is not None and previous.get("state") != "deployed":
                 continue
+            discovery_items = groups[feature_id]
+            if not has_launch_eligible_task(discovery_items, launch_statuses):
+                print(
+                    f"pm-agent: observed {safe_log_value(feature_id)} but did not cold-start it: "
+                    "no launch-eligible queued [task]"
+                )
+                continue
             if new_count >= limit:
                 print(f"pm-agent: cold-start limit reached; deferring {feature_id}")
                 continue
-            discovery_items = groups[feature_id]
             title = next(
                 (str(item.get("featureTitle")) for item in discovery_items if item.get("featureTitle")),
                 None,
@@ -2055,6 +3022,24 @@ def one_pass(*, dry_run: bool) -> int:
                 print(
                     f"pm-agent: {safe_log_value(feature_id)} not launched: "
                     "the complete authoritative [feature] export contains no tasks"
+                )
+                continue
+            items, human_owned = partition_automated_tasks(items, ignored_labels)
+            if not items:
+                print(
+                    f"pm-agent: {safe_log_value(feature_id)} not launched: "
+                    "every [task] is labeled for human work"
+                )
+                continue
+            if human_owned:
+                print(
+                    f"pm-agent: {safe_log_value(feature_id)} excludes "
+                    f"{len(human_owned)} human-owned task(s)"
+                )
+            if not has_launch_eligible_task(items, launch_statuses):
+                print(
+                    f"pm-agent: {safe_log_value(feature_id)} not launched: "
+                    "the authoritative export contains no launch-eligible queued [task]"
                 )
                 continue
             preset, reason = route(items, config)
@@ -2204,13 +3189,18 @@ def one_pass(*, dry_run: bool) -> int:
                 print(f"pm-agent: reconcileRegisteredRuns=false; skipped {skipped} registered run(s)")
         candidates.sort(key=lambda entry: (str(entry.get("discoveredAt") or ""), str(entry.get("featureId"))))
         errors: list[str] = []
+        dispatch_env = dict(env)
+        dispatch_env["STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON"] = json.dumps(
+            list(ignored_labels), separators=(",", ":")
+        )
         for entry in candidates:
             try:
                 reconcile_run(
                     entry,
                     project=project,
                     automation_root=automation_root,
-                    env=env,
+                    lifecycle_root=lifecycle_root,
+                    env=dispatch_env,
                     release_command=release_command,
                     deployment_config=deployment_config,
                     release_environment=release_environment,

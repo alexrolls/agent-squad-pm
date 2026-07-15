@@ -122,6 +122,17 @@ CLI column assumes `-R <GITHUB_REPO>` is appended when `GITHUB_REPO` is set.
 
 - Every write goes through `gh` (or the GitHub MCP tools when `GITHUB_USE_MCP=true`). On a
   non-zero exit / MCP error: **stop and report** (andon cord). Never fake success.
+- `[Blocked]` is a task-scoped human lock. The deterministic backend may apply
+  its label under configured authority but rejects every outbound transition;
+  only a human changes the issue back to the planned label/state (resume
+  barrier when a local hold exists) or another working/review label (manual
+  takeover). Independent planned work continues.
+  The adapter cannot prove who changed a label. Enforce outbound status-label
+  changes with an external permission/provenance control restricted to human
+  principals; if the repository cannot do that, human-only exit is an
+  operational policy and autonomous portfolio automation must remain disabled.
+- A `human-work` label prevents new automatic claims/launches and stops/fences a
+  matching in-flight task at the next reconcile; independent tasks continue.
 - Automated reads use `gh api --paginate --slurp` and reject malformed pages instead of
   treating a partial response as a complete board snapshot.
 - `blockedBy` comes only from GitHub's first-class
@@ -135,6 +146,9 @@ CLI column assumes `-R <GITHUB_REPO>` is appended when `GITHUB_REPO` is set.
 - Exactly one `status:*` label at a time on an open issue.
 - `[Ready to deploy]` = closed; reopening for rework re-adds `status:active`.
 - `featureId` is a Milestone (title or number); `taskId` is an Issue number.
+- Hold-control marker text is acted on only with the matching local published
+  broker receipt. GitHub authorship and a copied team-lead signature cannot
+  impersonate `[dependency-hold]`, `[resume-review]`, or `[resume-plan]`.
 
 ## Initialization
 

@@ -92,7 +92,19 @@ cat > "$CONFIG" <<'EOF'
   "maxFeaturesPerPass": 2,
   "requireAgentSandbox": true,
   "requireSingleTrackerWriter": true,
-  "scanStatusKinds": ["queued", "blocked"],
+  "observeStatusKinds": ["queued", "blocked"],
+  "launchStatusKinds": ["queued"],
+  "blockedTaskPolicy": {
+    "scope": "task",
+    "exitAuthority": "human",
+    "automaticResume": false,
+    "resumeFromKind": "queued",
+    "dependentPropagation": "lead-confirmed-just-in-time",
+    "continueIndependentWork": true,
+    "refreshAllCommunication": true,
+    "freshAttemptOnResume": true
+  },
+  "ignoredTaskLabels": ["human-work"],
   "reconcileRegisteredRuns": true,
   "baseRef": "main",
   "branchPrefix": "factory",
@@ -103,6 +115,25 @@ cat > "$CONFIG" <<'EOF'
   "metadata": {"optInKey": "automation", "teamPresetKey": "team-preset"}
 }
 EOF
+
+check "shipped automation defaults to opt-out human work" python3 - "$ROOT/config/automation.config.json" <<'PY'
+import json,sys
+config=json.load(open(sys.argv[1]))
+assert config['ignoredTaskLabels'] == ['human-work']
+assert config['requireMetadataOptIn'] is False
+assert config['observeStatusKinds'] == ['queued', 'blocked']
+assert config['launchStatusKinds'] == ['queued']
+assert config['blockedTaskPolicy'] == {
+    'scope': 'task',
+    'exitAuthority': 'human',
+    'automaticResume': False,
+    'resumeFromKind': 'queued',
+    'dependentPropagation': 'lead-confirmed-just-in-time',
+    'continueIndependentWork': True,
+    'refreshAllCommunication': True,
+    'freshAttemptOnResume': True,
+}
+PY
 
 if env -u STARTUP_FACTORY_PROJECT_ROOT \
     STARTUP_FACTORY_AUTOMATION_CONFIG="$CONFIG" \
@@ -168,6 +199,18 @@ cat > "$SCAN" <<'EOF'
     "blockedBy": [],
     "labels": [],
     "revision": "2026-07-14T12:00:00Z"
+  }, {
+    "featureId": "F-1",
+    "featureTitle": "Payments API",
+    "taskId": "T-HUMAN",
+    "title": "Manual compliance review",
+    "status": "Planned",
+    "statusRaw": "Todo",
+    "description": "automation: enabled\nteam-preset: deep-frontend",
+    "comments": [],
+    "blockedBy": [],
+    "labels": ["human-work"],
+    "revision": "2026-07-14T12:00:00Z"
   }],
   "orphans": []
 }
@@ -223,6 +266,7 @@ DISPATCH="$TMP/dispatch"
 cat > "$DISPATCH" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'policy-labels\t%s\n' "${STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON:-}" >> "$PM_TEST_LOG"
 printf 'dispatch\t%s\t%s\t%s\tcwd=%s\n' "$1" "$2" "$3" "$PWD" >> "$PM_TEST_LOG"
 if [ "${PM_DISPATCH_FAIL:-0}" = "1" ]; then
   echo 'TOPSECRET_FROM_DISPATCH' >&2
@@ -238,6 +282,7 @@ cat > "$FAKE_RELEASE" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'release\t%s\n' "$*" >> "$PM_TEST_LOG"
+[ -z "${PM_RELEASE_SLEEP:-}" ] || sleep "$PM_RELEASE_SLEEP"
 if [ "${PM_RELEASE_DISABLED:-0}" = "1" ]; then
   exit 4
 fi
@@ -285,6 +330,51 @@ for target,key in zip(targets,("requireAgentSandbox","requireSingleTrackerWriter
 PY
 preflight_refused "requireAgentSandbox=false" "$TMP/no-sandbox-invariant.json" "$TEST_SKILL" "cannot be disabled"
 preflight_refused "requireSingleTrackerWriter=false" "$TMP/no-writer-invariant.json" "$TEST_SKILL" "cannot be disabled"
+
+python3 - "$CONFIG" "$TMP/bad-ignored-labels.json" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1])); data['ignoredTaskLabels']=['human-work','Human-Work']
+json.dump(data,open(sys.argv[2],'w'))
+PY
+preflight_refused "case-insensitive duplicate ignored labels" "$TMP/bad-ignored-labels.json" "$TEST_SKILL" "case-insensitive duplicates"
+
+python3 - "$CONFIG" \
+    "$TMP/bad-observe-statuses.json" \
+    "$TMP/bad-launch-statuses.json" \
+    "$TMP/bad-blocked-resume.json" \
+    "$TMP/incomplete-blocked-policy.json" \
+    "$TMP/unknown-blocked-policy.json" \
+    "$TMP/legacy-scan-statuses.json" <<'PY'
+import json,sys
+source=json.load(open(sys.argv[1]))
+
+observe=dict(source); observe['observeStatusKinds']=['blocked']
+json.dump(observe,open(sys.argv[2],'w'))
+
+launch=dict(source); launch['launchStatusKinds']=['blocked']
+json.dump(launch,open(sys.argv[3],'w'))
+
+resume=dict(source); resume['blockedTaskPolicy']=dict(source['blockedTaskPolicy'])
+resume['blockedTaskPolicy']['automaticResume']=True
+json.dump(resume,open(sys.argv[4],'w'))
+
+incomplete=dict(source); incomplete['blockedTaskPolicy']=dict(source['blockedTaskPolicy'])
+incomplete['blockedTaskPolicy'].pop('refreshAllCommunication')
+json.dump(incomplete,open(sys.argv[5],'w'))
+
+unknown=dict(source); unknown['blockedTaskPolicy']=dict(source['blockedTaskPolicy'])
+unknown['blockedTaskPolicy']['autoUnblock']=False
+json.dump(unknown,open(sys.argv[6],'w'))
+
+legacy=dict(source); legacy['scanStatusKinds']=legacy.pop('observeStatusKinds')
+json.dump(legacy,open(sys.argv[7],'w'))
+PY
+preflight_refused "observation omits queued work" "$TMP/bad-observe-statuses.json" "$TEST_SKILL" "exactly queued and blocked"
+preflight_refused "Blocked is launch eligible" "$TMP/bad-launch-statuses.json" "$TEST_SKILL" "only queued"
+preflight_refused "automatic Blocked resume" "$TMP/bad-blocked-resume.json" "$TEST_SKILL" "automaticResume must be false"
+preflight_refused "incomplete Blocked policy" "$TMP/incomplete-blocked-policy.json" "$TEST_SKILL" "missing required setting"
+preflight_refused "unknown Blocked policy setting" "$TMP/unknown-blocked-policy.json" "$TEST_SKILL" "unknown setting"
+preflight_refused "legacy undifferentiated scan statuses" "$TMP/legacy-scan-statuses.json" "$TEST_SKILL" "scanStatusKinds was replaced"
 
 NO_RUNNER_SKILL="$TMP/no-runner-skill"
 LOCAL_RUNNER_SKILL="$TMP/local-runner-skill"
@@ -398,6 +488,13 @@ for name, relative in module.RELEASE_SNAPSHOT_FILES.items():
     shutil.copy2(source / relative, destination)
     destination.chmod(0o600)
     digests[name] = "sha256:" + hashlib.sha256(destination.read_bytes()).hexdigest()
+custom_backend = external / "extensions/tracker-backends/Fake.py"
+custom_backend.parent.mkdir(parents=True, exist_ok=True)
+custom_backend.write_text("class Backend:\n    pass\n")
+custom_backend.chmod(0o600)
+digests["tracker-backend.Fake.py"] = (
+    "sha256:" + hashlib.sha256(custom_backend.read_bytes()).hexdigest()
+)
 config = fixture / "deployment.json"
 enabled_config = {
     "schemaVersion": 1,
@@ -468,6 +565,8 @@ assert command and Path(command[0]).resolve() == Path(sys.executable).resolve()
 assert "-I" in command and "-S" in command and "-E" in command
 snapshot_entrypoint = Path(command[-1])
 assert snapshot_entrypoint.is_file() and state.resolve() in snapshot_entrypoint.parents
+snapshot_backend = snapshot_entrypoint.parent.parent / "extensions/tracker-backends/Fake.py"
+assert snapshot_backend.read_bytes() == custom_backend.read_bytes()
 assert Path(protected_config).read_bytes() == config.read_bytes()
 assert child["TRACKER_ADAPTER"] == "Fake"
 assert "AWS_SECRET_ACCESS_KEY" not in child
@@ -491,6 +590,79 @@ json.dump(d,open(sys.argv[2],'w'))
 PY
 preflight_refused "symlinked automation workspace" "$TMP/symlink-root.json" "$TEST_SKILL" "must not traverse symlinks"
 check "preflight refusals never scan the tracker" test ! -s "$LOG"
+
+# Observation is broader than cold-start eligibility. A Blocked-only feature is
+# monitored without spending a launch slot, while mixed and independent Todo
+# work continue. Once registered, a feature remains reconciled even if its
+# authoritative snapshot later contains only Blocked work.
+POLICY_CONFIG="$TMP/portfolio-policy.json"
+POLICY_SCAN="$TMP/portfolio-policy-scan.json"
+POLICY_LOG="$TMP/portfolio-policy.log"
+python3 - "$CONFIG" "$POLICY_CONFIG" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+d['workspaceRoot']='.teamwork/portfolio-policy'
+d['maxFeaturesPerPass']=2
+json.dump(d,open(sys.argv[2],'w'))
+PY
+cat > "$POLICY_SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[
+    {"featureId":"A-BLOCKED","featureTitle":"Human hold","taskId":"A-1","title":"Wait","status":"Blocked","statusRaw":"Blocked","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"},
+    {"featureId":"B-MIXED","featureTitle":"Mixed continuity","taskId":"B-1","title":"Held slice","status":"Blocked","statusRaw":"Blocked","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"},
+    {"featureId":"B-MIXED","featureTitle":"Mixed continuity","taskId":"B-2","title":"Ready slice","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"},
+    {"featureId":"C-TODO","featureTitle":"Independent Todo","taskId":"C-1","title":"Continue","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"}
+  ],
+  "orphans":[]
+}
+EOF
+env STARTUP_FACTORY_PROJECT_ROOT="$REPO" \
+    STARTUP_FACTORY_AUTOMATION_CONFIG="$POLICY_CONFIG" \
+    STARTUP_FACTORY_PM_CONFIG="$PM_CONFIG" STARTUP_FACTORY_TRACKER_OPS="$TRACKER" \
+    STARTUP_FACTORY_LAUNCH_TEAM="$LAUNCH" STARTUP_FACTORY_DISPATCH="$DISPATCH" \
+    STARTUP_FACTORY_RELEASE_FEATURE="$FAKE_RELEASE" PM_TEST_RELEASE_HARNESS=1 \
+    PM_SCAN_FILE="$POLICY_SCAN" PM_TEST_LOG="$POLICY_LOG" \
+    PM_FEATURE_STATE_FILE="$FEATURE_STATE_FILE" "$MONITOR" --once > "$TMP/portfolio-policy-first.out"
+POLICY_STATE="$REPO/.teamwork/portfolio-policy/state.json"
+check "Blocked-only discovery does not cold-start or consume the feature limit" python3 - "$POLICY_STATE" <<'PY'
+import json,sys
+features=json.load(open(sys.argv[1]))['features']
+assert set(features) == {'B-MIXED','C-TODO'}
+PY
+check "mixed feature with queued work still launches" grep -q $'launch\tgate-team\tfull-stack\t.*\tB-MIXED' "$POLICY_LOG"
+check "independent Todo launches after earlier Blocked-only discovery" grep -q $'launch\tgate-team\tfull-stack\t.*\tC-TODO' "$POLICY_LOG"
+check "Blocked-only feature launches no agent team" test "$(grep -c $'\tA-BLOCKED\t' "$POLICY_LOG" || true)" -eq 0
+check "Blocked-only feature is reported as observed" grep -q 'observed A-BLOCKED but did not cold-start it' "$TMP/portfolio-policy-first.out"
+
+cat > "$POLICY_SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[
+    {"featureId":"A-BLOCKED","featureTitle":"Human hold","taskId":"A-1","title":"Wait","status":"Blocked","statusRaw":"Blocked","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"2"},
+    {"featureId":"B-MIXED","featureTitle":"Mixed continuity","taskId":"B-1","title":"Held slice","status":"Blocked","statusRaw":"Blocked","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"2"},
+    {"featureId":"C-TODO","featureTitle":"Independent Todo","taskId":"C-1","title":"Continue","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"2"}
+  ],
+  "orphans":[]
+}
+EOF
+env STARTUP_FACTORY_PROJECT_ROOT="$REPO" \
+    STARTUP_FACTORY_AUTOMATION_CONFIG="$POLICY_CONFIG" \
+    STARTUP_FACTORY_PM_CONFIG="$PM_CONFIG" STARTUP_FACTORY_TRACKER_OPS="$TRACKER" \
+    STARTUP_FACTORY_LAUNCH_TEAM="$LAUNCH" STARTUP_FACTORY_DISPATCH="$DISPATCH" \
+    STARTUP_FACTORY_RELEASE_FEATURE="$FAKE_RELEASE" PM_TEST_RELEASE_HARNESS=1 \
+    PM_SCAN_FILE="$POLICY_SCAN" PM_TEST_LOG="$POLICY_LOG" \
+    PM_FEATURE_STATE_FILE="$FEATURE_STATE_FILE" "$MONITOR" --once > "$TMP/portfolio-policy-second.out"
+check "registered Blocked-only run remains reconciled" test "$(grep -c '^dispatch' "$POLICY_LOG")" -eq 4
+check "registered runs are not relaunched" test "$(grep -c '^launch' "$POLICY_LOG")" -eq 2
+check "unregistered Blocked-only feature remains without a team" python3 - "$POLICY_STATE" <<'PY'
+import json,sys
+assert 'A-BLOCKED' not in json.load(open(sys.argv[1]))['features']
+PY
 
 monitor >/dev/null
 STATE="$REPO/.teamwork/pm-agent/state.json"
@@ -575,6 +747,8 @@ PY
 check "latest metadata occurrence selects the proper preset" grep -q $'launch\tgate-team\tdeep-backend' "$LOG"
 check "automation bootstraps gates rather than a full long-lived roster" test "$(grep -c $'^launch\tgate-team' "$LOG")" -eq 1
 check "one per-feature dispatch pass runs" test "$(grep -c '^dispatch' "$LOG")" -eq 1
+check "ignored labels propagate into autonomous dispatch" grep -Fq $'policy-labels\t["human-work"]' "$LOG"
+check "human-owned sibling cannot override automated route" test "$(grep -c 'T-HUMAN' "$LOG" || true)" -eq 0
 
 monitor >/dev/null
 check "second tick does not relaunch initialized team" test "$(grep -c '^launch' "$LOG")" -eq 1
@@ -594,6 +768,35 @@ export PM_EXPORT_MODE=file PM_EXPORT_FILE="$ACTIVE_EXPORT"
 monitor >/dev/null
 unset PM_EXPORT_MODE PM_EXPORT_FILE
 check "active feature outside discovery statuses remains authorized by exhaustive export" test "$(grep -c '^dispatch' "$LOG")" -eq "$((dispatch_before + 1))"
+
+dispatch_before="$(grep -c '^dispatch' "$LOG")"
+HUMAN_EXPORT="$TMP/human-export.json"
+cat > "$HUMAN_EXPORT" <<'EOF'
+{"schemaVersion":1,"featureId":"F-1","adapter":"Fake","tasks":[{"featureId":"F-1","featureTitle":"Payments API","taskId":"T-1","title":"Build endpoint","status":"Active","statusRaw":"In Progress","description":"automation: enabled\nteam-preset: deep-backend","comments":[],"blockedBy":[],"labels":["Human-Work"],"revision":"3"}]}
+EOF
+export PM_EXPORT_MODE=file PM_EXPORT_FILE="$HUMAN_EXPORT"
+monitor >/dev/null
+unset PM_EXPORT_MODE PM_EXPORT_FILE
+check "all-human registered feature pauses out of autonomous scope" python3 - "$STATE" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]))['features']['F-1']
+assert r['state']=='paused' and r['eligibility']=='out-of-scope'
+assert 'human work' in r['pauseReason']
+PY
+check "human-work label runs one stop reconciliation before pausing" \
+  test "$(grep -c '^dispatch' "$LOG")" -eq "$((dispatch_before + 1))"
+
+export PM_EXPORT_MODE=file PM_EXPORT_FILE="$ACTIVE_EXPORT"
+monitor >/dev/null
+unset PM_EXPORT_MODE PM_EXPORT_FILE
+check "removing human-work label resumes automatic handling" python3 - "$STATE" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]))['features']['F-1']
+assert r['state']=='running' and r['eligibility']=='eligible'
+PY
+check "resumed non-human work dispatches after stop reconciliation" \
+  test "$(grep -c '^dispatch' "$LOG")" -eq "$((dispatch_before + 2))"
+
 dispatch_before="$(grep -c '^dispatch' "$LOG")"
 export PM_EXPORT_MODE=empty
 monitor >/dev/null
@@ -685,7 +888,7 @@ env STARTUP_FACTORY_PROJECT_ROOT="$REPO" \
 check "reconcileRegisteredRuns=false skips durable prior runs" test "$(grep -c '^dispatch' "$LOG")" -eq "$dispatch_before"
 check "disabled recovery is reported" grep -q 'reconcileRegisteredRuns=false' "$TMP/no-reconcile.out"
 
-# Conflicting routing fails closed; Blocked is routed to a lead-owning team; orphan is escalated.
+# Conflicting routing fails closed; Blocked-only work stays unlaunched; orphan is escalated.
 cat > "$SCAN" <<'EOF'
 {
   "schemaVersion": 1,
@@ -699,7 +902,8 @@ cat > "$SCAN" <<'EOF'
     {"featureId":"../../evil;touch-pwn","featureTitle":"Dependency recovery","taskId":"T-3","title":"Unblock","status":"Blocked","statusRaw":"Blocked","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":["T-0"],"labels":[],"revision":"1"}
   ],
   "orphans": [
-    {"featureId":null,"taskId":"ORPHAN-1","title":"No parent","status":"Planned","statusRaw":"Todo","description":"","comments":[],"blockedBy":[],"labels":[],"revision":"1"}
+    {"featureId":null,"taskId":"ORPHAN-1","title":"No parent","status":"Planned","statusRaw":"Todo","description":"","comments":[],"blockedBy":[],"labels":[],"revision":"1"},
+    {"featureId":null,"taskId":"ORPHAN-HUMAN","title":"Manual orphan","status":"Planned","statusRaw":"Todo","description":"","comments":[],"blockedBy":[],"labels":["human-work"],"revision":"1"}
   ]
 }
 EOF
@@ -730,11 +934,11 @@ assert 'F-UNKNOWN' not in json.load(open(sys.argv[1]))['features']
 PY
 check "unknown automation metadata is escalated" grep -q $'comment-once\tT-UNKNOWN\tpm-route-' "$LOG"
 check "orphan task is quarantined and escalated" grep -q $'comment-once\tORPHAN-1\tpm-orphan-' "$LOG"
-check "Blocked feature is registered for lead reconciliation" python3 - "$STATE" <<'PY'
+check "human-work orphan is ignored without escalation" test "$(grep -c $'comment-once\tORPHAN-HUMAN\t' "$LOG" || true)" -eq 0
+check "Blocked-only feature is observed without a cold-start registration" python3 - "$STATE" <<'PY'
 import json,sys
-d=json.load(open(sys.argv[1]))['features']; r=d['../../evil;touch-pwn']
-assert r['preset']=='full-stack' and r['state']=='running'
-assert '..' not in r['team'] and '/' not in r['team'] and ';' not in r['team']
+d=json.load(open(sys.argv[1]))['features']
+assert '../../evil;touch-pwn' not in d
 PY
 check "untrusted feature id cannot escape into a path" test ! -e "$TMP/evil"
 
@@ -756,6 +960,226 @@ PM_TEST_SCAN_SLEEP=1 monitor >"$TMP/second.out" 2>"$TMP/second.err" & second=$!
 wait "$first"; wait "$second"
 check "overlapping ticks execute exactly one scan" test "$(grep -c '^scan' "$LOG")" -eq 1
 check "overlapping tick reports live lease" grep -q 'another live pass owns' "$TMP/second.out"
+
+# A long release is detached into the protected lifecycle root. The next cron
+# pass must still scan/reconcile, attach to the same job, and never launch a
+# duplicate release process.
+cat > "$SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[{"featureId":"F-ASYNC","featureTitle":"Detached production handoff","taskId":"T-ASYNC","title":"Ship slowly","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"}],
+  "orphans":[]
+}
+EOF
+async_scan_before="$(grep -c '^scan' "$LOG" || true)"
+PM_DISPATCH_COMPLETE=1 PM_RELEASE_SLEEP=3 monitor >/dev/null
+check "long release returns while protected worker is still active" python3 - "$STATE" <<'PY'
+import json,sys
+entry=json.load(open(sys.argv[1]))['features']['F-ASYNC']
+assert entry['state']=='releasing'
+assert entry['releaseJob']['identity']['jobId'].startswith('release-')
+PY
+python3 - "$STATE" "$TMP/async-job-id" <<'PY'
+import json,sys
+path,out=sys.argv[1:]
+state=json.load(open(path))
+entry=state['features']['F-ASYNC']
+open(out,'w').write(entry['releaseJob']['identity']['jobId']+'\n')
+# Simulate a supervisor crash after the detached Popen but before its in-memory
+# registry mutation reached the atomic state save.
+entry.pop('releaseJob')
+entry.pop('releaseAttempt')
+json.dump(state,open(path,'w'),indent=2,sort_keys=True)
+open(path,'a').write('\n')
+PY
+async_release_count="$(grep -c $'^release\t.*--feature F-ASYNC' "$LOG" || true)"
+monitor >/dev/null
+check "next tick scans while prior release is active" \
+  test "$(grep -c '^scan' "$LOG" || true)" -ge "$((async_scan_before + 2))"
+check "next tick attaches without duplicate release" \
+  test "$(grep -c $'^release\t.*--feature F-ASYNC' "$LOG" || true)" -eq "$async_release_count"
+check "protected job discovery repairs a lost PM registry write" python3 - "$STATE" "$TMP/async-job-id" <<'PY'
+import json,sys
+entry=json.load(open(sys.argv[1]))['features']['F-ASYNC']
+assert entry['releaseJob']['identity']['jobId']==open(sys.argv[2]).read().strip()
+assert entry['releaseJobState']=='recovered-registry-gap'
+PY
+check "detached release job lives in private lifecycle state" python3 - "$STATE" "$PM_LIFECYCLE_ROOT" <<'PY'
+import json,os,stat,sys
+entry=json.load(open(sys.argv[1]))['features']['F-ASYNC']
+job=os.path.join(sys.argv[2],'release-jobs',entry['releaseJob']['identity']['jobId'])
+assert stat.S_IMODE(os.lstat(job).st_mode)==0o700
+assert stat.S_IMODE(os.lstat(os.path.join(job,'result.json')).st_mode)==0o600
+PY
+sleep 3
+monitor >/dev/null
+check "later tick consumes detached release success" python3 - "$STATE" <<'PY'
+import json,sys
+entry=json.load(open(sys.argv[1]))['features']['F-ASYNC']
+assert entry['state']=='deployed' and 'releaseJob' not in entry
+assert entry['lastReleaseJob']['exitCode']==0
+PY
+check "completed detached release ran exactly once" \
+  test "$(grep -c $'^release\t.*--feature F-ASYNC' "$LOG" || true)" -eq 1
+
+# If tracker authority changes while the worker is live, the PM pass writes a
+# protected cancellation request and returns; the worker terminates its exact
+# release process group. Because the launch barrier already opened, the later
+# pass requires provider-state reconciliation instead of claiming cancellation.
+cat > "$SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[{"featureId":"F-CANCEL","featureTitle":"Cancel production handoff","taskId":"T-CANCEL","title":"Stop release","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"}],
+  "orphans":[]
+}
+EOF
+PM_DISPATCH_COMPLETE=1 PM_RELEASE_SLEEP=10 monitor >/dev/null
+read -r cancel_repo cancel_team <<EOF
+$(python3 - "$STATE" <<'PY'
+import json,sys
+entry=json.load(open(sys.argv[1]))['features']['F-CANCEL']
+print(entry['repository'],entry['team'])
+PY
+)
+EOF
+printf '{"schemaVersion":1,"featureId":"F-CANCEL","tasks":[{"taskId":"T-CANCEL","status":"Blocked"}]}\n' \
+  > "$cancel_repo/.teamwork/$cancel_team/tasks.json"
+cat > "$SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[{"featureId":"F-CANCEL","featureTitle":"Cancel production handoff","taskId":"T-CANCEL","title":"Stop release","status":"Blocked","statusRaw":"Blocked","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"2"}],
+  "orphans":[]
+}
+EOF
+monitor >/dev/null
+check "authority loss requests detached release cancellation" python3 - "$STATE" "$PM_LIFECYCLE_ROOT" <<'PY'
+import json,os,sys
+entry=json.load(open(sys.argv[1]))['features']['F-CANCEL']
+assert entry['state']=='release-cancelling'
+job=os.path.join(sys.argv[2],'release-jobs',entry['releaseJob']['identity']['jobId'])
+request=json.load(open(os.path.join(job,'cancel.json')))
+assert request['reason']=='tracker-authority-changed'
+PY
+# A human may legitimately return the ticket to Todo before the detached result
+# is consumed. That new authority must not retroactively validate the old,
+# post-launch attempt that overlapped the Blocked interval.
+cat > "$SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[{"featureId":"F-CANCEL","featureTitle":"Cancel production handoff","taskId":"T-CANCEL","title":"Stop release","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"3"}],
+  "orphans":[]
+}
+EOF
+sleep 1
+if monitor >"$TMP/post-go-cancel.out" 2>"$TMP/post-go-cancel.err"; then
+  fail "post-launch cancellation must require deployment reconciliation"
+fi
+check "post-launch cancellation never records a benign cancellation" python3 - "$STATE" <<'PY'
+import json,sys
+entry=json.load(open(sys.argv[1]))['features']['F-CANCEL']
+assert entry['state']=='deployment-blocked' and 'releaseJob' not in entry
+assert entry['lastReleaseJob']['state']=='completed'
+assert entry['lastReleaseJob']['exitCode'] != 0
+assert entry['lastReleaseJob']['authorityRevokedAt']
+PY
+check "post-launch revoked release was never duplicated" \
+  test "$(grep -c $'^release\t.*--feature F-CANCEL' "$LOG" || true)" -eq 1
+
+check "protected cancel evidence closes the terminal-result race" python3 - "$MONITOR_IMPL" <<'PY'
+import importlib.util,json,os,sys,tempfile
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('pm_cancel_race_test',sys.argv[1])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+identity={'jobId':'release-'+'a'*32,'repository':'/repo','runId':'run','team':'team',
+          'featureId':'feature','attempt':1,'commandDigest':'sha256:'+'b'*64}
+with tempfile.TemporaryDirectory() as raw:
+    job=Path(raw); os.chmod(job,0o700)
+    result={'schemaVersion':1,'identity':identity,'state':'completed',
+            'releaseMayHaveStartedAt':'2026-07-14T10:00:00+00:00',
+            'exitCode':0,'completedAt':'2026-07-14T10:00:02+00:00'}
+    cancel={'schemaVersion':1,'identity':identity,
+            'requestedAt':'2026-07-14T10:00:01+00:00',
+            'reason':'tracker-authority-changed'}
+    for name,value in (('result.json',result),('cancel.json',cancel)):
+        path=job/name; path.write_text(json.dumps(value)); os.chmod(path,0o600)
+    observed=module.read_release_job_result(job,identity)
+    assert observed['authorityRevokedAt']==cancel['requestedAt']
+    entry={'eligibility':'eligible'}
+    try:
+        module.finish_release_job(entry,observed,authority_valid=True)
+    except module.MonitorError as exc:
+        assert 'revoked tracker authority' in str(exc)
+    else:
+        raise AssertionError('later valid authority accepted a revoked release')
+    assert entry['state']=='deployment-blocked'
+    assert entry['lastReleaseJob']['authorityRevokedAt']==cancel['requestedAt']
+    safe={'schemaVersion':1,'identity':identity,'state':'cancelled','exitCode':130,
+          'completedAt':'2026-07-14T10:00:00+00:00'}
+    safe_entry={'eligibility':'ineligible'}
+    module.finish_release_job(safe_entry,safe,authority_valid=False)
+    assert safe_entry['state']=='paused'
+PY
+
+# A SIGKILLed worker must not orphan its already-authorized release child. The
+# next pass uses the stale protected heartbeat and authenticated lifecycle
+# identity to terminate exactly that process group before allowing any retry.
+cat > "$SCAN" <<'EOF'
+{
+  "schemaVersion":1,
+  "adapter":"Fake",
+  "statuses":["Planned","Blocked"],
+  "items":[{"featureId":"F-ORPHAN","featureTitle":"Recover dead release worker","taskId":"T-ORPHAN","title":"Supervise child","status":"Planned","statusRaw":"Todo","description":"automation: enabled\nteam-preset: full-stack","comments":[],"blockedBy":[],"labels":[],"revision":"1"}],
+  "orphans":[]
+}
+EOF
+PM_DISPATCH_COMPLETE=1 PM_RELEASE_SLEEP=20 monitor >/dev/null
+read -r orphan_worker_pid orphan_release_pid orphan_result <<EOF
+$(python3 - "$STATE" "$PM_LIFECYCLE_ROOT" <<'PY'
+import json,os,sys
+entry=json.load(open(sys.argv[1]))['features']['F-ORPHAN']
+job=entry['releaseJob']['identity']['jobId']
+result=os.path.join(sys.argv[2],'release-jobs',job,'result.json')
+data=json.load(open(result))
+print(data['workerPid'],data['releasePid'],result)
+PY
+)
+EOF
+check "detached worker and release child are independently live" \
+  sh -c 'kill -0 "$1" && kill -0 "$2"' _ "$orphan_worker_pid" "$orphan_release_pid"
+kill -KILL "$orphan_worker_pid"
+sleep 1
+python3 - "$orphan_result" <<'PY'
+import json,os,sys
+path=sys.argv[1]
+data=json.load(open(path))
+data['heartbeatAt']='2000-01-01T00:00:00+00:00'
+with open(path,'w') as handle:
+    json.dump(data,handle,sort_keys=True,separators=(',',':'))
+    handle.write('\n')
+os.chmod(path,0o600)
+PY
+if monitor >"$TMP/stale-worker.out" 2>"$TMP/stale-worker.err"; then
+  fail "stale post-launch worker must require deployment reconciliation"
+fi
+check "stale post-launch worker records an uncertain completed release" python3 - "$STATE" <<'PY'
+import json,sys
+entry=json.load(open(sys.argv[1]))['features']['F-ORPHAN']
+assert entry['state']=='deployment-blocked' and 'releaseJob' not in entry
+assert entry['lastReleaseJob']['state']=='completed'
+assert entry['lastReleaseJob']['exitCode']==125
+PY
+check "stale worker recovery terminates the authenticated release child" \
+  sh -c '! kill -0 "$1" 2>/dev/null' _ "$orphan_release_pid"
+check "stale worker recovery never launches a duplicate release" \
+  test "$(grep -c $'^release\t.*--feature F-ORPHAN' "$LOG" || true)" -eq 1
 
 # The same reconciliation pass hands an all-integrated [feature] to the isolated
 # release executor and records completion without giving deployment credentials

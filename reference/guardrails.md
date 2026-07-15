@@ -194,3 +194,9 @@ markers only: its contents are never passed to `kill`, `kill -0`, or tmux. A mis
 modified, unauthenticated, or process-identity-mismatched protected record fails closed
 without signalling. If protected lifecycle state is not configured, manual launches
 remain unmanaged and `stop` deliberately refuses to signal processes.
+An authenticated stop sends bounded TERM→KILL to the launcher-managed process
+group/session, but ordinary process groups cannot contain a descendant that
+deliberately calls `setsid`, double-forks, or delegates to an external
+supervisor. The required OS sandbox/cgroup/container/service job must provide
+the complete descendant boundary; task holds and broker checks independently
+reject output from stale escaped processes.

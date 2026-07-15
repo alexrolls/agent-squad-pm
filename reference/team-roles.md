@@ -1,7 +1,8 @@
 # Team Roles — Optional Status Ownership (multi-agent)
 
-**Only relevant when `TEAM_MODE=true`.** In single-agent mode, one agent performs every
-transition and this file is unused — skip it.
+**Only relevant when `TEAM_MODE=true`.** In single-agent mode, one agent performs
+ordinary transitions and this file is unused—except that `[Blocked]` remains a
+human-only outbound state in every mode.
 
 When several agents collaborate on one [feature], the danger is two agents driving the same
 [task] at once, or a status moving without the responsible role knowing. The fix is
@@ -24,7 +25,7 @@ When running an actual agent team (`reference/orchestration.md`), the abstract r
 | **Reviewer** | Reviews an implementer's work, approves or sends it back. Never modifies code. |
 | **Finalizer** | Runs final validation, writes the feature-branch integration commit, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move. |
 | **Principal Architect** | Technical authority: planning approval, per-[task] design gate, architecture half of every review, sole editor of upcoming [task] descriptions. Never writes code. |
-| **Team Lead** | Process authority: plans, launches, supervises, unblocks, reassigns, escalates. Never writes code, never overrides Finalizer/Integrator or Principal Architect. |
+| **Team Lead** | Process authority: plans, launches, supervises task holds, reassigns, and escalates. May authorize entering `[Blocked]` and publish receipt-backed dependency/resume analysis, but never moves `[Blocked]` outbound. Never writes code or overrides Finalizer/Integrator or Principal Architect. |
 | **Release Executor** | Deterministic, credential-separated production transaction. It alone performs the terminal [feature] transition after independent production verification; it is not an LLM role. |
 
 Small teams collapse roles (one agent can be Reviewer + Finalizer). The ownership *table*
@@ -49,7 +50,7 @@ For protocol gate markers, the broker derives that role from the launcher's
 verified per-instance capability; a claimed actor field or tracker signature is
 not an identity.
 
-Two refinements:
+Refinements:
 
 - **Entering a `requiresCommit` status** is performed by *that* status's owner
   after the integration commit succeeds (on the default board: the integrator
@@ -66,15 +67,23 @@ Two refinements:
   without the release-executor flag; because an environment flag is not an
   authenticated identity, the operator must also keep tracker credentials out
   of every agent sandbox.
+- **Human-held task transition:** `[Blocked]` has an explicit
+  `transitionAuthority`. A verified team-lead or deterministic PM supervisor may
+  enter it. Its owner is `human`, and every outbound transition is automation-
+  forbidden even though the graph lists destinations so a human action can be
+  normalized. A human return to queued starts resume review; direct movement to
+  working/review is manual takeover. Enforce human-only exit with the
+  project-management tool's workflow ACL; the normalized adapter cannot attest
+  the actor of an external move.
 
 Worked example — the default board:
 
 | Status | Owner | May perform |
 |---|---|---|
-| `[Planned]` | team-lead (Coordinator) | create [tasks]; sanction claims (`Planned → Active`) |
-| `[Active]` | implementer | `Active → Review` (with `[review-request]`), `Active → Blocked` |
-| `[Review]` | reviewer | `Review → Active` (findings); approval hands off to the integrator for `Review → Ready to deploy` |
-| `[Blocked]` | team-lead | `Blocked → Planned / Active / Review` once cleared |
+| `[Planned]` | team-lead (Coordinator) | create [tasks]; sanction claims (`Planned → Active`); enter Blocked when necessary |
+| `[Active]` | implementer | `Active → Review` (with `[review-request]`); route a real block to the team-lead/PM authority |
+| `[Review]` | reviewer | `Review → Active` (findings); approval hands off to the integrator for `Review → Ready to deploy`; route a real block to the team-lead/PM authority |
+| `[Blocked]` | human | Only the human may perform `Blocked → Planned / Active / Review`. Startup Factory stops/fences that task and cannot perform these moves. |
 | `[Ready to deploy]` | integrator | terminal — entered after a recorded integration commit |
 
 Feature statuses: the team-lead works `[Planned]`/`[Active]`, but the configured
@@ -83,8 +92,9 @@ terminal status is owned by the
 the [feature]. Disabled, waiting, denied, failed, or rolled-back delivery remains
 visible and non-terminal. Only verified production success triggers `[Resolved]`.
 
-If any role finds a [task] in an unexpected status, it **pulls the andon cord**: stop,
-don't guess, escalate to the Coordinator (concrete role: `team-lead`).
+If any role finds a [task] in an unexpected status, it **pulls the andon cord**:
+stop that action/[task], don't guess, and escalate to the Coordinator (concrete
+role: `team-lead`). Independent portfolio work continues.
 
 ---
 
@@ -122,7 +132,7 @@ single adapter, and swap tools without touching a single role.
 ## Running an actual team
 
 This file defines *ownership*. The full multi-agent mechanics — mailboxes,
-heartbeats, claiming, the design gate, dual review, the unblock ladder, launching
+heartbeats, claiming, the design gate, dual review, the recovery ladder, task holds, launching
 heterogeneous LLM agents — live in `reference/orchestration.md` with one brief per
 role in `roles/`. Configure the team in `config/team.config.md` and launch with
 `bin/launch-team.sh`.

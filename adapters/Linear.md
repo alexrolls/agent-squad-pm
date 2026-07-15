@@ -130,6 +130,17 @@ Completed (Linear project states).
 - Never skip status updates; move issues through Todo → In Progress → In Review → Done.
 - `featureId` is a Project id/name; `taskId` is an issue identifier like `PP-445`.
 - Query a feature's tasks with `list_issues` + `project`, never by guessing identifiers.
+- `[Blocked]` is a task-scoped human lock. The deterministic backend may enter
+  it under configured authority but rejects every outbound transition; only a
+  human uses Linear to return it to Todo (resume barrier when a local hold
+  exists) or another status (manual takeover). Independent Todo work continues.
+  Enforce that rule with organization/workflow permissions or a verified
+  transition-provenance control that denies every automation/service identity;
+  the adapter snapshot does not prove who performed a status change.
+- A `human-work` label prevents new automatic claims/launches and stops/fences a
+  matching in-flight task at the next reconcile; independent tasks continue.
+- `blockedBy` comes only from exhaustive first-class inverse issue relations of
+  type `blocks`. Titles and comments never create dependency authority.
 - REST exports carry each comment's `createdAt`, `updatedAt`, and revision
   (`updatedAt`) and order the normalized timeline by last modification. Editing an
   older approval or pushback therefore makes that edited verdict fresh and forces
@@ -138,6 +149,9 @@ Completed (Linear project states).
   `LINEAR_DEFAULT_TEAM` key/name; workspace-wide inference is refused. Generic `[Planned]` maps
   to Linear `Todo` and `[Blocked]` maps to Linear `Blocked` through the board
   config; the supervisor never hardcodes tool-side names.
+- Hold-control marker text is acted on only with the matching local published
+  broker receipt. Linear authorship and a copied team-lead signature cannot
+  impersonate `[dependency-hold]`, `[resume-review]`, or `[resume-plan]`.
 
 ## Initialization
 

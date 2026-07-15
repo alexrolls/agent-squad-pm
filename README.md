@@ -7,14 +7,16 @@ delivery.** Connect the project-management tool your team already loves—Linear
 Jira, GitHub Issues, local Markdown, or your own adapter—and make it the durable
 control plane for a cross-functional team of AI agents.
 
-Put an opted-in `[task]` in a queued or blocked state—Todo or Blocked on the
-shipped Linear mapping. When automation is enabled and scheduled, the
-deterministic PM supervisor checks the board every three minutes by default,
-routes work by its explicit team preset (or your configured default), and drives
-it through architecture, implementation, review, QA, and integration. When your
-release policy and exact approval allow it, a separate credential-isolated
-executor deploys the reviewed immutable artifact, verifies the target, and only
-then closes the parent `[feature]`.
+Put a `[task]` in Todo—the shipped Linear mapping of the generic queued state.
+When automation is enabled and scheduled, the deterministic PM supervisor
+checks the board every three minutes by default, leaves anything labeled
+`human-work` to people, routes every other queued task by its explicit team
+preset (or your configured default), and drives it through architecture,
+implementation, review, QA, and integration. It also observes Blocked work as a
+human-controlled safety lock: the matching task workers stop, while independent
+Todo work continues. When your release policy and exact approval allow it, a
+separate credential-isolated executor deploys the reviewed immutable artifact,
+verifies the target, and only then closes the parent `[feature]`.
 
 Bring your own models, repository, stack, tracker, and infrastructure.
 Provider-neutral structured hooks can target production in any cloud,
@@ -35,13 +37,39 @@ production authority.
 ![Startup Factory demo](exports/execmatchai-issues-57s-70s.gif)
 
 ```text
-Todo / Blocked -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
+Todo -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
+                       Blocked -> stop only this task -> human unlock -> review changes -> fresh attempt
 ```
 
 > **Safe by default:** board automation and production delivery both ship
 > disabled. Ordinary agents never receive production credentials; enabling a
 > release requires protected external configuration, hooks, identities, and
 > verification.
+
+## Table of contents
+
+- [Layered safety boundaries for AI builders](#layered-safety-boundaries-for-ai-builders)
+- [Why Startup Factory](#why-startup-factory)
+- [Full transparency in your tracker](#full-transparency-in-your-tracker)
+- [Choose your operating mode](#choose-your-operating-mode)
+- [Requirements](#requirements)
+- [Quick Start (2 minutes, no accounts)](#quick-start-2-minutes-no-accounts)
+- [Install into your repository](#install-into-your-repository)
+- [Connect your LLM](#connect-your-llm)
+- [Connect your tracker](#connect-your-tracker)
+- [Configure](#configure)
+- [Use it](#use-it)
+- [Automate the board and production delivery](#automate-the-board-and-production-delivery)
+- [The five preset teams](#the-five-preset-teams)
+- [How it works](#how-it-works)
+- [Documentation map](#documentation-map)
+- [Directory map](#directory-map)
+- [Extend it](#extend-it)
+- [Troubleshooting](#troubleshooting)
+- [Credits](#credits)
+- [License](#license)
+
+---
 
 ## Layered safety boundaries for AI builders
 
@@ -107,7 +135,8 @@ authentication.
 | **Keep quality gates explicit** | Architecture approval precedes implementation. Review uses an exact package, QA re-runs required checks, and the integrator runs your build, test, and lint commands before merging. |
 | **Recover instead of restarting** | Immutable task packets, durable events, checkpoint branches, an idempotent outbox, and attempt-aware relaunches make interrupted work inspectable and recoverable. |
 | **Keep your stack and your tracker** | The same workflow runs across languages, frameworks, LLMs, and project-management tools. Start offline with Markdown and switch adapters without rewriting the process. |
-| **Turn the board into a safe delivery queue** | A deterministic cron/service pass discovers semantic queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only when action is required. |
+| **Turn the board into a safe delivery queue** | A deterministic cron/service pass observes queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only for eligible queued tasks. |
+| **Pause one task without stopping the factory** | On the next scan, `[Blocked]` immediately fences only the matching task. Independent Todo work and other features continue; only a human can unlock it. |
 | **Keep dangerous authority out of agents** | One deny/approval/allow contract governs every role. The code gate blocks dangerous privileged release hooks and plans; your required OS sandbox and least-privilege identities enforce ordinary-agent filesystem, network, process, and IAM boundaries. |
 
 ## Full transparency in your tracker
@@ -135,7 +164,7 @@ Use as much of the system as your project needs:
 | **2. Governed squad** | A lead coordinates, an architect gates design, specialists implement, QA verifies, and an integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
 | **3. Task-driven runtime** | Event-driven dispatch, bounded parallel waves, model routing, exact review packages, durable handoffs, and recoverable integration. | `bin/dispatch.sh`, `bin/runtime-state.py`, `bin/integrate-task.sh` |
 | **4. Preset teams** | Five ready-made rosters for full-stack, backend, frontend, security, and infrastructure work, all resolved through the same team launcher. | `teams/`, `bin/launch-team.sh` |
-| **5. Portfolio automation** | One bounded cron/service pass scans generic queued/blocked statuses, bootstraps isolated feature runs, and reconciles comments, blockers, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
+| **5. Portfolio automation** | One bounded cron/service pass observes generic queued/blocked statuses, bootstraps only queued feature runs, and reconciles comments, task holds, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
 | **6. Safe production delivery** | Structured provider-neutral plan/apply/status/verify hooks, hard guardrails, isolated credentials, crash recovery, and bounded rollback. | `bin/release-feature.py`, `bin/policy-check.py`, `reference/deployment.md` |
 
 Everything is inspectable: plain Markdown, shell scripts, small Python utilities,
@@ -159,34 +188,13 @@ history.
 
 ---
 
-## Table of contents
-
-- [Layered safety boundaries for AI builders](#layered-safety-boundaries-for-ai-builders)
-- [Why Startup Factory](#why-startup-factory)
-- [Full transparency in your tracker](#full-transparency-in-your-tracker)
-- [Choose your operating mode](#choose-your-operating-mode)
-- [Requirements](#requirements)
-- [Quick Start (2 minutes, no accounts)](#quick-start-2-minutes-no-accounts)
-- [Install into your repository](#install-into-your-repository)
-- [Connect your LLM](#connect-your-llm)
-- [Connect your tracker](#connect-your-tracker)
-- [Configure](#configure)
-- [Use it](#use-it)
-- [Automate the board and production delivery](#automate-the-board-and-production-delivery)
-- [The five preset teams](#the-five-preset-teams)
-- [How it works](#how-it-works)
-- [Documentation map](#documentation-map)
-- [Directory map](#directory-map)
-- [Extend it](#extend-it)
-- [Troubleshooting](#troubleshooting)
-
----
-
 ## Requirements
 
 **Minimum (single agent):** a git repository, a POSIX shell, and any agentic LLM
 CLI or IDE that can read files (Claude Code, Codex CLI, Gemini CLI, Aider,
-Cursor, Windsurf, Cline, …).
+Cursor, Windsurf, Cline, …). The recommended first-install path additionally
+uses `curl`, `git`, and `rsync`; it does not require Homebrew, a global package,
+or a permanently installed Node.js CLI.
 
 **For multi-agent teams, additionally:** the launcher (`bin/launch-team.sh`) needs
 `bash` + `git`; every implementation task uses a task branch and isolated
@@ -203,26 +211,48 @@ when you're ready—via MCP, REST, or the `gh` CLI, depending on the adapter.
 
 **For cron/service automation:** use one scheduler instance and a scriptable,
 explicitly scoped adapter (REST/CLI/files; a cron process cannot invoke an MCP
-client). The queued/blocked scan discovers new work; registered runs are
-re-authorized on every pass through an exhaustive per-feature export. Production
+client). The scan observes queued and Blocked work, but only queued work
+bootstraps or launches. Registered runs are re-authorized on every pass through
+an exhaustive per-feature export. Production
 delivery additionally needs protected external structured hooks/config/state,
 an external identity/isolation attestor for automatic mode, and a separate
 short-lived credential environment that ordinary agents never inherit.
+
+The human-only exit from `[Blocked]` also needs an operator-owned control in the
+project-management tool: restrict outbound Blocked transitions to human
+principals and deny them to every scheduler, bot, and service identity. Startup
+Factory refuses its own outbound writes, but normalized adapters do not prove
+who performed an external transition. If the tool cannot enforce status-level
+permissions or provide verified transition provenance, treat the human-only
+claim as an operational policy and keep autonomous portfolio automation disabled
+for that tool.
 
 ---
 
 ## Quick Start (2 minutes, no accounts)
 
 The fastest win: one AI agent managing work in local Markdown files. No tracker
-account, no API key, no config changes — `Markdown` is the default.
+account, API key, Homebrew formula, or global package is required—`Markdown` is
+the default.
 
-1. **Copy this bundle into your repo** (Claude Code's natural home shown; any
-   agent can read it from any path):
+1. **From your project root, download the auditable installer/updater and install
+   the full bundle.** Codex uses the shared Agent Skills project directory:
 
    ```bash
-   mkdir -p .claude/skills
-   cp -R /path/to/this/bundle .claude/skills/startup-factory
+   (
+     set -eu
+     installer="$(mktemp "${TMPDIR:-/tmp}/startup-factory-install.XXXXXX")"
+     trap 'rm -f "$installer"' EXIT
+     curl -fsSLo "$installer" \
+       https://raw.githubusercontent.com/alexrolls/startup-factory/main/bin/update-installed-skill.sh
+     bash "$installer" --install-dir .agents/skills/startup-factory
+   )
    ```
+
+   For Claude Code, replace the final path with
+   `.claude/skills/startup-factory`. The block downloads to a unique file rather
+   than piping network content into a shell; insert `less "$installer"` between
+   `curl` and `bash` when you want a manual audit before execution.
 
 2. **Ask your agent, in plain language:**
 
@@ -243,43 +273,85 @@ That's the whole loop — plan → start → review → complete — in generic 
 that works identically on every tracker. When you're ready for a real tracker or
 a full team, keep reading.
 
-> **Sanity-check the runtime** (no LLM calls, no cost):
-> `bash tests/run-all.sh` should finish with `ALL TESTS PASS`.
+> **Sanity-check the runtime** (no LLM calls, no cost): from the installed
+> skill directory, `bash tests/run-all.sh` should finish with
+> `ALL TESTS PASS`.
 
 ---
 
 ## Install into your repository
 
-The bundle is just files. Put it wherever your agent looks for skills/rules, or
-anywhere and point the agent at `SKILL.md`.
+Use a **project-scoped** copy. Startup Factory contains mutable tracker, team,
+automation, deployment, and guardrail configuration, so one global copy should
+not be shared across unrelated projects. Homebrew would still need a second
+project-initialization step and is intentionally not part of the current
+distribution.
 
-| Harness | Install location | How the agent picks it up |
+Choose the project path your agent supports:
+
+| Agent | Project install directory | Discovery |
 |---|---|---|
-| **Claude Code** | `.claude/skills/startup-factory/` | Auto-loaded by the skill's description; just ask in natural language |
-| **Codex CLI** | anywhere, e.g. `.codex/pm/` | `codex exec "Read .codex/pm/SKILL.md and plan a feature …"` |
-| **Aider** | anywhere | `aider --read pm/SKILL.md`, then instruct |
-| **Cursor / Windsurf / Cline** | the tool's rules dir | reference `SKILL.md` in chat |
-| **Anything else** | anywhere | point the agent at `SKILL.md` |
+| **Codex** | `.agents/skills/startup-factory` | Native project skill path |
+| **Claude Code** | `.claude/skills/startup-factory` | Native project skill path |
+| **Aider** | `.agents/skills/startup-factory` | Start with `aider --read .agents/skills/startup-factory/SKILL.md` |
+| **Other agents** | Their native project skill directory | Use native discovery or point the agent at `SKILL.md` |
 
-### Update an installed copy
-
-From any repository where the skill is installed in Claude Code's default
-location, run:
+Set that path on the first line and run one copy-paste block. The unique
+temporary file is removed automatically, and a failed download cannot execute a
+stale installer:
 
 ```bash
-bash .claude/skills/startup-factory/bin/update-installed-skill.sh
+SF_INSTALL_DIR=.agents/skills/startup-factory
+(
+  set -eu
+  installer="$(mktemp "${TMPDIR:-/tmp}/startup-factory-install.XXXXXX")"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSLo "$installer" \
+    https://raw.githubusercontent.com/alexrolls/startup-factory/main/bin/update-installed-skill.sh
+  bash "$installer" --install-dir "$SF_INSTALL_DIR"
+)
 ```
 
-Or ask Claude:
+If you already cloned or downloaded Startup Factory, skip `curl` and run its
+local `bin/update-installed-skill.sh` with the same `--install-dir` argument.
+The script fetches the complete repository bundle—not just `SKILL.md`.
+
+> **Why the README does not currently use `npx skills add`:** the open
+> [Skills CLI](https://www.skills.sh/docs/cli) is the right long-term
+> direction and correctly discovers this repository. However, its current
+> remote repository-root installation path copies only the root `SKILL.md`.
+> Startup Factory also requires `bin/`, `config/`, `adapters/`, `extensions/`,
+> `reference/`, `roles/`, and `teams/`; an end-to-end installation without them
+> is broken.
+> Until a lean nested distribution is published, do not use `npx skills add`
+> or `npx skills update` for Startup Factory.
+
+### Safe updates
+
+Run the updater from the installed skill. It recognizes project installs under
+both `.agents/skills/` and `.claude/skills/` and updates that same directory:
+
+```bash
+bash .agents/skills/startup-factory/bin/update-installed-skill.sh --dry-run
+bash .agents/skills/startup-factory/bin/update-installed-skill.sh
+```
+
+For Claude Code, use the corresponding `.claude/skills/...` path. You can also
+ask your agent:
 
 ```
 Fetch latest Startup Factory skill.
 ```
 
-The updater fetches `main` from
-`https://github.com/alexrolls/startup-factory.git`, syncs the bundle into
-`.claude/skills/startup-factory`, and preserves existing project config files by
-default:
+Existing project configuration remains byte-for-byte untouched by default,
+while newly introduced config files are installed. Destination-only files under
+the documented `adapters/`, `extensions/`, and `teams/` extension points are
+also preserved. A generated ownership manifest lets later updates delete an
+upstream extension that has been retired without mistaking project-owned files
+for upstream files. A legacy installation without a manifest is migrated
+conservatively: destination-only extension files are kept. If a later upstream
+release introduces a file at a project-owned extension path, the update fails
+before mutation instead of overwriting it:
 
 - `config/project-management.config.md`
 - `config/team.config.md`
@@ -288,35 +360,44 @@ default:
 - `config/deployment.config.json`
 - `config/guardrails.config.json`
 
-To replace those config files with upstream defaults too:
+To intentionally replace those files with upstream defaults too:
 
 ```bash
-bash .claude/skills/startup-factory/bin/update-installed-skill.sh --overwrite-config
+bash .agents/skills/startup-factory/bin/update-installed-skill.sh --overwrite-config
 ```
 
-To install or update a non-default location:
+To install or update any explicit location:
 
 ```bash
-bash /path/to/startup-factory/bin/update-installed-skill.sh --install-dir .codex/pm
+bash /path/to/startup-factory/bin/update-installed-skill.sh \
+  --install-dir /absolute/path/to/startup-factory
 ```
 
-The updater requires `git` and `rsync`. Its full operator options are:
+The updater requires `git` and `rsync`. Its operator options are:
 
 | Option | Purpose |
 |---|---|
 | `--install-dir PATH` | Override installation autodetection. |
 | `--remote-url URL` | Fetch a different reviewed upstream (`STARTUP_FACTORY_REMOTE_URL`). |
-| `--ref REF` | Select a branch or tag (`STARTUP_FACTORY_REF`, default `main`). |
+| `--ref REF` | Select a branch, tag, or exact commit (`STARTUP_FACTORY_REF`, default `main`). |
 | `--overwrite-config` | Replace all six preserved project configuration files. |
 | `--dry-run` | Show the `rsync` change set without writing it. |
 
 `STARTUP_FACTORY_SKILL_NAME` overrides the installation directory name used for
-autodetection.
+autodetection. Prefer a reviewed tag or commit through `--ref` for controlled
+environments; `main` is the convenience default.
+
+Before synchronizing, the installer verifies the fetched bundle and refuses
+filesystem root, the home directory, a Git repository root, symlink targets,
+and unrelated non-empty directories. `--dry-run` never creates a missing
+destination.
 
 Multi-agent teams require the **target project** to be a git repository because
 every implementation attempt receives a task branch and git worktree. The skill
 bundle may live inside that repository for interactive/manual use; autonomous
-automation instead requires a protected external installation. Add `.teamwork/`
+automation instead requires a reviewed, protected external installation. Use
+the same installer with an absolute operator-owned destination outside the
+checkout and every agent mount. Add `.teamwork/`
 and `.workspace/` to the target repository's root `.gitignore`—ignore rules
 inside a nested skill installation do not cover project-root runtime paths.
 
@@ -447,7 +528,9 @@ instead copied to operator-protected storage outside agent mounts.
 `config/statuses.config.json` defines both state machines: every status, legal
 `transitions`, owner, and per-tracker `tool` mapping. The shipped task flow is
 `Planned → Active → Review → Ready to deploy`, with `Blocked` as the
-parking/rework state. The shipped feature flow is
+task-scoped human-held state. Its listed outbound transitions normalize human
+project-management actions; Startup Factory itself cannot author them. The
+shipped feature flow is
 `Planned → Active → Resolved`. Add, rename, or remove
 statuses by editing the JSON, then run `bin/launch-team.sh validate-board` to
 check the structural graph, reachability, owners, and marker roles. Separately
@@ -476,7 +559,7 @@ integrator learns about your stack.
 
 | File | Purpose | Safe default |
 |---|---|---|
-| `config/automation.config.json` | Scan cadence, queued/blocked semantic kinds, run cap, branch/worktree root, allowed/default team presets | `enabled: false` |
+| `config/automation.config.json` | Scan cadence, separate observation/launch kinds, task-hold policy, run cap, branch/worktree root, allowed/default team presets | `enabled: false` |
 | `config/deployment.config.json` | Disabled template for protected external target/state paths, trusted base, code/hook pins, four positive environment boundaries, attestation/approval hooks, and timeouts | `enabled: false`, `approval-required` |
 | `config/guardrails.config.json` | Project additions to the built-in immutable deny policy and automatic cost/change limits | Zero cost delta; cannot weaken built-ins |
 
@@ -497,14 +580,17 @@ protected external storage before enabling it. The scheduler reads these keys:
 | `maxFeaturesPerPass` | `2` | Maximum new feature runs bootstrapped in one pass, from 1–1000; existing runs reconcile first. The omission fallback is 1. |
 | `requireAgentSandbox` | `true` | Mandatory invariant; `false` or missing is rejected. |
 | `requireSingleTrackerWriter` | `true` | Mandatory invariant requiring deterministic broker writes. |
-| `scanStatusKinds` | `queued`, `blocked` | Adapter-neutral task kinds to discover. The shipped Linear mapping is Todo and Blocked. |
+| `observeStatusKinds` | `queued`, `blocked` | Exact adapter-neutral kinds to observe. The shipped Linear mapping is Todo and Blocked; observation is not launch authority. |
+| `launchStatusKinds` | `queued` | The only kind eligible for a new automatic launch. `[Blocked]` is observed solely to enforce its hold. |
+| `blockedTaskPolicy` | task-scoped, human exit, no automatic resume | Fixed fail-closed policy: continue independent work, refresh all communication, propagate only lead-confirmed direct dependencies, and use a fresh attempt after human resume. Missing, unknown, or weaker values are rejected. |
+| `ignoredTaskLabels` | `human-work` | Case-insensitive tracker labels that reserve a task for people. New matching tasks are never claimed or launched; if the label appears mid-flight, the next reconcile stops/fences that task while independent work continues. Removing it restores normal status-specific handling on the next scan. |
 | `reconcileRegisteredRuns` | `true` | Re-export and re-authorize every unfinished registered feature on each pass. |
 | `baseRef` | `main` | Feature-run starting ref whose resolved base commit is recorded immutably. Production provenance is anchored separately by deployment `trustedBaseRef`. |
 | `branchPrefix` | `factory-` | Prefix for generated feature branches. External IDs are hashed before use in paths or refs. |
 | `workspaceRoot` | `.teamwork/pm-agent` | Repository-relative supervisor workspace and registry root. |
 | `defaultTeamPreset` | `full-stack` | Team used when eligible metadata contains no explicit preset. |
 | `allowedTeamPresets` | all five shipped presets | Exact routing allowlist. Unknown or changed routing pauses the run. |
-| `requireMetadataOptIn` | `true` | Require an explicit latest `automation: enabled` marker before launch. |
+| `requireMetadataOptIn` | `false` | When `false`, every non-ignored queued task is eligible by default. Set `true` to additionally require an explicit latest `automation: enabled` marker. |
 | `metadata.optInKey` | `automation` | Adapter-neutral description/comment key for enablement. |
 | `metadata.teamPresetKey` | `team-preset` | Adapter-neutral description/comment key for specialist-team routing. |
 
@@ -618,8 +704,16 @@ Just talk to your agent in the generic vocabulary:
 
 ### A whole team
 
-1. Set `TEAM_MODE=true`, configure role commands, `WORKTREE_SETUP`, and at least
-   one real `VALIDATE_*` command in `config/team.config.md`. Add `.teamwork/` and
+1. Set the bundle path for your installation, then set `TEAM_MODE=true`,
+   configure role commands, `WORKTREE_SETUP`, and at least one real `VALIDATE_*`
+   command in `$SF_HOME/config/team.config.md`:
+
+   ```bash
+   SF_HOME=.agents/skills/startup-factory        # Codex / shared Agent Skills
+   # SF_HOME=.claude/skills/startup-factory      # Claude Code
+   ```
+
+   Add `.teamwork/` and
    `.workspace/` to the target repository's root `.gitignore`. Provision the
    protected external mode-0700 `BROKER_LIFECYCLE_ROOT` for this
    dispatcher-driven path; it supplies authoritative liveness, prevents
@@ -632,21 +726,21 @@ Just talk to your agent in the generic vocabulary:
 3. Launch the preset's persistent supervision and gate roles:
 
    ```bash
-   bin/launch-team.sh gate-team deep-backend payments-revamp ENG-100
-   #                             └ preset      └ branch/team    └ featureId
+   "$SF_HOME/bin/launch-team.sh" gate-team deep-backend payments-revamp ENG-100
+   #                                        └ preset      └ branch/team    └ featureId
    ```
 4. Start the deterministic dispatcher in its own persistent shell. This process
    owns task claims and launches fresh task-scoped workers:
 
    ```bash
-   bin/dispatch.sh payments-revamp ENG-100 --watch
+   "$SF_HOME/bin/dispatch.sh" payments-revamp ENG-100 --watch
    ```
 
 5. Watch the team:
 
    ```bash
    tmux attach -t team-payments-revamp         # live agent windows, when tmux is used
-   bin/launch-team.sh status payments-revamp   # protected process state + heartbeat
+   "$SF_HOME/bin/launch-team.sh" status payments-revamp  # protected process state + heartbeat
    ```
 
    Progress lands in your tracker; anything needing you lands in
@@ -654,15 +748,15 @@ Just talk to your agent in the generic vocabulary:
 6. Stop the dispatcher with `Ctrl-C`, then stop the managed team:
 
    ```bash
-   bin/launch-team.sh stop payments-revamp
+   "$SF_HOME/bin/launch-team.sh" stop payments-revamp
    ```
 
    If you intentionally experiment with unmanaged direct launches instead, do
    not rely on dispatcher liveness, `status`, or `stop`; supervise the
    tmux/background processes yourself.
 
-> The launcher path is relative to where you installed the bundle — e.g.
-> `.claude/skills/startup-factory/bin/launch-team.sh`.
+> Keep `SF_HOME` set in every shell that runs a launcher or dispatcher. For a
+> protected external automation installation, set it to that absolute path.
 
 **`bin/launch-team.sh` subcommands:**
 
@@ -681,13 +775,21 @@ Just talk to your agent in the generic vocabulary:
 | `validate-board [config-path]` | Validate status structure, initial/terminal rules, transitions, reachability, owners, and marker-role references |
 | `status <team>` | Show authenticated process state plus last heartbeat when protected lifecycle authority is enabled; otherwise report that markers are non-authoritative |
 | `stop <team>` | Stop the managed team through authenticated lifecycle identities; unmanaged mode refuses to signal |
+| `stop-task <team> <taskId>` | Send bounded TERM→KILL to the authenticated launcher-managed process group/session for one [task], then revoke that [task]'s active publication capabilities; sibling workers and gate roles continue |
+
+Process-group stopping is lifecycle control, not a complete containment
+boundary. A subprocess that deliberately escapes with `setsid`, double-forking,
+or an external supervisor may outlive the launcher. Autonomous deployments must
+therefore use an OS sandbox, cgroup/container, service job, or equivalent
+kill-on-close boundary that contains every descendant. Broker hold checks still
+reject output from an escaped stale process.
 
 **`bin/dispatch.sh` — the event loop:**
 
 | Command | Purpose |
 |---|---|
-| `dispatch.sh <team> <featureId> --once [--dry-run] [--unblock=auto\|suggest\|off]` | One deterministic read-and-act pass |
-| `dispatch.sh <team> <featureId> --watch [--unblock=…]` | Wake on runtime events with `POLL_INTERVAL_SECONDS` as a fallback — run in a persistent shell (tmux/nohup); **you own this process** |
+| `dispatch.sh <team> <featureId> --once [--dry-run]` | One deterministic read-and-act pass |
+| `dispatch.sh <team> <featureId> --watch` | Wake on runtime events with `POLL_INTERVAL_SECONDS` as a fallback — run in a persistent shell (tmux/nohup); **you own this process** |
 
 > **CLI dispatch requires scriptable tracker access.** Linear and Jira default to MCP; set `LINEAR_ACCESS=rest` or `JIRA_ACCESS=rest` in `config/project-management.config.md` before running `dispatch.sh --watch`. Harness mode (`launch-team.sh compose`) supports MCP natively.
 
@@ -695,7 +797,7 @@ Just talk to your agent in the generic vocabulary:
 
 | Command | Purpose |
 |---|---|
-| `state <taskId> <Status>` | Make and verify a legal generic `[task]` status write. |
+| `state <taskId> <Status>` | Make and verify a legal generic `[task]` status write. Startup Factory rejects every outbound `[Blocked]` transition; a human must perform that move in the project-management tool. |
 | `feature-state <featureId> <Status>` | Make and verify a legal generic `[feature]` status write. |
 | `feature-reopen <featureId> <Status>` | PM-supervisor-only terminal-to-queued reopen for a new delivery generation. |
 | `task-reopen <taskId> <Status>` | Integration-broker-only terminal-to-working reopen after late valid findings. |
@@ -722,9 +824,10 @@ worktrees → specialists checkpoint their task branches → the **Senior QA
 Engineer is the final review gate** over an exact review package → the
 integrator validates and merges one task at a time, then idempotently marks it
 `[Ready to deploy]`. Runtime events trigger PM progress and feature-digest
-upserts. The lead detects stuck/conflicting/crashed agents and unblocks them —
+upserts. The lead detects stuck/conflicting/crashed agents and recovers them —
 message → decide → reassign → relaunch — escalating to you only as a last
-resort.
+resort. A tracker `[Blocked]` state is different: it is a human lock that no
+Startup Factory role can remove.
 
 ## Automate the board and production delivery
 
@@ -746,22 +849,75 @@ On every pass the supervisor:
 
 1. authenticates the protected installation, configs, Python, Git, sandbox
    runner, lifecycle authority, tracker scope, and single-writer mode;
-2. takes the single-host lease and discovers only configured semantic
-   `queued`/`blocked` work;
+2. takes the single-host lease and observes the configured semantic `queued`
+   and `blocked` work, while granting launch eligibility only to `queued`;
 3. exhaustively re-exports every unfinished registered `[feature]` so a local
    registry entry never becomes standing authority;
-4. validates opt-in and exact preset routing, then bootstraps at most
-   `maxFeaturesPerPass` new isolated feature runs;
+4. excludes new `human-work` tasks and stops/fences any matching in-flight task,
+   enforces task-scoped holds, validates any
+   configured opt-in and exact preset routing, then bootstraps queued work for
+   at most `maxFeaturesPerPass` new isolated feature runs;
 5. launches persistent gate roles, invokes one deterministic dispatch pass,
-   reconciles blockers/comments/recovery, and starts fresh task-scoped workers
-   only when the state machine calls for them; and
+   reconciles holds/comments/recovery, and starts fresh task-scoped workers only
+   when the state machine calls for them; and
 6. hands an all-integrated feature to the protected release executor, or leaves
    it visibly awaiting delivery when deployment is disabled or authorization is
    incomplete.
 
-Malformed state, an incomplete export, lost opt-in, conflicting metadata,
-preset drift, an expired capability, or a failed read-back pauses/stops work; it
-never falls through to a guessed action.
+Malformed state, an incomplete export, a newly human-owned task, lost required
+opt-in, conflicting metadata,
+preset drift, an expired capability, or a failed read-back pauses/stops the
+affected run or pass; it never falls through to a guessed action. A valid
+`[Blocked]` state is not such a failure: it fences that [task] and the portfolio
+continues.
+
+### `[Blocked]` is a human-controlled task lock
+
+When a dispatcher or portfolio reconcile observes a [task] in `[Blocked]`, it
+creates a durable task hold and captures the complete communication snapshot.
+If the [task] is in flight, it stops the workers bound to that [task] and revokes
+their active publication capabilities. The team, PM loop, gate roles, sibling [tasks], and other
+[features] continue. A held [task] cannot publish, integrate, or release; its
+parent [feature] waits because not every [task] is integrated, while unrelated
+[features] remain eligible for delivery.
+
+Dependencies remain narrow and explicit:
+
+- A queued [task] with an unfinished non-Blocked `blockedBy` dependency remains
+  unclaimable. Independent queued [tasks] continue.
+- A queued, `[Active]`, or `[Review]` [task] whose adapter-normalized,
+  first-class `blockedBy` edge points directly to a currently `[Blocked]` [task]
+  enters dependency-impact review. Titles, descriptions, comments, and semantic
+  similarity never create dependency edges.
+- The team-lead publishes `[dependency-hold]` with the current graph digest and
+  a verdict of `blocked`, `partially-actionable`, or `independent`. Only an
+  authenticated `blocked` verdict that still matches a fresh graph authorizes
+  the broker to move that dependent into `[Blocked]`; the other verdicts give
+  the exact graph-bound clearance needed to claim or continue it.
+
+Only a human can move a [task] out of `[Blocked]`; Startup Factory has no
+automated outbound path. A human move of that held [task] to the configured
+queued status starts a resume barrier: the supervisor snapshots the [task] again,
+diffs title, description, every stable comment (including edits/deletions), and
+adapter-provided normalized attachment metadata, and asks the team-lead for an
+authenticated `[resume-review]` bound to the hold and communication digest.
+`unchanged` may clear the barrier; `requirements-changed` additionally requires
+a later `[resume-plan]` and principal-architect `[design-approved]`;
+`needs-human` keeps it closed. The prior worktree must also be clean—dirty work
+is preserved for explicit salvage or quarantine, never discarded. Clearing the
+barrier archives the old claim and starts a fresh numbered attempt from the new
+packet. A human move directly to `[Active]` or `[Review]` is manual takeover, so
+automation remains fenced rather than claiming it.
+
+This human-only rule is enforceable end to end only when the project-management
+tool's workflow ACL restricts outbound Blocked transitions to human principals.
+The adapters observe state but do not authenticate the transition actor.
+
+These hold-control markers are authenticated workflow commands, not ordinary
+board prose. The local broker accepts them only when a published receipt binds
+the exact body, role, task, feature, and verified launched-role capability.
+Copying the marker text into a project-management comment—or claiming a
+team-lead signature—does not create that receipt and grants no authority.
 
 1. Provision a real worktree-scoped OS sandbox and network/IAM restrictions for
    every ordinary agent. Install its protected external entrypoint, configure its
@@ -783,8 +939,11 @@ never falls through to a guessed action.
    mode-0700 `BROKER_LIFECYCLE_ROOT` outside the checkout, installed skill, and
    every agent sandbox mount; its parent chain must contain no symlinks or
    group/world-writable directory (so do not place it below shared `/tmp`). The
-   safe default requires an
-   `automation: enabled` [task] metadata marker; then inspect a pass:
+   shipped policy automatically launches queued tasks and observes Blocked
+   tasks as human-held unless they carry the `human-work` label. Set
+   `requireMetadataOptIn: true` if this installation
+   should additionally require an `automation: enabled` metadata marker. Then
+   inspect a pass:
 
    ```bash
    STARTUP_FACTORY_PROJECT_ROOT=/absolute/target-checkout \
@@ -824,16 +983,24 @@ never falls through to a guessed action.
    deadline; a production transaction uses
    its separately bounded `releaseTimeoutSeconds`, which must cover the full
    configured plan/attestation/status/apply/verify/rollback path. New
-   queued/blocked work on an already deployed feature opens a numbered
+   queued work on an already deployed feature opens a numbered
    generation with a new run ID, team, and feature branch rooted at the exact
    verified predecessor HEAD, while preserving the stable workspace and prior
    release evidence.
-5. Put initial routing metadata in a [task] description:
+5. Optionally put initial routing metadata in a [task] description:
 
    ```text
-   automation: enabled
    team-preset: deep-backend
    ```
+
+   Apply the tracker label `human-work` to reserve a task for a person. The PM
+   supervisor makes no new claims or launches for it; if it was already in
+   flight, the next reconcile stops its managed worker and fences publication,
+   integration, and release while other tasks remain eligible. Removing the
+   label returns the task to automatic consideration on the next scan.
+   `automation: disabled`
+   remains an explicit metadata opt-out, while `automation: enabled` is required
+   only when `requireMetadataOptIn` is true.
 
    Treat descriptions as the baseline. Post every later routing change as a
    timestamped/revisioned comment; generic record `updatedAt` does not prove a
@@ -942,6 +1109,8 @@ need tracker-specific workflow logic.
 flowchart LR
     Board["Linear · Jira · GitHub Issues · Markdown"]
     PM["Deterministic PM supervisor<br/>cron · timer · service"]
+    State{"Task state?"}
+    Hold["Task-scoped human hold<br/>stop worker · revoke capability"]
     Route{"Opt-in and preset<br/>valid?"}
     Gates["Lead · Product · Architect<br/>scope and design gates"]
     Work["Task-scoped agents<br/>isolated Git worktrees"]
@@ -951,7 +1120,9 @@ flowchart LR
     Release["Credential-isolated<br/>release executor"]
     Target["Verified production target"]
 
-    Board --> PM --> Route
+    Board --> PM --> State
+    State -->|queued| Route
+    State -->|Blocked| Hold -->|human returns to queued| Board
     Route -->|yes| Gates --> Work --> Review --> Integrate --> Policy
     Route -->|pause / escalate| Board
     Policy -->|approved| Release --> Target --> Board
@@ -976,10 +1147,11 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 | [`reference/team-roles.md`](reference/team-roles.md) | Which role owns each status and transition in team mode? |
 | [`reference/orchestration.md`](reference/orchestration.md) | How do roles coordinate, authenticate handoffs, review, integrate, recover, and pull the andon cord? |
 | [`reference/dispatch.md`](reference/dispatch.md) | Which deterministic event launches each next role action? |
-| [`reference/automation.md`](reference/automation.md) | How do protected cron/service scans, routing metadata, registration, generations, leases, and recovery work? |
+| [`reference/automation.md`](reference/automation.md) | How do protected cron/service scans, task holds, human resume barriers, routing metadata, registration, generations, leases, and recovery work? |
 | [`reference/guardrails.md`](reference/guardrails.md) | Which actions are denied, approval-only, or autonomously allowed, and where are those boundaries enforced? |
 | [`reference/deployment.md`](reference/deployment.md) | What are the provider-neutral hook schemas, trust requirements, approvals, transaction phases, and rollback rules? |
 | [`teams/README.md`](teams/README.md) and [`teams/_PLAYBOOK.md`](teams/_PLAYBOOK.md) | Which preset should you choose and how does its shared delivery protocol operate? |
+| [`extensions/tracker-backends/README.md`](extensions/tracker-backends/README.md) | Where does a project-owned backend module for a custom tracker live? |
 
 | Tracker guide | Scriptable unattended access | Interactive access |
 |---|---|---|
@@ -1009,6 +1181,7 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 ├── adapters/
 │   ├── Markdown.md · Linear.md · Jira.md · GitHubIssues.md
 │   └── _TEMPLATE.md                  scaffold for a new tracker
+├── extensions/tracker-backends/      project-owned custom tracker modules
 ├── roles/                            the 7 base protocol roles
 │   └── team-lead · principal-architect · integrator · backend · frontend · qa · reviewer
 ├── teams/
@@ -1037,11 +1210,13 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 ## Extend it
 
 Team and role extensions are one file. A new tracker needs its adapter contract plus a
-scriptable `tracker-ops.sh` backend before deterministic dispatch/automation can use it.
+scriptable backend before deterministic dispatch/automation can use it.
 
 - **New tracker:** copy `adapters/_TEMPLATE.md` → `adapters/<YourTool>.md`, fill the
-  tables, add its normalized operations backend, then set
-  `PRODUCT_MANAGEMENT_TOOL=<YourTool>`.
+  tables, add the normalized primitive backend class at
+  `extensions/tracker-backends/<YourTool>.py`, then set
+  `PRODUCT_MANAGEMENT_TOOL=<YourTool>`. Do not edit the upstream-owned
+  `bin/tracker-ops.sh`; see [`extensions/tracker-backends/README.md`](extensions/tracker-backends/README.md).
 - **New team:** copy any `teams/<preset>.md`, edit the charter, `ROSTER=` line, and
   review order. Include `integrator` in the roster.
 - **New role:** add `teams/roles/<kebab-name>.md` with the standard sections
@@ -1063,13 +1238,14 @@ exact protocol markers — never invent new ones.
 | A role won't launch in a preset | It's likely `<ROLE>_CMD=null` (explicitly disabled). Remove the line to fall back to `TEAM_DEFAULT_CMD` |
 | No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
 | `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
-| Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead auto-unblocks, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md` |
-| An eligible queued/blocked task never launches | Confirm automation is enabled and scheduled, the scriptable adapter has an exact scope, the latest metadata says `automation: enabled`, and `team-preset` is absent or exactly one allowed preset; conflicting or unordered metadata deliberately pauses |
+| Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead applies the recovery ladder, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md`. A `[Blocked]` task is intentionally human-held and never changed outbound by automation. |
+| An eligible queued task never launches | Confirm automation is enabled and scheduled, the scriptable adapter has an exact scope, the task does not carry an `ignoredTaskLabels` value such as `human-work`, and `team-preset` is absent or exactly one allowed preset. If `requireMetadataOptIn` is true, also confirm the latest metadata says `automation: enabled`; conflicting or unordered metadata deliberately pauses. |
+| A human moved `[Blocked]` to queued but no fresh attempt starts | Inspect the generated resume-review request. A broker-authenticated `[resume-review]` must bind its exact hold and communication digest; changed requirements also need a later `[resume-plan]` and `[design-approved]`, and the prior worktree must be clean. |
 | `--print-cron` rejects the scan interval | Conventional cron output supports minute divisors of 60 and whole-hour divisors of 24. Use a service timer or hosted scheduler for cadences such as seven minutes |
 | `another live pass owns the monitor lease` | One healthy pass is already running on this host. Do not start a second scheduler; multi-host operation needs a distributed lock or adapter-native compare-and-set |
 | Release waits for product acceptance | Publish a current feature-scope `[product-approval]` bound to the exact final feature HEAD and integration-evidence digest; stale or ambiguous evidence cannot release |
 | Release says it is awaiting authorization | In `approval-required` mode, have the protected `verifyApproval` system authorize the exact manifest before its expiry; a board comment is intentionally insufficient |
-| Release is fenced after an uncertain apply or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
+| Release is fenced after an uncertain apply, detached-worker loss (exit 125), post-launch authority change, or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
 | Want to verify the plumbing | `bash tests/run-all.sh` → `ALL TESTS PASS` (stub agents + local files; no LLM, no cost) |
 
 ---
