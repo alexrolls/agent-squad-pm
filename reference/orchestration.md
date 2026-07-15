@@ -60,6 +60,12 @@ add **specialized role names** (`principal-software-architect`,
 `senior-qa-engineer`, …), each acting as one or more protocol roles per the
 *Protocol mapping* line in its brief.
 
+The `sceptical-architect` mapping is a mandatory cross-functional-team
+invariant, not an optional specialist. Every preset must map and roster exactly
+one launchable concrete role for it. The launcher validates that invariant
+before starting any process, and broker/runtime boundaries reject a missing,
+duplicate, disabled, or malformed mapping.
+
 One signing rule: **use the role name at the top of your startup prompt,
 verbatim and only that name** — as your tracker assignee name, your mailbox
 directory, your heartbeat file, and the signature of every comment: `— <role>`.

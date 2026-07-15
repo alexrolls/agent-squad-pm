@@ -14,8 +14,10 @@ The project-management tool itself is configured separately in
 
 `{prompt_file}` is replaced by the launcher with the path to the composed startup
 prompt. The examples inline the file's content with `$(cat '{prompt_file}')` because these CLIs take the prompt as a string argument; a CLI that reads a prompt from a file can use `{prompt_file}` directly. Any agentic CLI works if it can read files, run shell commands, and use git.
-Set a role to `null` to exclude it from launches (the team-lead composes the actual
-roster per [feature] — e.g. no frontend [tasks] → no frontend agent).
+Set an implementation or optional specialist role to `null` to exclude it from
+launches (e.g. no frontend [tasks] → no frontend agent). The Sceptical Architect
+is mandatory in every cross-functional team: its preset mapping, roster entry,
+role brief, and resolvable command must all remain present.
 
 ```
 TEAM_LEAD_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
@@ -42,9 +44,12 @@ TASK_STRONG_CMD=null             # Optional override for security/schema/concurr
 > **Preset teams** (`teams/`) carry many specialized role names. Rather than a key
 > per role, an *absent* key falls back to `TEAM_DEFAULT_CMD`. Add a `<ROLE>_CMD`
 > line — e.g. `SENIOR_STAFF_ENGINEER_CMD` — only to pin a specific CLI to that
-> role, or set it explicitly to `null` to disable the role (a `team` launch skips
-> it; a direct `start`/`relaunch` of it is refused). Resolution per role:
-> explicit `null` → disabled; a set value → used; absent → `TEAM_DEFAULT_CMD`.
+> role, or set it explicitly to `null` to disable an optional role (a `team`
+> launch skips it; a direct `start`/`relaunch` of it is refused). The mandatory
+> Sceptical Architect is the exception: a preset/team launch fails before any
+> agent starts if its mapped command is `null` or unresolved. Resolution for
+> other roles: explicit `null` → disabled; a set value → used; absent →
+> `TEAM_DEFAULT_CMD`.
 
 ## Coordination
 

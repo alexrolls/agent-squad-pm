@@ -492,6 +492,11 @@ your agent normally. Your existing LLM credentials are used as-is.
 the shell command that runs that role. The launcher composes each agent's startup
 prompt into a file and substitutes its path for `{prompt_file}`.
 
+Every cross-functional preset requires a Sceptical Architect. Its protocol
+mapping, roster entry, role brief, and command are validated before any team
+process starts; `SCEPTICAL_ARCHITECT_CMD=null` is a configuration error, not an
+opt-out.
+
 ```
 TEAM_LEAD_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
 PRINCIPAL_ARCHITECT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
@@ -1320,7 +1325,7 @@ exact protocol markers — never invent new ones.
 |---|---|
 | Agent says the tracker is unavailable | Re-check the adapter's *Access mechanisms* (MCP block or exported API-key env vars); the agent stops rather than fabricating — that's by design |
 | `launch-team.sh` can't find a role | The role needs a brief in `roles/` or `teams/roles/`, and its `<ROLE>_CMD` (or `TEAM_DEFAULT_CMD`) must be set |
-| A role won't launch in a preset | It's likely `<ROLE>_CMD=null` (explicitly disabled). Remove the line to fall back to `TEAM_DEFAULT_CMD` |
+| A role won't launch in a preset | An optional role may have `<ROLE>_CMD=null`; remove the line to fall back to `TEAM_DEFAULT_CMD`. The Sceptical Architect is mandatory, so its missing/duplicate mapping, absent roster entry, null command, or missing fallback rejects the whole team before launch. |
 | No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
 | `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
 | Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead applies the recovery ladder, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md`. A `[Blocked]` task is intentionally human-held and never changed outbound by automation. |

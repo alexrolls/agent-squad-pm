@@ -475,6 +475,15 @@ refuse "broker rejects a forged approval evidence binding" \
   .agent-squad/bin/finalize-integrations.sh --validate-only feature-integration "$FID" "$tx2"
 mv "$tx2.backup" "$tx2"
 
+printf 'PROTOCOL_TEAM_LEAD=team-lead\n' > .teamwork/feature-integration/preset.env
+refuse "integration refuses a preset missing the mandatory Sceptical Architect" \
+  .agent-squad/bin/finalize-integrations.sh --validate-only feature-integration "$FID" "$tx2"
+printf 'PROTOCOL_SCEPTICAL_ARCHITECT=other-sceptical-architect\n' \
+  >> .teamwork/feature-integration/preset.env
+refuse "integration binds approval to the mandatory Sceptical Architect identity" \
+  .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
+rm .teamwork/feature-integration/preset.env
+
 printf '{"schemaVersion":1,"phase":"awaiting-tracker"}\n' > .teamwork/feature-integration/integrations/forged.json
 refuse "broker rejects malformed transaction before tracker writes" \
   .agent-squad/bin/finalize-integrations.sh feature-integration "$FID"

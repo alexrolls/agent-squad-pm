@@ -487,6 +487,12 @@ PY
 refuse "broker rejects a cross-role gate capability" "claimed actor does not match" \
   .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$cross_role_entry"
 
+missing_sceptical_mapping_entry="$(launch_gate_submission principal-software-architect architecture-approval architecture-verdict.md missing-sceptical-mapping.path)"
+sed -i '' '/^PROTOCOL_SCEPTICAL_ARCHITECT=/d' .teamwork/feature-runtime/preset.env
+refuse "broker rejects a preset that omits the mandatory Sceptical Architect" "must define one valid mandatory PROTOCOL_SCEPTICAL_ARCHITECT" \
+  .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$missing_sceptical_mapping_entry"
+printf 'PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect\n' >> .teamwork/feature-runtime/preset.env
+
 architecture_entry="$(launch_gate_submission principal-software-architect architecture-approval architecture-verdict.md architecture.path)"
 .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$architecture_entry" >/dev/null
 cat > sceptical-architecture-verdict.md <<'EOF'

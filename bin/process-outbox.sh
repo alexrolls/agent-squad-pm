@@ -336,11 +336,22 @@ if ignored.intersection(label.strip().casefold() for label in labels):
     fail("task is labeled for human work; every agent publication is stopped")
 
 protocol = {}
-if os.path.isfile(preset) and not os.path.islink(preset):
+if os.path.lexists(preset):
+    if os.path.islink(preset) or not os.path.isfile(preset):
+        fail("team preset must be a non-symlink regular file")
     for line in open(preset):
         match = re.match(r"PROTOCOL_([A-Z_]+)=(.+)$", line.strip())
         if match:
-            protocol[match.group(1)] = match.group(2)
+            name, concrete = match.groups()
+            if name in protocol:
+                fail("team preset contains duplicate PROTOCOL_%s" % name)
+            protocol[name] = concrete
+    sceptical_role = protocol.get("SCEPTICAL_ARCHITECT")
+    if not sceptical_role or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", sceptical_role):
+        fail("team preset must define one valid mandatory PROTOCOL_SCEPTICAL_ARCHITECT")
+else:
+    # Direct/manual teams still use the mandatory concrete protocol role.
+    protocol["SCEPTICAL_ARCHITECT"] = "sceptical-architect"
 marker_spec = (board.get("markers") or {}).get(data["marker"])
 verified_capability = None
 if data.get("producerCapability") is not None:

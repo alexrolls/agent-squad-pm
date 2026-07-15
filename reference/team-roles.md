@@ -25,7 +25,7 @@ When running an actual agent team (`reference/orchestration.md`), the abstract r
 | **Reviewer** | Reviews an implementer's work, approves or sends it back. Never modifies code. |
 | **Finalizer** | Runs final validation, writes the feature-branch integration commit, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move. |
 | **Principal Architect** | Primary architecture position: planning approval, per-[task] design gate, architecture review, and sole editor of upcoming [task] descriptions. Never writes code. |
-| **Sceptical Architect** | Independent blind-first challenge: planning/design peer review and release-bound architecture approval. Never writes code. |
+| **Sceptical Architect** | Mandatory in every cross-functional team. Independent blind-first challenge: planning/design peer review and release-bound architecture approval. Never writes code and cannot be disabled or omitted. |
 | **Team Lead** | Process authority: plans, launches, supervises task holds, reassigns, and escalates. It may adjudicate an architecture trade-off only when independent of both architects; otherwise the human decides. Never writes code or overrides the Finalizer/Integrator or unresolved Critical risk. |
 | **Release Executor** | Deterministic, credential-separated production transaction. It alone performs the terminal [feature] transition after independent production verification; it is not an LLM role. |
 

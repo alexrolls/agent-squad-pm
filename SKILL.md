@@ -204,6 +204,10 @@ each generic operation through the adapter's *Operations* table:
   task-branch HEAD, and generated package digest. Reviewer, principal architect,
   and sceptical architect approvals independently bind that request digest; any
   branch movement forces a new request and all new approvals before integration.
+- **The Sceptical Architect is mandatory in team mode.** Every cross-functional
+  preset must map and roster exactly one independent Sceptical Architect with a
+  resolvable command. It cannot be disabled; launch, dispatch, publication, and
+  integration fail closed if its mapping is absent, duplicated, or malformed.
 - **Only the release executor closes a [feature].** Disabled, waiting, denied,
   failed, or rolled-back production delivery remains non-terminal and visible.
 - **No LLM owns time.** Cron/service timers call one bounded, protected external

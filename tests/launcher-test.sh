@@ -324,6 +324,57 @@ check "attempt 2 gets a fresh tree on the same branch" test -d ".teamwork/test-f
 [ "$(git -C ".teamwork/test-feature/worktrees/backend#2-$T77_KEY" rev-parse --abbrev-ref HEAD)" = "agent-task/test-feature/$T77_KEY" ] \
   && echo "ok: attempt 2 reuses task branch" || { echo "FAIL: attempt-2 branch"; FAILURES=$((FAILURES+1)); }
 
+# -- every cross-functional preset requires a live Sceptical Architect ----------
+cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/missing-sceptical.md
+sed -i '' '/^PROTOCOL_SCEPTICAL_ARCHITECT=/d' .claude/skills/pm/teams/missing-sceptical.md
+if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team missing-sceptical mandatory-missing FEAT-MANDATORY 2>&1)"; then
+  echo "FAIL: preset without Sceptical Architect mapping launched"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$mandatory_out" | grep -q 'must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT'; then
+  echo "ok: preset cannot omit mandatory Sceptical Architect mapping"
+else
+  echo "FAIL: missing mandatory mapping produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
+fi
+check "missing mandatory mapping creates no workspace" test ! -e .teamwork/mandatory-missing
+if "$LAUNCH" compose mandatory-compose FEAT-MANDATORY backend missing-sceptical >/dev/null 2>&1; then
+  echo "FAIL: harness composition accepted a preset without its mandatory Sceptical Architect"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: harness composition also enforces the mandatory Sceptical Architect"
+fi
+check "invalid harness preset creates no workspace" test ! -e .teamwork/mandatory-compose
+
+cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/missing-sceptical-roster.md
+sed -i '' 's/ sceptical-architect//' .claude/skills/pm/teams/missing-sceptical-roster.md
+if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" gate-team missing-sceptical-roster mandatory-roster FEAT-MANDATORY 2>&1)"; then
+  echo "FAIL: preset without Sceptical Architect in roster launched"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$mandatory_out" | grep -q 'mandatory Sceptical Architect.*exactly once'; then
+  echo "ok: preset roster cannot omit mandatory Sceptical Architect"
+else
+  echo "FAIL: missing mandatory roster role produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
+fi
+check "missing mandatory roster role creates no workspace" test ! -e .teamwork/mandatory-roster
+
+cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/duplicate-sceptical-roster.md
+sed -i '' 's/^ROSTER=/ROSTER=sceptical-architect /' .claude/skills/pm/teams/duplicate-sceptical-roster.md
+if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team duplicate-sceptical-roster mandatory-duplicate FEAT-MANDATORY 2>&1)"; then
+  echo "FAIL: preset with duplicate Sceptical Architect roster entries launched"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$mandatory_out" | grep -q 'mandatory Sceptical Architect.*exactly once'; then
+  echo "ok: preset roster requires exactly one mandatory Sceptical Architect"
+else
+  echo "FAIL: duplicate mandatory roster role produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
+fi
+check "duplicate mandatory role creates no workspace" test ! -e .teamwork/mandatory-duplicate
+
+printf 'SCEPTICAL_ARCHITECT_CMD=null\n' >> .claude/skills/pm/config/team.config.md
+if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack mandatory-disabled FEAT-MANDATORY 2>&1)"; then
+  echo "FAIL: disabled mandatory Sceptical Architect launched"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$mandatory_out" | grep -q 'mandatory Sceptical Architect.*cannot be disabled'; then
+  echo "ok: mandatory Sceptical Architect cannot be disabled by command config"
+else
+  echo "FAIL: disabled mandatory role produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
+fi
+check "disabled mandatory role creates no workspace" test ! -e .teamwork/mandatory-disabled
+sed -i '' '/^SCEPTICAL_ARCHITECT_CMD=null$/d' .claude/skills/pm/config/team.config.md
+
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
 SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
 check "preset composes fallback-role prompt" test -f .teamwork/test-feature/prompts/principal-software-architect.md

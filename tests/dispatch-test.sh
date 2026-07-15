@@ -110,6 +110,17 @@ echo "$plan" | grep -q "launch integrator" && echo "ok: plans integrator merge q
 check "dry-run does not move status" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
 check "dry-run launches nothing"     test ! -d .teamwork/feat-team/pids
 
+mkdir -p .teamwork/feat-missing-sceptical
+printf 'PRESET=full-stack\nPROTOCOL_TEAM_LEAD=principal-software-architect\n' \
+  > .teamwork/feat-missing-sceptical/preset.env
+if missing_sceptical_out="$(TEAM_RUNNER=background "$DISPATCH" feat-missing-sceptical "$FID" --once --dry-run 2>&1)"; then
+  echo "FAIL: dispatch accepted a preset without its mandatory Sceptical Architect"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$missing_sceptical_out" | grep -q 'must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT'; then
+  echo "ok: dispatch refuses a preset missing the mandatory Sceptical Architect"
+else
+  echo "FAIL: missing mandatory dispatch gate produced wrong error: $missing_sceptical_out"; FAILURES=$((FAILURES+1))
+fi
+
 # -- PM-supervisor label policy excludes human-owned work but keeps siblings --
 cat > feat/human-work.md <<'EOF'
 # Human/agent split [Active]
@@ -230,6 +241,7 @@ mkdir -p ".teamwork/$PRODUCT_TEAM"
 cat > ".teamwork/$PRODUCT_TEAM/preset.env" <<'EOF'
 PRESET=full-stack
 PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 EOF
 python3 - "$PRODUCT_FID" ".teamwork/$PRODUCT_TEAM/product-acceptance-request.json" ".claude/skills/pm/bin" <<'PY'

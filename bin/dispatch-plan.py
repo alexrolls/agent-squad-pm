@@ -345,7 +345,10 @@ def main() -> None:
     blocked_status = by_kind.get("blocked", "Blocked")
 
     protocol_reviewer = None
-    protocol_sceptical_architect = None
+    # Generic/manual teams use the concrete protocol role. Preset teams must
+    # override it exactly once; a missing mapping would make the mandatory
+    # independent gate spoofable or silently optional.
+    protocol_sceptical_architect = "sceptical-architect"
     protocol_product_manager = None
     try:
         preset_text = read_regular_at(workdir_fd, "preset.env", "team preset", 1024 * 1024)
@@ -354,8 +357,18 @@ def main() -> None:
     if preset_text is not None:
         match = re.search(r"^PROTOCOL_REVIEWER=(.+)$", preset_text, re.M)
         protocol_reviewer = match.group(1) if match else None
-        match = re.search(r"^PROTOCOL_SCEPTICAL_ARCHITECT=(.+)$", preset_text, re.M)
-        protocol_sceptical_architect = match.group(1) if match else None
+        sceptical_matches = re.findall(
+            r"^PROTOCOL_SCEPTICAL_ARCHITECT=([^\r\n]+)$", preset_text, re.M
+        )
+        if len(sceptical_matches) != 1:
+            raise RuntimeError(
+                "team preset must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT"
+            )
+        protocol_sceptical_architect = sceptical_matches[0].strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", protocol_sceptical_architect):
+            raise RuntimeError(
+                "team preset has an invalid mandatory PROTOCOL_SCEPTICAL_ARCHITECT"
+            )
         match = re.search(r"^PROTOCOL_PRODUCT_MANAGER=(.+)$", preset_text, re.M)
         protocol_product_manager = match.group(1) if match and match.group(1) != "null" else None
 
@@ -464,18 +477,17 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     continue
-            if protocol_sceptical_architect:
-                body = str((task.get("comments") or [])[sceptical_approval].get("body") or "")
-                signature = re.search(r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$", body.strip())
-                signer = signature.group(1) if signature else None
-                if signer != protocol_sceptical_architect:
-                    anomalies.append(task_id)
-                    print(
-                        "dispatch: warning - %s [sceptical-architecture-approval] signed by '%s', expected preset gate '%s'"
-                        % (task_id, signer, protocol_sceptical_architect),
-                        file=sys.stderr,
-                    )
-                    continue
+            body = str((task.get("comments") or [])[sceptical_approval].get("body") or "")
+            signature = re.search(r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$", body.strip())
+            signer = signature.group(1) if signature else None
+            if signer != protocol_sceptical_architect:
+                anomalies.append(task_id)
+                print(
+                    "dispatch: warning - %s [sceptical-architecture-approval] signed by '%s', expected mandatory gate '%s'"
+                    % (task_id, signer, protocol_sceptical_architect),
+                    file=sys.stderr,
+                )
+                continue
             merge_queue.append(task_id)
         else:
             if review_approval <= request:
