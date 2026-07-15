@@ -250,6 +250,26 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+printf '%s\n' '{"schemaVersion":1,"name":"startup-factory"}' \
+  > "$INSTALL/.startup-factory-install.json"
+printf '%s\n' '{"schemaVersion":1,"name":"startup-factory"}' \
+  > "$INSTALL/.startup-factory-bundle.json"
+cp "$INSTALL/runtime-v2.txt" "$TMP/runtime-before-release-managed"
+if env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
+    bash "$INSTALL/bin/update-installed-skill.sh" > "$TMP/release-managed.out" 2>&1; then
+  echo "FAIL: legacy updater accepted a release-managed installation"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'release-managed installation detected' "$TMP/release-managed.out" && \
+    cmp -s "$TMP/runtime-before-release-managed" "$INSTALL/runtime-v2.txt" && \
+    test -f "$INSTALL/.startup-factory-install.json" && \
+    test -f "$INSTALL/.startup-factory-bundle.json" && \
+    ! grep -q '^Fetching ' "$TMP/release-managed.out"; then
+  echo "ok: legacy updater refuses release-managed installs without changing provenance"
+else
+  echo "FAIL: release-managed refusal produced the wrong result"
+  FAILURES=$((FAILURES + 1))
+fi
+
 mkdir -p "$TMP/real-destination"
 ln -s "$TMP/real-destination" "$TARGET/symlink-install"
 if env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \

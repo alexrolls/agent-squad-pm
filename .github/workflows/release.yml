@@ -1,0 +1,364 @@
+name: Release
+
+# Required repository settings:
+# - protect v* tags against force-update/deletion and restrict tag creation;
+# - require a human reviewer on the pypi environment;
+# - enable immutable GitHub Releases.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and build exact release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      source_commit: ${{ steps.release.outputs.commit }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Validate tag, version, exact commit, and main ancestry
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          test "$commit" = "$(git rev-parse HEAD)"
+          git show-ref --verify --quiet refs/remotes/origin/main
+          git merge-base --is-ancestor "$commit" origin/main
+          source_date_epoch="$(git show -s --format=%ct "$commit")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
+
+      - name: Run the full runtime suite
+        run: bash tests/run-all.sh
+
+      - name: Run packaging unit tests
+        run: python -m unittest discover -s tests/packaging -p "test_*.py" -v
+
+      - name: Build the tagged source bundle twice
+        env:
+          COMMIT: ${{ steps.release.outputs.commit }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/repro-a build/repro-b release-assets
+          python packaging/build_bundle.py \
+            --repo . \
+            --commit "$COMMIT" \
+            --version "$VERSION" \
+            --output "build/repro-a/startup-factory-$VERSION.tar.gz"
+          python packaging/build_bundle.py \
+            --repo . \
+            --commit "$COMMIT" \
+            --version "$VERSION" \
+            --output "build/repro-b/startup-factory-$VERSION.tar.gz"
+
+      - name: Prove bundle reproducibility and checksum validity
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp \
+            "build/repro-a/startup-factory-$VERSION.tar.gz" \
+            "build/repro-b/startup-factory-$VERSION.tar.gz"
+          cmp \
+            "build/repro-a/startup-factory-$VERSION.tar.gz.sha256" \
+            "build/repro-b/startup-factory-$VERSION.tar.gz.sha256"
+          (
+            cd build/repro-a
+            sha256sum --check "startup-factory-$VERSION.tar.gz.sha256"
+          )
+          (
+            cd build/repro-b
+            sha256sum --check "startup-factory-$VERSION.tar.gz.sha256"
+          )
+          cp \
+            "build/repro-a/startup-factory-$VERSION.tar.gz" \
+            "release-assets/startup-factory-$VERSION.tar.gz"
+          cp \
+            "build/repro-a/startup-factory-$VERSION.tar.gz.sha256" \
+            "release-assets/startup-factory-$VERSION.tar.gz.sha256"
+
+      - name: Prepare two clean package source trees
+        env:
+          COMMIT: ${{ steps.release.outputs.commit }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for slot in a b; do
+            package_tree="build/package-$slot"
+            resource_dir="$package_tree/src/startup_factory_cli/resources"
+            mkdir -p "$package_tree" "$resource_dir"
+            git archive "$COMMIT" | tar -x -C "$package_tree"
+            cp \
+              "release-assets/startup-factory-$VERSION.tar.gz" \
+              "$resource_dir/startup-factory.tar.gz"
+            (
+              cd "$resource_dir"
+              sha256sum startup-factory.tar.gz > startup-factory.tar.gz.sha256
+            )
+          done
+
+      - name: Install the pinned build toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check
+          build==1.3.0 packaging==26.2 pyproject-hooks==1.2.0
+          setuptools==83.0.0 wheel==0.47.0
+
+      - name: Build wheel and sdist twice from clean trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m build --no-isolation --outdir "$PWD/build/dist-a" "$PWD/build/package-a"
+          python -m build --no-isolation --outdir "$PWD/build/dist-b" "$PWD/build/package-b"
+
+      - name: Normalize sdist container metadata deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_DATE_EPOCH"
+          python tests/packaging/test_packaging_metadata.py \
+            --canonicalize-sdist build/dist-a/*.tar.gz "$SOURCE_DATE_EPOCH"
+          python tests/packaging/test_packaging_metadata.py \
+            --canonicalize-sdist build/dist-b/*.tar.gz "$SOURCE_DATE_EPOCH"
+
+      - name: Prove distribution reproducibility and promote one set
+        shell: bash
+        run: |
+          set -euo pipefail
+          first=(build/dist-a/*)
+          second=(build/dist-b/*)
+          test "${#first[@]}" -eq 2
+          test "${#second[@]}" -eq 2
+          for artifact in "${first[@]}"; do
+            name="$(basename "$artifact")"
+            test -f "build/dist-b/$name"
+            cmp "$artifact" "build/dist-b/$name"
+          done
+          mkdir -p dist
+          cp build/dist-a/* dist/
+
+      - name: Test wheel and sdist identity against the canonical archive
+        env:
+          STARTUP_FACTORY_BUNDLE: ${{ github.workspace }}/release-assets/startup-factory-${{ steps.release.outputs.version }}.tar.gz
+          STARTUP_FACTORY_DIST_DIR: ${{ github.workspace }}/dist
+        run: python -m unittest discover -s tests/packaging -p "test_*.py" -v
+
+      - name: Assemble the immutable release set
+        run: cp dist/* release-assets/
+
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload the exact GitHub release set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: github-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+
+  attest:
+    name: Attest the exact release set
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Download the exact release set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: github-release-assets
+          path: release-assets
+
+      - name: Attest every release artifact
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-path: "release-assets/*"
+
+  smoke:
+    name: Install and smoke-test the wheel on Python 3.10
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Set up the minimum supported Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+
+      - name: Download the exact built distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-distributions
+          path: dist
+
+      - name: Install the wheel without resolving dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=(dist/*.whl)
+          test "${#wheel[@]}" -eq 1
+          python -m pip install --disable-pip-version-check --no-deps "${wheel[0]}"
+
+      - name: Smoke-test the installed console command
+        shell: bash
+        run: |
+          set -euo pipefail
+          startup-factory --help
+          project="$RUNNER_TEMP/startup-factory-smoke"
+          mkdir -p "$project"
+          git -C "$project" init --quiet
+          startup-factory install \
+            --agent codex \
+            --project "$project" \
+            --dry-run \
+            --json
+          test ! -e "$project/.agents/skills/startup-factory"
+          startup-factory install \
+            --agent codex \
+            --project "$project" \
+            --json
+          test -f "$project/.agents/skills/startup-factory/SKILL.md"
+          test -f "$project/.agents/skills/startup-factory/config/automation.config.json"
+          startup-factory verify --agent codex --project "$project" --json
+
+  publish:
+    name: Publish through the protected PyPI environment
+    needs:
+      - build
+      - attest
+      - smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/startup-factory/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download the exact tested distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-distributions
+          path: dist
+
+      - name: Publish with PyPI trusted publishing
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          attestations: true
+
+  github-release:
+    name: Publish the exact tested GitHub release assets
+    needs:
+      - build
+      - publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the exact attested release set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: github-release-assets
+          path: release-assets
+
+      - name: Reconcile a draft release, verify bytes, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          resolve_tag_commit() {
+            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha
+          }
+
+          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
+
+          if release_is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            test "$release_is_draft" = true || {
+              echo "refusing to alter an already-published release" >&2
+              exit 1
+            }
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --draft \
+              --verify-tag \
+              --title "Startup Factory v$VERSION" \
+              --generate-notes
+          fi
+
+          expected="$RUNNER_TEMP/expected-assets"
+          existing="$RUNNER_TEMP/existing-assets"
+          unexpected="$RUNNER_TEMP/unexpected-assets"
+          find release-assets -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort > "$expected"
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$existing"
+          comm -13 "$expected" "$existing" > "$unexpected"
+          test ! -s "$unexpected" || {
+            echo "draft release contains unexpected assets:" >&2
+            cat "$unexpected" >&2
+            exit 1
+          }
+
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+
+          downloaded="$RUNNER_TEMP/downloaded-release-assets"
+          mkdir -p "$downloaded"
+          gh release download "$GITHUB_REF_NAME" --dir "$downloaded"
+          find "$downloaded" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort > "$RUNNER_TEMP/downloaded-assets"
+          cmp "$expected" "$RUNNER_TEMP/downloaded-assets"
+          while IFS= read -r name; do
+            cmp "release-assets/$name" "$downloaded/$name"
+          done < "$expected"
+
+          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
+          gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# update-installed-skill.sh — refresh an installed Startup Factory skill from GitHub.
+# update-installed-skill.sh — install or refresh a legacy/source-managed copy.
 set -euo pipefail
 
 REMOTE_URL="${STARTUP_FACTORY_REMOTE_URL:-https://github.com/alexrolls/startup-factory.git}"
 REMOTE_REF="${STARTUP_FACTORY_REF:-main}"
 SKILL_NAME="${STARTUP_FACTORY_SKILL_NAME:-startup-factory}"
 OWNERSHIP_MANIFEST_NAME=".startup-factory-owned-files"
+RELEASE_BUNDLE_MANIFEST_NAME=".startup-factory-bundle.json"
+RELEASE_PROVENANCE_NAME=".startup-factory-install.json"
 
 install_dir=""
 overwrite_config=false
@@ -20,9 +22,11 @@ usage() {
   cat <<EOF
 Usage: update-installed-skill.sh [options]
 
-Fetch the latest Startup Factory bundle and sync it into a new or existing skill
-directory. From a standalone source checkout, the fallback target is the
-current repository's .claude/skills/startup-factory directory.
+Fetch Startup Factory from Git and sync it into a new or legacy/source-managed
+skill directory. Release-CLI installations are intentionally refused because
+this compatibility updater cannot retain their canonical bundle provenance.
+From a standalone source checkout, the fallback target is the current
+repository's .claude/skills/startup-factory directory.
 
 Options:
   --install-dir PATH     Update this skill directory instead of auto-detecting.
@@ -126,6 +130,13 @@ if [ -d "$install_dir" ]; then
   if [ -n "$target_git_root" ]; then
     target_git_root="$(cd "$target_git_root" && pwd -P)"
     [ "$install_dir" != "$target_git_root" ] || die "refusing to install at a Git repository root"
+  fi
+
+  if [ -e "$install_dir/$RELEASE_PROVENANCE_NAME" ] || \
+      [ -L "$install_dir/$RELEASE_PROVENANCE_NAME" ] || \
+      [ -e "$install_dir/$RELEASE_BUNDLE_MANIFEST_NAME" ] || \
+      [ -L "$install_dir/$RELEASE_BUNDLE_MANIFEST_NAME" ]; then
+    die "release-managed installation detected; use the versioned startup-factory CLI to update it"
   fi
 
   if [ -n "$(find "$install_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then

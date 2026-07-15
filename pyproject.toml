@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "startup-factory"
+version = "0.1.0"
+description = "Agentic orchestration for governed end-to-end product delivery"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "ExecMatchAi" },
+]
+keywords = [
+  "agentic-orchestration",
+  "ai-agents",
+  "project-management",
+  "software-delivery",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/alexrolls/startup-factory"
+Documentation = "https://github.com/alexrolls/startup-factory#readme"
+Issues = "https://github.com/alexrolls/startup-factory/issues"
+Source = "https://github.com/alexrolls/startup-factory"
+
+[project.scripts]
+startup-factory = "startup_factory_cli.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["startup_factory_cli*"]
+
+[tool.setuptools.package-data]
+startup_factory_cli = [
+  "resources/*.tar.gz",
+  "resources/*.sha256",
+]

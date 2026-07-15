@@ -3,3 +3,10 @@
 .DS_Store
 .workspace/
 __pycache__/
+.pytest_cache/
+/build/
+/dist/
+/*.egg-info/
+/src/*.egg-info/
+/src/startup_factory_cli/resources/startup-factory.tar.gz
+/src/startup_factory_cli/resources/startup-factory.tar.gz.sha256
