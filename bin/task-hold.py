@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
 from outbox_capability import CapabilityError, verify_published_entry
 from broker_evidence import EvidenceError, verify_delivery
 

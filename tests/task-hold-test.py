@@ -70,6 +70,16 @@ def task(
 
 
 class TaskHoldTest(unittest.TestCase):
+    def test_script_loads_sibling_modules_in_isolated_mode(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-E", "-s", str(SCRIPT), "--help"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name).resolve()
