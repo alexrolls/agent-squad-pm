@@ -20,6 +20,8 @@ refuse() { local desc="$1" needle="$2" output rc; shift 2
 }
 
 cd "$TMP"; git init -q repo && cd repo
+git config user.email test@example.com
+git config user.name Test
 git commit -q --allow-empty -m init; git checkout -q -b feature-runtime
 LIFECYCLE_ROOT="$TMP/protected-lifecycle"
 mkdir -m 700 "$LIFECYCLE_ROOT"

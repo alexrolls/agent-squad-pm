@@ -8,6 +8,8 @@ check() { local desc="$1"; shift
   if "$@" >/dev/null 2>&1; then echo "ok: $desc"; else echo "FAIL: $desc"; FAILURES=$((FAILURES+1)); fi; }
 
 cd "$TMP"; git init -q repo && cd repo
+git config user.email test@example.com
+git config user.name Test
 git commit -q --allow-empty -m init; git checkout -q -b feat-team
 LIFECYCLE_ROOT="$TMP/protected-lifecycle"
 mkdir -m 700 "$LIFECYCLE_ROOT"

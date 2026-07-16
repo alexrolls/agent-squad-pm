@@ -37,6 +37,8 @@ mkdir -m 700 "$LIFECYCLE_ROOT"
 # -- fixture repo ------------------------------------------------------------
 cd "$TMP"
 git init -q repo && cd repo
+git config user.email test@example.com
+git config user.name Test
 git commit -q --allow-empty -m init
 git checkout -q -b test-feature
 mkdir -p .claude/skills/pm
