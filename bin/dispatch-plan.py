@@ -345,6 +345,10 @@ def main() -> None:
     blocked_status = by_kind.get("blocked", "Blocked")
 
     protocol_reviewer = None
+    # Generic/manual teams use the concrete protocol role. Preset teams must
+    # override it exactly once; a missing mapping would make the mandatory
+    # independent gate spoofable or silently optional.
+    protocol_sceptical_architect = "sceptical-architect"
     protocol_product_manager = None
     try:
         preset_text = read_regular_at(workdir_fd, "preset.env", "team preset", 1024 * 1024)
@@ -353,6 +357,18 @@ def main() -> None:
     if preset_text is not None:
         match = re.search(r"^PROTOCOL_REVIEWER=(.+)$", preset_text, re.M)
         protocol_reviewer = match.group(1) if match else None
+        sceptical_matches = re.findall(
+            r"^PROTOCOL_SCEPTICAL_ARCHITECT=([^\r\n]+)$", preset_text, re.M
+        )
+        if len(sceptical_matches) != 1:
+            raise RuntimeError(
+                "team preset must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT"
+            )
+        protocol_sceptical_architect = sceptical_matches[0].strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", protocol_sceptical_architect):
+            raise RuntimeError(
+                "team preset has an invalid mandatory PROTOCOL_SCEPTICAL_ARCHITECT"
+            )
         match = re.search(r"^PROTOCOL_PRODUCT_MANAGER=(.+)$", preset_text, re.M)
         protocol_product_manager = match.group(1) if match and match.group(1) != "null" else None
 
@@ -422,7 +438,15 @@ def main() -> None:
         if not task_is_held(str(task["taskId"]))
         and design_request(task) > last(task, "design-approved", "design-pushback")
     ]
-    review_queue, architecture_queue, merge_queue, anomalies = [], [], [], []
+    sceptical_design_queue = [
+        str(task["taskId"])
+        for task in tasks
+        if not task_is_held(str(task["taskId"]))
+        and design_request(task) > last(
+            task, "sceptical-design-approved", "sceptical-design-pushback"
+        )
+    ]
+    review_queue, architecture_queue, sceptical_architecture_queue, merge_queue, anomalies = [], [], [], [], []
     for task in tasks:
         if task.get("status") != review_status:
             continue
@@ -439,7 +463,8 @@ def main() -> None:
             continue
         review_approval = last(task, "review-approval")
         architecture_approval = last(task, "architecture-approval")
-        if review_approval > request and architecture_approval > request:
+        sceptical_approval = last(task, "sceptical-architecture-approval")
+        if review_approval > request and architecture_approval > request and sceptical_approval > request:
             if protocol_reviewer:
                 body = str((task.get("comments") or [])[review_approval].get("body") or "")
                 signature = re.search(r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$", body.strip())
@@ -452,12 +477,25 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     continue
+            body = str((task.get("comments") or [])[sceptical_approval].get("body") or "")
+            signature = re.search(r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$", body.strip())
+            signer = signature.group(1) if signature else None
+            if signer != protocol_sceptical_architect:
+                anomalies.append(task_id)
+                print(
+                    "dispatch: warning - %s [sceptical-architecture-approval] signed by '%s', expected mandatory gate '%s'"
+                    % (task_id, signer, protocol_sceptical_architect),
+                    file=sys.stderr,
+                )
+                continue
             merge_queue.append(task_id)
         else:
             if review_approval <= request:
                 review_queue.append(task_id)
             if architecture_approval <= request:
                 architecture_queue.append(task_id)
+            if sceptical_approval <= request:
+                sceptical_architecture_queue.append(task_id)
 
     # The release executor creates this exact request only after recomputing the
     # closed integration chain.  Tracker containers are not uniformly
@@ -517,13 +555,24 @@ def main() -> None:
             % (", ".join(design_queue) or "none", ", ".join(architecture_queue) or "none"),
             "|".join(architecture_queue),
         )
+    if sceptical_design_queue or sceptical_architecture_queue:
+        emit(
+            "launch",
+            "sceptical-architect",
+            "Dispatch queue - independent design challenges: %s; release-bound architecture reviews: %s. Drain every item and exit."
+            % (
+                ", ".join(sceptical_design_queue) or "none",
+                ", ".join(sceptical_architecture_queue) or "none",
+            ),
+            "|".join(sceptical_architecture_queue),
+        )
     if review_queue:
         emit("launch", "reviewer", "Dispatch queue - [Review]: %s. Drain every item and exit." % ", ".join(review_queue), "|".join(review_queue))
     if merge_queue:
         emit(
             "launch",
             "integrator",
-            "Dispatch queue - dual-approved, integrate in dependency order: %s."
+            "Dispatch queue - independently triple-approved, integrate in dependency order: %s."
             % ", ".join(merge_queue),
             "|".join(merge_queue),
         )
@@ -560,7 +609,14 @@ def main() -> None:
         design_note = design_request(task)
         design_approved = last(task, "design-approved")
         design_pushback = last(task, "design-pushback")
-        if design_note >= 0 and (design_approved <= design_note or design_pushback > design_approved):
+        sceptical_design_approved = last(task, "sceptical-design-approved")
+        sceptical_design_pushback = last(task, "sceptical-design-pushback")
+        if design_note >= 0 and (
+            design_approved <= design_note
+            or design_pushback > design_approved
+            or sceptical_design_approved <= design_note
+            or sceptical_design_pushback > sceptical_design_approved
+        ):
             continue
         request = last(task, "review-request")
         findings = last(task, "review-findings")
@@ -612,7 +668,15 @@ def main() -> None:
         design_note = design_request(task)
         design_approved = last(task, "design-approved")
         design_pushback = last(task, "design-pushback")
-        if design_note < 0 or design_approved <= design_note or design_pushback > design_approved:
+        sceptical_design_approved = last(task, "sceptical-design-approved")
+        sceptical_design_pushback = last(task, "sceptical-design-pushback")
+        if (
+            design_note < 0
+            or design_approved <= design_note
+            or design_pushback > design_approved
+            or sceptical_design_approved <= design_note
+            or sceptical_design_pushback > sceptical_design_approved
+        ):
             missing_gate.append(task_id)
             continue
         data = metadata(task)

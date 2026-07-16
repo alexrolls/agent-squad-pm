@@ -34,7 +34,7 @@ visible in the same board where your team manages the product. Tracker text and
 claimed authorship are workflow evidence, never security authentication or
 production authority.
 
-![Startup Factory demo](exports/execmatchai-issues-57s-70s.gif)
+![Startup Factory demo](https://raw.githubusercontent.com/alexrolls/startup-factory/main/exports/execmatchai-issues-57s-70s.gif)
 
 ```text
 Todo -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
@@ -161,7 +161,7 @@ Use as much of the system as your project needs:
 | Layer | What it gives you | Where |
 |---|---|---|
 | **1. PM port** | One AI agent creates/tracks/completes `[features]` and `[tasks]` in any configured tracker through one tool-agnostic workflow. | `SKILL.md`, `reference/`, `adapters/` |
-| **2. Governed squad** | A lead coordinates, an architect gates design, specialists implement, QA verifies, and an integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
+| **2. Governed squad** | A lead coordinates, two independent architects gate design and release evidence, specialists implement, QA verifies, and an integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
 | **3. Task-driven runtime** | Event-driven dispatch, bounded parallel waves, model routing, exact review packages, durable handoffs, and recoverable integration. | `bin/dispatch.sh`, `bin/runtime-state.py`, `bin/integrate-task.sh` |
 | **4. Preset teams** | Five ready-made rosters for full-stack, backend, frontend, security, and infrastructure work, all resolved through the same team launcher. | `teams/`, `bin/launch-team.sh` |
 | **5. Portfolio automation** | One bounded cron/service pass observes generic queued/blocked statuses, bootstraps only queued feature runs, and reconciles comments, task holds, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
@@ -192,9 +192,9 @@ history.
 
 **Minimum (single agent):** a git repository, a POSIX shell, and any agentic LLM
 CLI or IDE that can read files (Claude Code, Codex CLI, Gemini CLI, Aider,
-Cursor, Windsurf, Cline, …). The recommended first-install path additionally
-uses `curl`, `git`, and `rsync`; it does not require Homebrew, a global package,
-or a permanently installed Node.js CLI.
+Cursor, Windsurf, Cline, …). The release installer runs as an isolated Python
+tool through `uvx` (or `pipx`) and does not require Homebrew, Node.js, `git`, or
+`rsync`. The auditable shell compatibility path uses `curl`, `git`, and `rsync`.
 
 **For multi-agent teams, additionally:** the launcher (`bin/launch-team.sh`) needs
 `bash` + `git`; every implementation task uses a task branch and isolated
@@ -235,24 +235,20 @@ The fastest win: one AI agent managing work in local Markdown files. No tracker
 account, API key, Homebrew formula, or global package is required—`Markdown` is
 the default.
 
-1. **From your project root, download the auditable installer/updater and install
-   the full bundle.** Codex uses the shared Agent Skills project directory:
+1. **From your project root, install the complete, versioned release bundle.**
+   Codex and Aider use the shared Agent Skills project directory:
 
    ```bash
-   (
-     set -eu
-     installer="$(mktemp "${TMPDIR:-/tmp}/startup-factory-install.XXXXXX")"
-     trap 'rm -f "$installer"' EXIT
-     curl -fsSLo "$installer" \
-       https://raw.githubusercontent.com/alexrolls/startup-factory/main/bin/update-installed-skill.sh
-     bash "$installer" --install-dir .agents/skills/startup-factory
-   )
+   uvx startup-factory@latest install --agent codex
    ```
 
-   For Claude Code, replace the final path with
-   `.claude/skills/startup-factory`. The block downloads to a unique file rather
-   than piping network content into a shell; insert `less "$installer"` between
-   `curl` and `bash` when you want a manual audit before execution.
+   For Claude Code use `--agent claude-code`. Pin a release in controlled
+   environments, for example `startup-factory@0.1.0`. `uvx` creates an isolated
+   environment for the installer and leaves no Startup Factory package in your
+   project environment.
+
+   > The `uvx` path requires the first `v0.1.0` package release. Before that tag
+   > is published, use the [auditable shell compatibility path](#shell-compatibility-path).
 
 2. **Ask your agent, in plain language:**
 
@@ -296,9 +292,43 @@ Choose the project path your agent supports:
 | **Aider** | `.agents/skills/startup-factory` | Start with `aider --read .agents/skills/startup-factory/SKILL.md` |
 | **Other agents** | Their native project skill directory | Use native discovery or point the agent at `SKILL.md` |
 
-Set that path on the first line and run one copy-paste block. The unique
-temporary file is removed automatically, and a failed download cannot execute a
-stale installer:
+The release package embeds one deterministic bundle built from an exact Git
+commit. The installer verifies every archived path, size, mode, and SHA-256
+digest before planning a destination change, then records the installed
+version, source commit, archive digest, and ownership policy locally.
+
+```bash
+# One-shot isolated install
+uvx startup-factory@latest install --agent codex
+
+# Claude Code
+uvx startup-factory@latest install --agent claude-code
+
+# Alternative isolated runner
+pipx run startup-factory install --agent codex
+
+# Persistent operator CLI
+uv tool install startup-factory
+startup-factory install --agent codex
+```
+
+Use an exact version instead of `@latest` in controlled environments. Package
+index mirrors work through normal `uv`/`pipx` configuration; installation
+semantics are not tied to a cloud, project-management tool, or deployment
+provider.
+
+For an explicit path instead of an agent mapping:
+
+```bash
+uvx startup-factory@latest install \
+  --install-dir /absolute/path/to/startup-factory
+```
+
+### Shell compatibility path
+
+Until the first package release, or on a host without `uv`/`pipx`, use the
+auditable updater. The unique temporary file is removed automatically, and a
+failed download cannot execute a stale installer:
 
 ```bash
 SF_INSTALL_DIR=.agents/skills/startup-factory
@@ -308,13 +338,15 @@ SF_INSTALL_DIR=.agents/skills/startup-factory
   trap 'rm -f "$installer"' EXIT
   curl -fsSLo "$installer" \
     https://raw.githubusercontent.com/alexrolls/startup-factory/main/bin/update-installed-skill.sh
+  # Optional audit: less "$installer"
   bash "$installer" --install-dir "$SF_INSTALL_DIR"
 )
 ```
 
 If you already cloned or downloaded Startup Factory, skip `curl` and run its
 local `bin/update-installed-skill.sh` with the same `--install-dir` argument.
-The script fetches the complete repository bundle—not just `SKILL.md`.
+The compatibility script fetches the complete repository bundle—not just
+`SKILL.md`.
 
 > **Why the README does not currently use `npx skills add`:** the open
 > [Skills CLI](https://www.skills.sh/docs/cli) is the right long-term
@@ -328,16 +360,16 @@ The script fetches the complete repository bundle—not just `SKILL.md`.
 
 ### Safe updates
 
-Run the updater from the installed skill. It recognizes project installs under
-both `.agents/skills/` and `.claude/skills/` and updates that same directory:
+Preview and apply an update with the same release CLI. It recognizes the
+selected project installation and performs a complete preflight before any
+destination mutation:
 
 ```bash
-bash .agents/skills/startup-factory/bin/update-installed-skill.sh --dry-run
-bash .agents/skills/startup-factory/bin/update-installed-skill.sh
+uvx startup-factory@latest update --agent codex --dry-run
+uvx startup-factory@latest update --agent codex
 ```
 
-For Claude Code, use the corresponding `.claude/skills/...` path. You can also
-ask your agent:
+For Claude Code, use `--agent claude-code`. You can also ask your agent:
 
 ```
 Fetch latest Startup Factory skill.
@@ -363,34 +395,69 @@ before mutation instead of overwriting it:
 To intentionally replace those files with upstream defaults too:
 
 ```bash
-bash .agents/skills/startup-factory/bin/update-installed-skill.sh --overwrite-config
+uvx startup-factory@latest update --agent codex --overwrite-config
 ```
 
-To install or update any explicit location:
+To verify the owned runtime independently of preserved configuration and custom
+extensions:
 
 ```bash
-bash /path/to/startup-factory/bin/update-installed-skill.sh \
-  --install-dir /absolute/path/to/startup-factory
+uvx startup-factory@latest verify --agent codex
 ```
 
-The updater requires `git` and `rsync`. Its operator options are:
+The release CLI uses a sibling staging directory, an installation lock, and a
+backup swap with rollback. Interrupted copying cannot silently turn a valid
+installation into a partial one. Its main operator options are:
 
 | Option | Purpose |
 |---|---|
-| `--install-dir PATH` | Override installation autodetection. |
-| `--remote-url URL` | Fetch a different reviewed upstream (`STARTUP_FACTORY_REMOTE_URL`). |
-| `--ref REF` | Select a branch, tag, or exact commit (`STARTUP_FACTORY_REF`, default `main`). |
-| `--overwrite-config` | Replace all six preserved project configuration files. |
-| `--dry-run` | Show the `rsync` change set without writing it. |
+| `--agent codex\|claude-code\|aider` | Select the native project skill directory. |
+| `--project PATH` | Resolve the agent directory relative to another project. |
+| `--install-dir PATH` | Override the mapped installation directory. |
+| `--bundle PATH` | For install/update, use an explicitly supplied local canonical archive. |
+| `--overwrite-config` | For install/update, replace all six preserved project configuration files. |
+| `--dry-run` | For install/update, print the plan without writing the destination or lock. |
+| `--json` | Emit machine-readable output for operator automation. |
 
-`STARTUP_FACTORY_SKILL_NAME` overrides the installation directory name used for
-autodetection. Prefer a reviewed tag or commit through `--ref` for controlled
-environments; `main` is the convenience default.
+Legacy/source-installed copies can continue to use the shell compatibility
+updater from their installed bundle:
+
+```bash
+bash .agents/skills/startup-factory/bin/update-installed-skill.sh --dry-run
+bash .agents/skills/startup-factory/bin/update-installed-skill.sh
+```
+
+It requires `git` and `rsync`, accepts `--remote-url` and `--ref`, and defaults
+to `main`; prefer a reviewed tag or exact commit. The release CLI instead binds
+its embedded bundle version and source commit to the Python package version.
+The shell updater intentionally refuses any installation containing
+`.startup-factory-install.json` or `.startup-factory-bundle.json`: synchronizing
+a mutable Git checkout over a release-managed copy would destroy verifiable
+provenance. Update those copies only through `uvx`, `pipx`, or another isolated
+runner for the versioned `startup-factory` package.
 
 Before synchronizing, the installer verifies the fetched bundle and refuses
 filesystem root, the home directory, a Git repository root, symlink targets,
 and unrelated non-empty directories. `--dry-run` never creates a missing
 destination.
+
+### Release provenance
+
+`packaging/build_bundle.py` constructs the canonical archive from Git object
+bytes at an exact commit—not from an uncommitted checkout—and normalizes archive
+ordering, timestamps, ownership, and modes. Release CI builds it twice and
+requires byte-identical output, embeds those exact bytes in the wheel and source
+distribution, exercises the built wheel, generates GitHub provenance
+attestations, and publishes through PyPI Trusted Publishing. The GitHub Release
+is created from the same already-tested artifacts; nothing is rebuilt during
+publication.
+
+Before the first release, a maintainer must register the `startup-factory` PyPI
+Trusted Publisher for `.github/workflows/release.yml`, create a protected
+`pypi` GitHub Environment with required human approval, protect `v*` tags from
+unauthorized creation, force-update, and deletion, and enable immutable GitHub
+Releases. A `vX.Y.Z` tag is accepted only when it exactly matches the version
+in `pyproject.toml` and its commit belongs to `main`.
 
 Multi-agent teams require the **target project** to be a git repository because
 every implementation attempt receives a task branch and git worktree. The skill
@@ -425,8 +492,15 @@ your agent normally. Your existing LLM credentials are used as-is.
 the shell command that runs that role. The launcher composes each agent's startup
 prompt into a file and substitutes its path for `{prompt_file}`.
 
+Every cross-functional preset requires a Sceptical Architect. Its protocol
+mapping, roster entry, role brief, and command are validated before any team
+process starts; `SCEPTICAL_ARCHITECT_CMD=null` is a configuration error, not an
+opt-out.
+
 ```
 TEAM_LEAD_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
+PRINCIPAL_ARCHITECT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
+SCEPTICAL_ARCHITECT_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
 BACKEND_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
 REVIEWER_CMD="gemini --yolo \"$(cat '{prompt_file}')\""
 TEAM_DEFAULT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
@@ -441,8 +515,10 @@ Command templates for common CLIs:
 | Gemini CLI | `gemini --yolo "$(cat '{prompt_file}')"` |
 | Any file-reading CLI | `yourcli --prompt-file {prompt_file}` |
 
-**Mixing LLMs is the design intent** — e.g. Claude to lead and architect, Codex to
-implement, Gemini to review for diversity. Same-LLM teams work too.
+**Mixing LLMs is the design intent** — e.g. Claude to lead and own the primary
+architecture position, Codex to challenge it independently and implement, and
+Gemini to review. Use different model families for the two architects when
+possible to reduce correlated reasoning errors. Same-LLM teams still work.
 
 Optional `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, and `TASK_STRONG_CMD` overrides
 route individual task packets by explicit `model-profile:`, conservative risk
@@ -543,7 +619,7 @@ feature status `Resolved`; disabled or unverified delivery remains non-terminal.
 
 | Section | Keys | Purpose |
 |---|---|---|
-| Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
+| Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `SCEPTICAL_ARCHITECT_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
 | Task model routing | `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, `TASK_STRONG_CMD` | Optional task-level command overrides selected from packet metadata and conservative risk classification; each falls back to the role command |
 | Coordination | `TEAMWORK_ROOT` (`.teamwork`), `AGENT_ENV_ALLOWLIST` (non-secret minimum), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`broker`), `EXECUTION` (`sequential`), `MAX_ACTIVE_IMPLEMENTERS` (`null`) | Canonical symlink-free workspace paths; LLMs start with `env -i`; deterministic broker keeps tracker credentials out of every LLM role; event-driven supervision with polling fallback; bounded sequential/parallel scheduling |
 | Worktree provisioning | `WORKTREE_SETUP` | Non-empty setup command run once inside every fresh task worktree through the same sandbox boundary; autonomous mode rejects null/no-op provisioning. |
@@ -817,9 +893,10 @@ These commands use Linear/Jira REST, the `gh` CLI, or Markdown files. The
 adapter docs remain the operation contract; interactive MCP sessions use their
 native tools instead. Comment bodies are never shell arguments.
 
-**The flow every team follows:** the Principal Architect leads (plans with the
-Product Manager, gates each `[task]`'s design before any code, reviews
-architecture) → the dispatcher creates immutable task packets and isolated
+**The flow every team follows:** the Principal Architect leads and owns the
+primary architecture position; the Sceptical Architect independently challenges
+planning and every `[task]` design before code, then supplies a release-bound
+architecture approval → the dispatcher creates immutable task packets and isolated
 worktrees → specialists checkpoint their task branches → the **Senior QA
 Engineer is the final review gate** over an exact review package → the
 integrator validates and merges one task at a time, then idempotently marks it
@@ -902,7 +979,7 @@ diffs title, description, every stable comment (including edits/deletions), and
 adapter-provided normalized attachment metadata, and asks the team-lead for an
 authenticated `[resume-review]` bound to the hold and communication digest.
 `unchanged` may clear the barrier; `requirements-changed` additionally requires
-a later `[resume-plan]` and principal-architect `[design-approved]`;
+a later `[resume-plan]` plus both architect design approvals;
 `needs-human` keeps it closed. The prior worktree must also be clean—dirty work
 is preserved for explicit salvage or quarantine, never discarded. Clearing the
 barrier archives the old claim and starts a fresh numbered attempt from the new
@@ -1085,13 +1162,14 @@ those directories and rechecks their identity plus feature HEAD at apply.
 
 | Preset | Roster | Use when |
 |---|---|---|
-| `full-stack` | Principal Software Architect · Senior Technical PM · Senior Full Stack Engineer · Senior QA | Features cutting through schema, API, and UI — the default |
-| `deep-backend` | Principal Backend Architect · TPM · Senior Staff Engineer · Senior QA | Domain logic, data models, APIs, performance |
-| `deep-frontend` | Principal Frontend Architect · TPM · Senior Frontend Engineer · Senior QA | UI architecture, client state, design systems, a11y |
-| `deep-security` | Principal Security Architect · TPM · Senior Security Engineer · Senior Penetration Tester · Senior QA | Security features & hardening on your own codebase |
-| `deep-infra` | Principal Cloud & Infrastructure Architect · TPM · Senior Cloud Engineer · Senior SRE · Senior QA | Cloud infra, IaC, delivery pipelines, reliability |
+| `full-stack` | Principal Software Architect · Sceptical Architect · Senior Technical PM · Senior Full Stack Engineer · Senior QA | Features cutting through schema, API, and UI — the default |
+| `deep-backend` | Principal Backend Architect · Sceptical Architect · TPM · Senior Staff Engineer · Senior QA | Domain logic, data models, APIs, performance |
+| `deep-frontend` | Principal Frontend Architect · Sceptical Architect · TPM · Senior Frontend Engineer · Senior QA | UI architecture, client state, design systems, a11y |
+| `deep-security` | Principal Security Architect · Sceptical Architect · TPM · Senior Security Engineer · Senior Penetration Tester · Senior QA | Security features & hardening on your own codebase |
+| `deep-infra` | Principal Cloud & Infrastructure Architect · Sceptical Architect · TPM · Senior Cloud Engineer · Senior SRE · Senior QA | Cloud infra, IaC, delivery pipelines, reliability |
 
-Every preset: the **Principal Architect leads**, the **Senior QA Engineer is the
+Every preset: the **Principal Architect leads**, the **Sceptical Architect is an
+independent design and release-evidence gate**, the **Senior QA Engineer is the
 final gate**, and a standard integrator owns serialized feature-branch commits
 and recoverable tracker finalization. Details in
 [`teams/README.md`](teams/README.md).
@@ -1112,9 +1190,9 @@ flowchart LR
     State{"Task state?"}
     Hold["Task-scoped human hold<br/>stop worker · revoke capability"]
     Route{"Opt-in and preset<br/>valid?"}
-    Gates["Lead · Product · Architect<br/>scope and design gates"]
+    Gates["Lead · Product · Two architects<br/>scope and independent design gates"]
     Work["Task-scoped agents<br/>isolated Git worktrees"]
-    Review["Independent review · QA<br/>exact evidence"]
+    Review["Triple independent review · QA<br/>exact bound evidence"]
     Integrate["Integrator<br/>serialized feature branch"]
     Policy{"Release policy and<br/>exact authority pass?"}
     Release["Credential-isolated<br/>release executor"]
@@ -1165,9 +1243,21 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 
 ## Directory map
 
+A source checkout is arranged as below. Runtime entries ship in the operational
+bundle; release-engineering entries are intentionally omitted from project
+skill installations. The Python source distribution contains the marked
+package metadata and CLI source, but not repository-only release automation.
+
 ```
 ├── README.md                         this guide
 ├── SKILL.md                          the operational skill your agent runs
+├── LICENSE                           MIT distribution terms
+├── pyproject.toml                    release source + sdist: package metadata
+├── packaging/                        release repository only
+│   ├── bundle-spec.json              canonical payload and preservation policy
+│   └── build_bundle.py               reproducible exact-commit archive builder
+├── src/startup_factory_cli/          release source + sdist: installer CLI
+├── .github/workflows/                release repository only: package/release CI
 ├── config/
 │   ├── project-management.config.md  ← EDIT: pick tracker, TEAM_MODE, STRICT_STATUS
 │   ├── team.config.md                ← EDIT (teams): role→CLI, timings, VALIDATE_*
@@ -1182,8 +1272,8 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 │   ├── Markdown.md · Linear.md · Jira.md · GitHubIssues.md
 │   └── _TEMPLATE.md                  scaffold for a new tracker
 ├── extensions/tracker-backends/      project-owned custom tracker modules
-├── roles/                            the 7 base protocol roles
-│   └── team-lead · principal-architect · integrator · backend · frontend · qa · reviewer
+├── roles/                            the 8 base protocol roles
+│   └── team-lead · principal-architect · sceptical-architect · integrator · backend · frontend · qa · reviewer
 ├── teams/
 │   ├── README.md · _PLAYBOOK.md      how presets work + shared collaboration flow
 │   ├── full-stack.md · deep-backend.md · deep-frontend.md · deep-security.md · deep-infra.md
@@ -1191,7 +1281,7 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 ├── bin/
 │   ├── launch-team.sh                role and task-instance launcher
 │   ├── process-lifecycle.py          authenticated external process/tmux authority
-│   ├── update-installed-skill.sh     refresh this skill from upstream
+│   ├── update-installed-skill.sh     legacy/source compatibility updater
 │   ├── dispatch.sh · dispatch-plan.py deterministic bounded scheduler
 │   ├── runtime-state.py · task_metadata.py
 │   │                                  event journal, metadata/routing, task packets
@@ -1235,12 +1325,12 @@ exact protocol markers — never invent new ones.
 |---|---|
 | Agent says the tracker is unavailable | Re-check the adapter's *Access mechanisms* (MCP block or exported API-key env vars); the agent stops rather than fabricating — that's by design |
 | `launch-team.sh` can't find a role | The role needs a brief in `roles/` or `teams/roles/`, and its `<ROLE>_CMD` (or `TEAM_DEFAULT_CMD`) must be set |
-| A role won't launch in a preset | It's likely `<ROLE>_CMD=null` (explicitly disabled). Remove the line to fall back to `TEAM_DEFAULT_CMD` |
+| A role won't launch in a preset | An optional role may have `<ROLE>_CMD=null`; remove the line to fall back to `TEAM_DEFAULT_CMD`. The Sceptical Architect is mandatory, so its missing/duplicate mapping, absent roster entry, null command, or missing fallback rejects the whole team before launch. |
 | No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
 | `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
 | Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead applies the recovery ladder, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md`. A `[Blocked]` task is intentionally human-held and never changed outbound by automation. |
 | An eligible queued task never launches | Confirm automation is enabled and scheduled, the scriptable adapter has an exact scope, the task does not carry an `ignoredTaskLabels` value such as `human-work`, and `team-preset` is absent or exactly one allowed preset. If `requireMetadataOptIn` is true, also confirm the latest metadata says `automation: enabled`; conflicting or unordered metadata deliberately pauses. |
-| A human moved `[Blocked]` to queued but no fresh attempt starts | Inspect the generated resume-review request. A broker-authenticated `[resume-review]` must bind its exact hold and communication digest; changed requirements also need a later `[resume-plan]` and `[design-approved]`, and the prior worktree must be clean. |
+| A human moved `[Blocked]` to queued but no fresh attempt starts | Inspect the generated resume-review request. A broker-authenticated `[resume-review]` must bind its exact hold and communication digest; changed requirements also need a later `[resume-plan]` and both architect design approvals, and the prior worktree must be clean. |
 | `--print-cron` rejects the scan interval | Conventional cron output supports minute divisors of 60 and whole-hour divisors of 24. Use a service timer or hosted scheduler for cadences such as seven minutes |
 | `another live pass owns the monitor lease` | One healthy pass is already running on this host. Do not start a second scheduler; multi-host operation needs a distributed lock or adapter-native compare-and-set |
 | Release waits for product acceptance | Publish a current feature-scope `[product-approval]` bound to the exact final feature HEAD and integration-evidence digest; stale or ambiguous evidence cannot release |
@@ -1261,6 +1351,8 @@ product-management architecture, developed by Thomas Jespersen.
 ## License
 
 MIT License
+
+The canonical license file is [`LICENSE`](LICENSE).
 
 Copyright (c) 2026 ExecMatchAi
 

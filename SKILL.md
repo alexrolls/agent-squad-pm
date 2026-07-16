@@ -22,7 +22,7 @@ skill's directory):
 - `roles/<role>.md` + `config/team.config.md` + `bin/launch-team.sh` — the agent team
 - `bin/tracker-ops.sh` — ergonomic CLI for recurring tracker operations (scriptable mechanisms)
 - `extensions/tracker-backends/<Tool>.py` — project-owned primitive port for a custom tracker
-- `bin/update-installed-skill.sh` — install or refresh the complete upstream bundle while preserving project config
+- `bin/update-installed-skill.sh` — install or refresh a legacy/source-managed bundle while preserving project config
 - `bin/runtime-state.py` + `bin/task-packet.sh` — durable events, PM projections,
   and minimal task-local context
 - `bin/task-hold.py` — task-scoped `[Blocked]` holds, communication snapshots,
@@ -43,8 +43,26 @@ If the user asks to "fetch latest Startup Factory", "update startup-factory skil
 "sync this skill from upstream", or equivalent, do this before the normal mandatory
 preparation:
 
-1. Run the updater from this installed skill's own `bin/` directory. It updates
-   the containing project/global skill directory when that directory is not a
+1. Use the versioned release CLI for an installation that contains
+   `.startup-factory-install.json`. With `uvx` it verifies the
+   embedded canonical bundle and updates the selected project directory
+   transactionally:
+
+   ```bash
+   uvx startup-factory@latest update --agent codex
+   uvx startup-factory@latest update --agent claude-code
+   ```
+
+   Use an exact package version instead of `@latest` when the user names one or
+   the environment requires a reviewed pin.
+
+   `pipx run startup-factory update --agent <agent>` is the equivalent fallback.
+   If neither isolated runner is available, do not replace this step with the
+   shell updater: install a runner or ask the operator how to proceed.
+2. For a legacy/source installation (one without release bundle/provenance
+   metadata), run the updater from this installed skill's own `bin/` directory.
+   It updates the
+   containing project/global skill directory when that directory is not a
    standalone Startup Factory source checkout. Common project paths are:
 
    ```bash
@@ -54,17 +72,18 @@ preparation:
 
    If this skill is installed somewhere else, run the same script with
    `--install-dir <path-to-installed-skill>`.
-2. Keep the default config-preserving behavior unless the user explicitly asks to
+3. Keep the default config-preserving behavior unless the user explicitly asks to
    replace project config. Existing project-management, team, statuses, automation,
    deployment, and guardrails config files under `config/` are preserved, as are
    project-owned files under the documented `adapters/`, `extensions/`, and
    `teams/` extension points. An installed ownership manifest distinguishes
    custom files from retired upstream files. The updater validates the source
    and destination before synchronization.
-3. Do not substitute `npx skills update`: the generic updater does not preserve
+4. Do not substitute `npx skills update`: the generic updater does not preserve
    Startup Factory's project-specific config, and current repository-root installs
    omit the required sibling bundle directories.
-4. Report the script's target path and git status/diff summary. Do not commit unless
+5. Report the selected release version/source commit, target path, and plan or
+   diff summary. Do not commit unless
    the user asks.
 
 ## Mandatory Preparation (every invocation)
@@ -147,8 +166,9 @@ each generic operation through the adapter's *Operations* table:
   authenticated `[resume-review]`. Re-read the complete description, comments,
   communication history, and normalized attachment metadata; never reuse the
   old worker's context. Changed requirements additionally require a
-  later `[resume-plan]` and `[design-approved]`; a dirty prior worktree keeps the
-  hold closed. A cleared hold launches a fresh attempt. Human movement directly
+  later `[resume-plan]`, `[design-approved]`, and
+  `[sceptical-design-approved]`; a dirty prior worktree keeps the hold closed. A
+  cleared hold launches a fresh attempt. Human movement directly
   to working/review means manual takeover, never automatic resumption.
 - **When `STRICT_STATUS=true`, verify the current status before writing** and that the
   intended move is in its `transitions` list. If not, pull the andon cord instead of
@@ -181,9 +201,13 @@ each generic operation through the adapter's *Operations* table:
   ambiguous, missing, or later-pushed-back evidence waits and routes the product
   role. This workflow marker still grants no production authority by itself.
 - **Code review is package-bound.** Review requests bind the exact merge-base,
-  task-branch HEAD, and generated package digest. Both independent approvals
-  bind that request digest; any branch movement forces a new request and new
-  approvals before integration.
+  task-branch HEAD, and generated package digest. Reviewer, principal architect,
+  and sceptical architect approvals independently bind that request digest; any
+  branch movement forces a new request and all new approvals before integration.
+- **The Sceptical Architect is mandatory in team mode.** Every cross-functional
+  preset must map and roster exactly one independent Sceptical Architect with a
+  resolvable command. It cannot be disabled; launch, dispatch, publication, and
+  integration fail closed if its mapping is absent, duplicated, or malformed.
 - **Only the release executor closes a [feature].** Disabled, waiting, denied,
   failed, or rolled-back production delivery remains non-terminal and visible.
 - **No LLM owns time.** Cron/service timers call one bounded, protected external

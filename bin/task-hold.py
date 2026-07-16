@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
 from outbox_capability import CapabilityError, verify_published_entry
 from broker_evidence import EvidenceError, verify_delivery
 
@@ -31,10 +34,13 @@ MARKER_ROLES = {
     "dependency-hold": "team-lead",
     "design-approved": "principal-architect",
     "design-pushback": "principal-architect",
+    "sceptical-design-approved": "sceptical-architect",
+    "sceptical-design-pushback": "sceptical-architect",
 }
 PROTOCOL_ROLE_KEYS = {
     "team-lead": "PROTOCOL_TEAM_LEAD",
     "principal-architect": "PROTOCOL_PRINCIPAL_ARCHITECT",
+    "sceptical-architect": "PROTOCOL_SCEPTICAL_ARCHITECT",
 }
 
 
@@ -342,6 +348,8 @@ HOLD_RESOLUTION_MARKERS = {
     "resume-plan",
     "design-approved",
     "design-pushback",
+    "sceptical-design-approved",
+    "sceptical-design-pushback",
 }
 
 
@@ -698,7 +706,19 @@ def changed_requirements_approved(
     pushback = marker_index(
         repository, workspace, team, feature, task, "design-pushback"
     )
-    return design > review_index and approved > design and pushback < approved
+    sceptical_approved = marker_index(
+        repository, workspace, team, feature, task, "sceptical-design-approved"
+    )
+    sceptical_pushback = marker_index(
+        repository, workspace, team, feature, task, "sceptical-design-pushback"
+    )
+    return (
+        design > review_index
+        and approved > design
+        and pushback < approved
+        and sceptical_approved > design
+        and sceptical_pushback < sceptical_approved
+    )
 
 
 def previous_worktree_clean(workspace: Path, task_id: str) -> tuple[bool, str | None]:
@@ -817,7 +837,8 @@ def write_resume_request(
             "```",
             "",
             "For `requirements-changed`, require a later [resume-plan] and",
-            "[design-approved] before this hold can clear. A dirty prior worktree must",
+            "both [design-approved] and [sceptical-design-approved] before this hold",
+            "can clear. A dirty prior worktree must",
             "be quarantined or salvaged explicitly; never discard it silently.",
         ]
     ) + "\n"

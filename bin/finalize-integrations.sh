@@ -359,7 +359,7 @@ def files(body,marker):
 raw=subprocess.run(["git","-c","core.hooksPath=/dev/null","-c","core.fsmonitor=false","diff","--name-only","-z",
                     data["reviewBaseCommit"]+".."+data["taskBranchHead"]],cwd=repo,capture_output=True,env=env,check=True).stdout
 actual={item.decode("utf-8","surrogateescape") for item in raw.split(b"\0") if item}
-for marker in ("review-request","review-approval","architecture-approval"):
+for marker in ("review-request","review-approval","architecture-approval","sceptical-architecture-approval"):
     if files(str(comments[positions[marker]].get("body") or ""),marker)!=actual: fail("[%s] Files evidence mismatch"%marker)
 snapshot_digest="sha256:"+hashlib.sha256(snapshot.read_bytes()).hexdigest()
 # This second read is intentionally adjacent to the authorization journal
@@ -867,6 +867,32 @@ expected_txid = "integration-" + hashlib.sha256(tx_canonical).hexdigest()[:32]
 if data.get("transactionId") != expected_txid:
     fail("transaction id does not match immutable integration material")
 
+# Preset structure is authorization state, so validate the mandatory
+# independent gate even in --validate-only mode. A fresh tracker snapshot below
+# additionally binds the current approval signature to this concrete role.
+preset = workspace / "preset.env"
+expected_signers = {"SCEPTICAL_ARCHITECT": "sceptical-architect"}
+try:
+    preset_info = preset.lstat()
+except FileNotFoundError:
+    preset_info = None
+except OSError as exc:
+    fail("cannot inspect team preset: %s" % exc)
+if preset_info is not None:
+    if preset.is_symlink() or not stat.S_ISREG(preset_info.st_mode) or preset_info.st_size > 1024 * 1024:
+        fail("team preset must be a bounded non-symlink regular file")
+    preset_text = preset.read_text()
+    expected_signers = {}
+    for protocol_name in ("REVIEWER", "PRINCIPAL_ARCHITECT", "SCEPTICAL_ARCHITECT"):
+        matches = re.findall(r"^PROTOCOL_%s=([^\r\n]+)$" % protocol_name, preset_text, re.M)
+        if len(matches) > 1:
+            fail("team preset contains duplicate PROTOCOL_%s" % protocol_name)
+        if matches:
+            expected_signers[protocol_name] = matches[0].strip()
+    mandatory_sceptical = expected_signers.get("SCEPTICAL_ARCHITECT")
+    if not mandatory_sceptical or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", mandatory_sceptical):
+        fail("team preset must define one valid mandatory PROTOCOL_SCEPTICAL_ARCHITECT")
+
 if snapshot_raw:
     try:
         payload = json.load(open(snapshot_raw))
@@ -893,9 +919,10 @@ if snapshot_raw:
     request = positions.get("review-request", -1)
     review = positions.get("review-approval", -1)
     architecture = positions.get("architecture-approval", -1)
+    sceptical = positions.get("sceptical-architecture-approval", -1)
     findings = positions.get("review-findings", -1)
-    if request < 0 or review <= request or architecture <= request or findings > request:
-        fail("fresh tracker state is no longer dual-approved")
+    if request < 0 or review <= request or architecture <= request or sceptical <= request or findings > request:
+        fail("fresh tracker state is no longer independently triple-approved")
     try:
         evidence_digest = validate_review_evidence(
             payload,
@@ -936,7 +963,7 @@ if snapshot_raw:
             fail("completed transaction lacks its broker-owned durable event")
 
     # The existing protocol exposes Files: lists on the request and approvals.
-    # Bind all three to the exact base..reviewed-head Git file set.
+    # Bind the request and all three approvals to the exact reviewed Git file set.
     def file_list(body, marker):
         match = re.search(r"(?mi)^\s*Files:\s*([^\n]+)$", body)
         if not match:
@@ -952,26 +979,29 @@ if snapshot_raw:
     if actual_raw.returncode:
         fail("cannot calculate exact reviewed file set")
     actual_files = {item.decode("utf-8", "surrogateescape") for item in actual_raw.stdout.split(b"\0") if item}
-    for marker, index in (("review-request", request), ("review-approval", review), ("architecture-approval", architecture)):
+    for marker, index in (
+        ("review-request", request),
+        ("review-approval", review),
+        ("architecture-approval", architecture),
+        ("sceptical-architecture-approval", sceptical),
+    ):
         if file_list(str(comments[index].get("body") or ""), marker) != actual_files:
             fail("[%s] Files: evidence does not equal the exact reviewed Git file set" % marker)
 
-    preset = workspace / "preset.env"
-    if preset.is_file() and not preset.is_symlink():
-        preset_text = preset.read_text()
-        for protocol_name, marker_name, marker_index in (
-            ("REVIEWER", "review-approval", review),
-            ("PRINCIPAL_ARCHITECT", "architecture-approval", architecture),
-        ):
-            match = re.search(r"^PROTOCOL_%s=(.+)$" % protocol_name, preset_text, re.M)
-            if not match:
-                continue
-            signer_match = re.search(
-                r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$",
-                str(comments[marker_index].get("body") or "").strip(),
-            )
-            if not signer_match or signer_match.group(1) != match.group(1).strip():
-                fail("current %s signer does not match preset protocol gate" % marker_name)
+    for protocol_name, marker_name, marker_index in (
+        ("REVIEWER", "review-approval", review),
+        ("PRINCIPAL_ARCHITECT", "architecture-approval", architecture),
+        ("SCEPTICAL_ARCHITECT", "sceptical-architecture-approval", sceptical),
+    ):
+        expected_signer = expected_signers.get(protocol_name)
+        if expected_signer is None:
+            continue
+        signer_match = re.search(
+            r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$",
+            str(comments[marker_index].get("body") or "").strip(),
+        )
+        if not signer_match or signer_match.group(1) != expected_signer:
+            fail("current %s signer does not match mandatory protocol gate" % marker_name)
 
 worktree = Path(data["worktree"])
 if worktree.exists():

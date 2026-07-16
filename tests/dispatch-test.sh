@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # dispatch smoke test: offline, Markdown adapter, stub agent commands.
 set -euo pipefail
+
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -8,6 +15,8 @@ check() { local desc="$1"; shift
   if "$@" >/dev/null 2>&1; then echo "ok: $desc"; else echo "FAIL: $desc"; FAILURES=$((FAILURES+1)); fi; }
 
 cd "$TMP"; git init -q repo && cd repo
+git config user.email test@example.com
+git config user.name Test
 git commit -q --allow-empty -m init; git checkout -q -b feat-team
 LIFECYCLE_ROOT="$TMP/protected-lifecycle"
 mkdir -m 700 "$LIFECYCLE_ROOT"
@@ -37,7 +46,7 @@ VALIDATE_TEST=null
 VALIDATE_LINT=null
 ```
 EOF
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
 DISPATCH=".claude/skills/pm/bin/dispatch.sh"
 
 mkdir -p feat
@@ -53,6 +62,8 @@ cat > feat/feature.md <<'EOF'
 > [review-approval] files ok — reviewer
 
 > [architecture-approval] files ok — principal-architect
+
+> [sceptical-architecture-approval] files ok — sceptical-architect
 
 ## 2 Blocked thing [Blocked]
 
@@ -90,6 +101,8 @@ Independent.
 > [review-approval] files ok — reviewer
 
 > [architecture-approval] files ok — principal-architect
+
+> [sceptical-architecture-approval] files ok — sceptical-architect
 EOF
 FID="feat/feature.md"
 
@@ -100,10 +113,22 @@ echo "$plan" | grep -q "keep $FID#2 \[Blocked\].*human-held" \
   || { echo "FAIL: blocked task was not held: $plan"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch reviewer" && echo "ok: plans reviewer queue" || { echo "FAIL: reviewer queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch principal-architect" && echo "ok: plans PA queue" || { echo "FAIL: PA queue"; FAILURES=$((FAILURES+1)); }
+echo "$plan" | grep -q "launch sceptical-architect" && echo "ok: plans independent architecture queue" || { echo "FAIL: sceptical queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch team-lead" && echo "ok: plans lead (Planned #5)" || { echo "FAIL: lead launch"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch integrator" && echo "ok: plans integrator merge queue (#6)" || { echo "FAIL: integrator queue"; FAILURES=$((FAILURES+1)); }
 check "dry-run does not move status" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
 check "dry-run launches nothing"     test ! -d .teamwork/feat-team/pids
+
+mkdir -p .teamwork/feat-missing-sceptical
+printf 'PRESET=full-stack\nPROTOCOL_TEAM_LEAD=principal-software-architect\n' \
+  > .teamwork/feat-missing-sceptical/preset.env
+if missing_sceptical_out="$(TEAM_RUNNER=background "$DISPATCH" feat-missing-sceptical "$FID" --once --dry-run 2>&1)"; then
+  echo "FAIL: dispatch accepted a preset without its mandatory Sceptical Architect"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$missing_sceptical_out" | grep -q 'must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT'; then
+  echo "ok: dispatch refuses a preset missing the mandatory Sceptical Architect"
+else
+  echo "FAIL: missing mandatory dispatch gate produced wrong error: $missing_sceptical_out"; FAILURES=$((FAILURES+1))
+fi
 
 # -- PM-supervisor label policy excludes human-owned work but keeps siblings --
 cat > feat/human-work.md <<'EOF'
@@ -123,6 +148,9 @@ files: src/manual.py
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 
 ## 2 Automatic implementation [Planned]
 
@@ -137,6 +165,9 @@ files: src/automatic.py
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 EOF
 HUMAN_FID="feat/human-work.md"
 human_plan="$(STARTUP_FACTORY_IGNORED_TASK_LABELS_JSON='["human-work"]' TEAM_RUNNER=background "$DISPATCH" feat-human-team "$HUMAN_FID" --once --dry-run)"
@@ -159,6 +190,7 @@ else
 fi
 check "reviewer queue in mailbox"    grep -rq "$FID#3" .teamwork/feat-team/mailbox/reviewer/
 check "PA queue in mailbox"          grep -rq "$FID#4" .teamwork/feat-team/mailbox/principal-architect/
+check "sceptical queue in mailbox"   grep -rq "$FID#4" .teamwork/feat-team/mailbox/sceptical-architect/
 check "reviewer launched"            test -f .teamwork/feat-team/pids/reviewer.pid
 
 # -- agent-writable PID text is not a liveness authority -----------------------
@@ -218,6 +250,7 @@ mkdir -p ".teamwork/$PRODUCT_TEAM"
 cat > ".teamwork/$PRODUCT_TEAM/preset.env" <<'EOF'
 PRESET=full-stack
 PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 EOF
 python3 - "$PRODUCT_FID" ".teamwork/$PRODUCT_TEAM/product-acceptance-request.json" ".claude/skills/pm/bin" <<'PY'
@@ -269,7 +302,7 @@ echo "$fallback_plan" | grep -q "launch team-lead" \
 # Inject REVIEWER_CMD=null into the fixture config so the reviewer role is disabled.
 printf '\nREVIEWER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
 # Restore task 3 to [Review] in case earlier blocks altered it.
-sed -i '' 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
+sed_i 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
 # Clear reviewer pid and mailbox so this is a clean slate for the assertion.
 rm -rf .teamwork/feat-team/pids/reviewer.pid .teamwork/feat-team/mailbox/reviewer
 null_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once)"
@@ -278,7 +311,7 @@ echo "$null_out" | grep -q "skipped (REVIEWER_CMD=null" \
 check "null-CMD: reviewer.pid not created" test ! -f .teamwork/feat-team/pids/reviewer.pid
 check "null-CMD: reviewer mailbox not written" test ! -d .teamwork/feat-team/mailbox/reviewer
 # Remove the injected line to leave the config clean for any future assertions.
-sed -i '' '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
+sed_i '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
 
 # -- tracker comments cannot grant automated authority to leave Blocked -------
 cat > feat/human-held.md <<'EOF'
@@ -309,6 +342,8 @@ track: backend
 
 > [design-approved] approved — principal-architect
 
+> [sceptical-design-approved] approved — sceptical-architect
+
 ## 4 Potential dependent [Planned]
 
 **Assignee:** —
@@ -319,6 +354,8 @@ track: backend
 > [design-note] ready — backend
 
 > [design-approved] approved — principal-architect
+
+> [sceptical-design-approved] approved — sceptical-architect
 EOF
 HELD_FID="feat/human-held.md"
 held_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-human-held "$HELD_FID" --once --dry-run)"
@@ -396,6 +433,7 @@ cat > .teamwork/feat-preset-team/preset.env <<'EOF'
 PRESET=full-stack
 PROTOCOL_TEAM_LEAD=principal-software-architect
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
 PROTOCOL_REVIEWER=senior-qa-engineer
 PROTOCOL_QA=senior-qa-engineer
 PROTOCOL_INTEGRATOR=integrator
@@ -431,6 +469,8 @@ Done.
 
 > [architecture-approval] LGTM — principal-software-architect
 
+> [sceptical-architecture-approval] LGTM — sceptical-architect
+
 ## 3 Preset QA approved [Review]
 
 **Assignee:** senior-full-stack-engineer
@@ -440,6 +480,8 @@ Done.
 > [review-approval] LGTM — senior-qa-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
+
+> [sceptical-architecture-approval] LGTM — sceptical-architect
 EOF
 SIG_FID="feat/signer-test.md"
 mkdir -p .teamwork/feat-signer-team
@@ -447,6 +489,7 @@ cat > .teamwork/feat-signer-team/preset.env <<'EOF'
 PRESET=full-stack
 PROTOCOL_TEAM_LEAD=principal-software-architect
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
 PROTOCOL_REVIEWER=senior-qa-engineer
 PROTOCOL_QA=senior-qa-engineer
 PROTOCOL_INTEGRATOR=integrator
@@ -483,6 +526,8 @@ cat > feat/ml-signer-test.md <<'EOF'
 
 > [architecture-approval] LGTM — principal-software-architect
 
+> [sceptical-architecture-approval] LGTM — sceptical-architect
+
 ## 2 Multiline generic reviewer [Review]
 
 **Assignee:** senior-full-stack-engineer
@@ -494,6 +539,8 @@ cat > feat/ml-signer-test.md <<'EOF'
 > — reviewer
 
 > [architecture-approval] LGTM — principal-software-architect
+
+> [sceptical-architecture-approval] LGTM — sceptical-architect
 
 ## 3 As-role suffix [Review]
 
@@ -507,6 +554,8 @@ cat > feat/ml-signer-test.md <<'EOF'
 
 > [architecture-approval] LGTM — principal-software-architect
 
+> [sceptical-architecture-approval] LGTM — sceptical-architect
+
 ## 4 Posted-by suffix [Review]
 
 **Assignee:** senior-full-stack-engineer
@@ -518,6 +567,8 @@ cat > feat/ml-signer-test.md <<'EOF'
 > — senior-qa-engineer (posted by team-lead)
 
 > [architecture-approval] LGTM — principal-software-architect
+
+> [sceptical-architecture-approval] LGTM — sceptical-architect
 EOF
 ML_FID="feat/ml-signer-test.md"
 mkdir -p .teamwork/feat-ml-team
@@ -525,6 +576,7 @@ cat > .teamwork/feat-ml-team/preset.env <<'EOF'
 PRESET=full-stack
 PROTOCOL_TEAM_LEAD=principal-software-architect
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
 PROTOCOL_REVIEWER=senior-qa-engineer
 PROTOCOL_QA=senior-qa-engineer
 PROTOCOL_INTEGRATOR=integrator
@@ -566,6 +618,9 @@ resources: schema:a
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 
 ## 2 Backend B [Planned]
 
@@ -581,6 +636,9 @@ resources: schema:b
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 
 ## 3 Conflicts with A [Planned]
 
@@ -596,9 +654,12 @@ resources: schema:c
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 EOF
 PAR_FID=feat/parallel-test.md
-sed -i '' 's/^EXECUTION=sequential$/EXECUTION=parallel/' .claude/skills/pm/config/team.config.md
+sed_i 's/^EXECUTION=sequential$/EXECUTION=parallel/' .claude/skills/pm/config/team.config.md
 printf 'MAX_ACTIVE_IMPLEMENTERS=2\n' >> .claude/skills/pm/config/team.config.md
 PAR_TEAM=feat-parallel-team
 parallel_plan="$(TEAM_RUNNER=background "$DISPATCH" "$PAR_TEAM" "$PAR_FID" --once --dry-run)"
@@ -621,6 +682,9 @@ parallel-safe: false
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 
 ## 2 Otherwise parallel safe [Planned]
 
@@ -635,6 +699,9 @@ files: src/safe.py
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 EOF
 UNSAFE_FID=feat/unsafe-test.md
 unsafe_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-unsafe-team "$UNSAFE_FID" --once --dry-run)"
@@ -644,7 +711,7 @@ if echo "$unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
 else
   echo "ok: unsafe task remains exclusive within its wave"
 fi
-sed -i '' -e 's/^## 1 Exclusive migration \[Planned\]$/## 1 Exclusive migration [Active]/' \
+sed_i -e 's/^## 1 Exclusive migration \[Planned\]$/## 1 Exclusive migration [Active]/' \
   -e '/^## 1 Exclusive migration /,/^## 2 /s/^\*\*Assignee:\*\* —$/**Assignee:** backend/' "$UNSAFE_FID"
 active_unsafe_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-unsafe-team "$UNSAFE_FID" --once --dry-run)"
 if echo "$active_unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
@@ -659,7 +726,7 @@ check "parallel task 2 becomes Active" grep -q '^## 2 Backend B \[Active\]$' "$P
 check "conflicting task remains Planned" grep -q '^## 3 Conflicts with A \[Planned\]$' "$PAR_FID"
 check "same role gets two isolated worktrees" test "$(find ".teamwork/$PAR_TEAM/worktrees" -maxdepth 1 -type d -name 'backend#1-*' | wc -l | tr -d ' ')" -ge 2
 check "two execution records persisted" test "$(find ".teamwork/$PAR_TEAM/executions" -type f -name '*.json' | wc -l | tr -d ' ')" -ge 2
-sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
+sed_i '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
 
 # -- a first successful claim advances the feature lifecycle -----------------
 cat > feat/activation-test.md <<'EOF'
@@ -678,6 +745,9 @@ files: src/activation.py
 >
 > [design-approved] round 1
 > - principal-architect
+>
+> [sceptical-design-approved] round 1
+> - sceptical-architect
 EOF
 ACT_FID=feat/activation-test.md
 git branch feat-activation-team
@@ -780,16 +850,16 @@ EOF
 RK_FID="feat/rk-test.md"
 
 # Unquoted key with inline comment: Python int(STUCK_AFTER_MINUTES) must succeed
-sed -i '' 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=7   # inline comment/' .claude/skills/pm/config/team.config.md
+sed_i 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=7   # inline comment/' .claude/skills/pm/config/team.config.md
 if TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once --dry-run >/dev/null 2>&1; then
   echo "ok: read_key: unquoted value with inline comment parses clean (int(7) ok)"
 else
   echo "FAIL: read_key: inline comment not stripped — Python int() threw ValueError"; FAILURES=$((FAILURES+1))
 fi
-sed -i '' 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/config/team.config.md
+sed_i 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/config/team.config.md
 
 # Quoted key with outer inline comment: CMD must still be executable (inner content preserved)
-sed -i '' 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
+sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
 TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once >/dev/null 2>&1 || true
 sleep 0.2
 if [ -f .teamwork/feat-rk-team/pids/reviewer.log ] && \
@@ -798,7 +868,7 @@ if [ -f .teamwork/feat-rk-team/pids/reviewer.log ] && \
 else
   echo "FAIL: read_key: quoted CMD broken by outer-comment stripping (or reviewer not launched)"; FAILURES=$((FAILURES+1))
 fi
-sed -i '' 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"|' .claude/skills/pm/config/team.config.md
+sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"|' .claude/skills/pm/config/team.config.md
 
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }

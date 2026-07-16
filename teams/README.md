@@ -14,9 +14,10 @@ unchanged — a specialized role always states which protocol role(s) it acts as
 | Deep Security | `deep-security.md` | Security features, hardening, threat-model-driven work on your own codebase |
 | Deep Infra | `deep-infra.md` | Cloud infrastructure, delivery pipelines, reliability and operability |
 
-Every team follows the two fixed rules: **the Principal Architect leads** (as the
-`team-lead` + `principal-architect` protocol roles) and **the Senior QA Engineer
-is the final review gate** before the standard `integrator` merges.
+Every team follows three fixed rules: **the Principal Architect leads** (as the
+`team-lead` + `principal-architect` protocol roles), **the Sceptical Architect is
+an independent design and release gate**, and **the Senior QA Engineer is the
+final review gate** before the standard `integrator` merges.
 
 ## Use a team
 
@@ -25,7 +26,8 @@ is the final review gate** before the standard `integrator` merges.
    `TEAM_DEFAULT_CMD` — roles with no `<ROLE>_CMD` key of their own fall back to
    it, so you don't need a key per role. Add `<ROLE>_CMD` (e.g.
    `SENIOR_STAFF_ENGINEER_CMD`) only to pin a specific CLI to a specific role; set
-   it explicitly to `null` to disable the role (a `team` launch skips it). Pick
+   it explicitly to `null` to disable an optional role (a `team` launch skips
+   it). The Sceptical Architect is mandatory and cannot be disabled. Pick
    `EXECUTION` too: `sequential` (default — one [task] worker in flight at a
    time) or `parallel` (dependency/resource-safe waves bounded by
    `MAX_ACTIVE_IMPLEMENTERS`). Both modes isolate every attempt on a task branch
@@ -63,7 +65,10 @@ is the final review gate** before the standard `integrator` merges.
 - **New team:** copy an existing team file; keep the section shape — charter,
   `ROSTER=` line (space-separated role names the launcher resolves), roster
   table with protocol mappings, team-specific review stages, launch line.
-  Include `integrator` in every roster. Optionally declare a review mode
+  Include exactly one `PROTOCOL_SCEPTICAL_ARCHITECT` mapping and its concrete
+  role in every roster, plus `integrator`; the launcher rejects the preset
+  before any team process starts if the mandatory architect is missing,
+  duplicated, disabled, or unlaunchable. Optionally declare a review mode
   (`REVIEW_MODE=sequential|parallel|tiered` — see `_PLAYBOOK.md` → *Review
   modes*; absent = `sequential`).
 - **Identity:** specialized roles sign with their specialized name everywhere;
