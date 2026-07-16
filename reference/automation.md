@@ -18,7 +18,7 @@ cron / service timer
 `--once` is the scheduler primitive. `--watch` is a convenience for a dedicated
 host. The `scan` call is discovery-only and requests `observeStatusKinds`, which
 must be exactly the semantic `queued` and `blocked` kinds; the shipped board maps
-those task kinds to Linear `Todo`/`Blocked`. `launchStatusKinds` is separately
+those task kinds to Linear `ToDo`/`Blocked`. `launchStatusKinds` is separately
 fixed to `queued`, so observation never becomes authority to start Blocked work.
 Before grouping or routing, the supervisor excludes every task
 whose labels case-insensitively match `ignoredTaskLabels` (shipped value:
@@ -97,7 +97,7 @@ call that safe.
 
 `scanIntervalMinutes` controls how often the board is scanned. It must be an
 integer from 1 through 1440 and defaults to `3` when omitted, so the standard
-configuration checks Todo/queued and Blocked work every three minutes. Existing
+configuration checks ToDo/queued and Blocked work every three minutes. Existing
 external configs that specify only `pollSeconds` remain supported for migration;
 setting both fields is rejected as ambiguous.
 
@@ -358,9 +358,9 @@ pointer cannot redirect production source provenance.
 - The detached worker enforces the separate `releaseTimeoutSeconds` deadline so
   provider apply/verify hooks may use longer bounded timeouts without blocking
   board scans. It must exceed the entire configured
-  plan/attestation/status/apply/verify/rollback path. Startup refuses an enabled
-  deployment when the outer deadline is shorter than that conservative sum;
-  the shipped default is 7200 seconds.
+  plan/three-CI-verifications/attestation/status/apply/verify/rollback path.
+  Startup refuses an enabled deployment when the outer deadline is shorter
+  than that conservative sum; the shipped default is 7200 seconds.
 - The run registry is atomically replaced and reconstructs unfinished work.
 - `maxFeaturesPerPass` bounds cold starts; existing eligible runs are reconciled first.
 - A failed adapter read, malformed record, preflight, claim, or launch stops the

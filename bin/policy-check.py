@@ -43,7 +43,10 @@ DENY_COMMAND_PATTERNS = (
     (r"\b(?:base64|openssl)\b[^\n]*(?:-d|--decode)\b", "encoded command bypass is forbidden"),
 )
 
-ALLOWED_ACTIONS = {"deploy.plan", "deploy.status", "deploy.verify", "approval.verify", "delivery.verify"}
+ALLOWED_ACTIONS = {
+    "deploy.plan", "deploy.status", "deploy.verify", "approval.verify",
+    "delivery.verify", "ci.verify",
+}
 PREAUTH_ACTIONS = {"deploy.apply", "deploy.rollback"}
 PLAN_ACTIONS = {"CREATE", "READ", "UPDATE", "REPLACE", "DELETE"}
 RESOURCE_CLASSES = {

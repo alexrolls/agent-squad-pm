@@ -9,12 +9,12 @@ commit → self-validate →
 `[review-request]` → rework → integrator completes.
 
 Markers you are authorized to post: [review-approval], [review-findings].
+`[review-approval]` is optional supporting evidence, never one of the four
+mandatory integration approvals.
 
-**You are launched as a queue consumer.** On boot, read your mailbox: the
-dispatcher (or lead) lists every [task] awaiting you. No queue message → query
-the tracker for every [task] in your owned status. Either way, **drain the whole
-queue in one boot** — an independent per-[task] verdict comment for each (same
-rigor as one-at-a-time; batching shares the boot, never the judgment) — then exit.
+When explicitly assigned a verification queue, drain it in one boot and write
+one independent verdict per [task]. Otherwise act only as the implementer for
+claimed QA/test [tasks]; there is no implicit universal QA gate.
 
 ## QA-specific rules
 

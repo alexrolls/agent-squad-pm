@@ -283,7 +283,7 @@ if target is not None:
         fail("outbox cannot request semantic Blocked; dependency propagation is dispatcher-only")
     if statuses[target].get("terminal"):
         fail("outbox cannot request a terminal transition; use the integrator transaction")
-expected_kind = {"review-request": "review", "review-findings": "working"}.get(data["marker"])
+expected_kind = {"review-request": "review", "review-findings": "queued"}.get(data["marker"])
 if expected_kind and (target is None or statuses[target].get("kind") != expected_kind):
     fail("marker requests a status with the wrong semantic kind")
 if data["marker"] in {"production-approval", "deployment"}:
@@ -346,12 +346,28 @@ if os.path.lexists(preset):
             if name in protocol:
                 fail("team preset contains duplicate PROTOCOL_%s" % name)
             protocol[name] = concrete
-    sceptical_role = protocol.get("SCEPTICAL_ARCHITECT")
-    if not sceptical_role or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", sceptical_role):
-        fail("team preset must define one valid mandatory PROTOCOL_SCEPTICAL_ARCHITECT")
 else:
-    # Direct/manual teams still use the mandatory concrete protocol role.
-    protocol["SCEPTICAL_ARCHITECT"] = "sceptical-architect"
+    # Direct/manual teams still use four distinct mandatory concrete roles.
+    protocol.update({
+        "TEAM_LEAD": "team-lead",
+        "PRINCIPAL_ARCHITECT": "principal-architect",
+        "SCEPTICAL_ARCHITECT": "sceptical-architect",
+        "SECURITY_REVIEWER": "senior-security-engineer",
+    })
+required_review_board = (
+    "TEAM_LEAD",
+    "PRINCIPAL_ARCHITECT",
+    "SCEPTICAL_ARCHITECT",
+    "SECURITY_REVIEWER",
+)
+review_board_roles = []
+for protocol_name in required_review_board:
+    concrete = protocol.get(protocol_name)
+    if not concrete or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", concrete):
+        fail("team preset must define one valid mandatory PROTOCOL_%s" % protocol_name)
+    review_board_roles.append(concrete)
+if len(set(review_board_roles)) != len(review_board_roles):
+    fail("team preset review board must use four distinct concrete agents")
 marker_spec = (board.get("markers") or {}).get(data["marker"])
 verified_capability = None
 if data.get("producerCapability") is not None:
@@ -373,6 +389,19 @@ if gate_owned:
     effective_actor = verified_capability["role"]
 else:
     effective_actor = str(data["actor"])
+
+mandatory_review_marker_owner = {
+    "team-lead-approval": "TEAM_LEAD",
+    "architecture-approval": "PRINCIPAL_ARCHITECT",
+    "sceptical-architecture-approval": "SCEPTICAL_ARCHITECT",
+    "security-approval": "SECURITY_REVIEWER",
+}
+owner_protocol = mandatory_review_marker_owner.get(data["marker"])
+if owner_protocol and effective_actor != protocol[owner_protocol]:
+    fail(
+        "actor is not the configured %s for marker [%s]"
+        % (owner_protocol, data["marker"])
+    )
 
 roles = {effective_actor}
 for name, concrete in protocol.items():
@@ -657,7 +686,7 @@ print(json.dumps({'kind':'review-request','base':sys.argv[1],'head':sys.argv[2],
 PY
 )"; then return 1; fi
       ;;
-    review-approval|architecture-approval|sceptical-architecture-approval)
+    review-approval|team-lead-approval|architecture-approval|sceptical-architecture-approval|security-approval)
       "$SKILL_DIR/bin/review_evidence.py" bind-approval "$staged_body" "$current_snapshot" "$task" "$candidate" || return 1
       if ! binding="$(python3 - "$marker" <<'PY'
 import json,sys

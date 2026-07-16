@@ -59,11 +59,13 @@ cat > feat/feature.md <<'EOF'
 
 > [review-request] round 1
 
-> [review-approval] files ok — reviewer
+> [team-lead-approval] files ok — team-lead
 
 > [architecture-approval] files ok — principal-architect
 
 > [sceptical-architecture-approval] files ok — sceptical-architect
+
+> [security-approval] files ok — senior-security-engineer
 
 ## 2 Blocked thing [Blocked]
 
@@ -98,11 +100,13 @@ Independent.
 
 > [review-request] round 1 — backend
 
-> [review-approval] files ok — reviewer
+> [team-lead-approval] files ok — team-lead
 
 > [architecture-approval] files ok — principal-architect
 
 > [sceptical-architecture-approval] files ok — sceptical-architect
+
+> [security-approval] files ok — senior-security-engineer
 EOF
 FID="feat/feature.md"
 
@@ -111,23 +115,43 @@ plan="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
 echo "$plan" | grep -q "keep $FID#2 \[Blocked\].*human-held" \
   && echo "ok: plans human-held block" \
   || { echo "FAIL: blocked task was not held: $plan"; FAILURES=$((FAILURES+1)); }
-echo "$plan" | grep -q "launch reviewer" && echo "ok: plans reviewer queue" || { echo "FAIL: reviewer queue"; FAILURES=$((FAILURES+1)); }
+echo "$plan" | grep -q "launch senior-security-engineer" && echo "ok: plans security-review queue" || { echo "FAIL: security-review queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch principal-architect" && echo "ok: plans PA queue" || { echo "FAIL: PA queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch sceptical-architect" && echo "ok: plans independent architecture queue" || { echo "FAIL: sceptical queue"; FAILURES=$((FAILURES+1)); }
-echo "$plan" | grep -q "launch team-lead" && echo "ok: plans lead (Planned #5)" || { echo "FAIL: lead launch"; FAILURES=$((FAILURES+1)); }
+echo "$plan" | grep -q "launch team-lead" && echo "ok: plans team-lead review and Planned-task supervision" || { echo "FAIL: lead launch"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch integrator" && echo "ok: plans integrator merge queue (#6)" || { echo "FAIL: integrator queue"; FAILURES=$((FAILURES+1)); }
 check "dry-run does not move status" grep -q '^## 2 Blocked thing \[Blocked\]$' "$FID"
 check "dry-run launches nothing"     test ! -d .teamwork/feat-team/pids
 
 mkdir -p .teamwork/feat-missing-sceptical
-printf 'PRESET=full-stack\nPROTOCOL_TEAM_LEAD=principal-software-architect\n' \
-  > .teamwork/feat-missing-sceptical/preset.env
+cat > .teamwork/feat-missing-sceptical/preset.env <<'EOF'
+PRESET=full-stack
+PROTOCOL_TEAM_LEAD=team-lead
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
+EOF
 if missing_sceptical_out="$(TEAM_RUNNER=background "$DISPATCH" feat-missing-sceptical "$FID" --once --dry-run 2>&1)"; then
   echo "FAIL: dispatch accepted a preset without its mandatory Sceptical Architect"; FAILURES=$((FAILURES+1))
 elif printf '%s' "$missing_sceptical_out" | grep -q 'must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT'; then
   echo "ok: dispatch refuses a preset missing the mandatory Sceptical Architect"
 else
   echo "FAIL: missing mandatory dispatch gate produced wrong error: $missing_sceptical_out"; FAILURES=$((FAILURES+1))
+fi
+
+mkdir -p .teamwork/feat-duplicate-review-board
+cat > .teamwork/feat-duplicate-review-board/preset.env <<'EOF'
+PRESET=full-stack
+PROTOCOL_TEAM_LEAD=team-lead
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
+PROTOCOL_SECURITY_REVIEWER=team-lead
+EOF
+if duplicate_review_out="$(TEAM_RUNNER=background "$DISPATCH" feat-duplicate-review-board "$FID" --once --dry-run 2>&1)"; then
+  echo "FAIL: dispatch accepted duplicate concrete agents on the mandatory review board"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$duplicate_review_out" | grep -q 'review board must use four distinct concrete agents'; then
+  echo "ok: dispatch refuses duplicate concrete agents on the mandatory review board"
+else
+  echo "FAIL: duplicate review board produced wrong error: $duplicate_review_out"; FAILURES=$((FAILURES+1))
 fi
 
 # -- PM-supervisor label policy excludes human-owned work but keeps siblings --
@@ -188,16 +212,16 @@ if grep -q 'Auto-unblocked by dispatcher' "$FID"; then
 else
   echo "ok: dispatcher leaves no auto-unblock comment"
 fi
-check "reviewer queue in mailbox"    grep -rq "$FID#3" .teamwork/feat-team/mailbox/reviewer/
+check "security queue in mailbox"    grep -rq "$FID#3" .teamwork/feat-team/mailbox/senior-security-engineer/
 check "PA queue in mailbox"          grep -rq "$FID#4" .teamwork/feat-team/mailbox/principal-architect/
 check "sceptical queue in mailbox"   grep -rq "$FID#4" .teamwork/feat-team/mailbox/sceptical-architect/
-check "reviewer launched"            test -f .teamwork/feat-team/pids/reviewer.pid
+check "security reviewer launched"   test -f .teamwork/feat-team/pids/senior-security-engineer.pid
 
 # -- agent-writable PID text is not a liveness authority -----------------------
 mkdir -p .teamwork/feat-team/pids
-echo $$ > .teamwork/feat-team/pids/reviewer.pid
+echo $$ > .teamwork/feat-team/pids/senior-security-engineer.pid
 plan2="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
-echo "$plan2" | grep -q "launch reviewer" \
+echo "$plan2" | grep -q "launch senior-security-engineer" \
   && echo "ok: workspace PID spoof cannot suppress protected liveness lookup" \
   || { echo "FAIL: workspace PID spoof affected dedup"; FAILURES=$((FAILURES+1)); }
 
@@ -220,8 +244,8 @@ EOF
 plan4="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once --dry-run)"
 echo "$plan4" | grep -q "anomalous" \
   && echo "ok: anomalous [Review] routed to team-lead" || { echo "FAIL: anomalous [Review] not in lead detail"; FAILURES=$((FAILURES+1)); }
-echo "$plan4" | grep "launch reviewer" | grep -q "#7" \
-  && { echo "FAIL: #7 incorrectly in reviewer queue"; FAILURES=$((FAILURES+1)); } || echo "ok: #7 not in reviewer queue"
+echo "$plan4" | grep "launch senior-security-engineer" | grep -q "#7" \
+  && { echo "FAIL: #7 incorrectly in security-review queue"; FAILURES=$((FAILURES+1)); } || echo "ok: #7 not in security-review queue"
 echo "$plan4" | grep "launch principal-architect" | grep -q "#7" \
   && { echo "FAIL: #7 incorrectly in PA queue"; FAILURES=$((FAILURES+1)); } || echo "ok: #7 not in PA queue"
 
@@ -250,7 +274,9 @@ mkdir -p ".teamwork/$PRODUCT_TEAM"
 cat > ".teamwork/$PRODUCT_TEAM/preset.env" <<'EOF'
 PRESET=full-stack
 PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-architect
 PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 EOF
 python3 - "$PRODUCT_FID" ".teamwork/$PRODUCT_TEAM/product-acceptance-request.json" ".claude/skills/pm/bin" <<'PY'
@@ -299,19 +325,20 @@ echo "$fallback_plan" | grep -q "launch team-lead" \
   || { echo "FAIL: missing product-role fallback: $fallback_plan"; FAILURES=$((FAILURES+1)); }
 
 # -- null-CMD: skips launch instead of dying, no mailbox written ---------------
-# Inject REVIEWER_CMD=null into the fixture config so the reviewer role is disabled.
-printf '\nREVIEWER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
+# Inject SENIOR_SECURITY_ENGINEER_CMD=null into the fixture config so the
+# security-review role is disabled for this direct/manual dispatch fixture.
+printf '\nSENIOR_SECURITY_ENGINEER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
 # Restore task 3 to [Review] in case earlier blocks altered it.
 sed_i 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
-# Clear reviewer pid and mailbox so this is a clean slate for the assertion.
-rm -rf .teamwork/feat-team/pids/reviewer.pid .teamwork/feat-team/mailbox/reviewer
+# Clear security-review pid and mailbox so this is a clean slate for the assertion.
+rm -rf .teamwork/feat-team/pids/senior-security-engineer.pid .teamwork/feat-team/mailbox/senior-security-engineer
 null_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once)"
-echo "$null_out" | grep -q "skipped (REVIEWER_CMD=null" \
-  && echo "ok: null-CMD reviewer skipped" || { echo "FAIL: null-CMD reviewer not skipped"; FAILURES=$((FAILURES+1)); }
-check "null-CMD: reviewer.pid not created" test ! -f .teamwork/feat-team/pids/reviewer.pid
-check "null-CMD: reviewer mailbox not written" test ! -d .teamwork/feat-team/mailbox/reviewer
+echo "$null_out" | grep -q "skipped (SENIOR_SECURITY_ENGINEER_CMD=null" \
+  && echo "ok: null-CMD security reviewer skipped" || { echo "FAIL: null-CMD security reviewer not skipped"; FAILURES=$((FAILURES+1)); }
+check "null-CMD: security-reviewer pid not created" test ! -f .teamwork/feat-team/pids/senior-security-engineer.pid
+check "null-CMD: security-reviewer mailbox not written" test ! -d .teamwork/feat-team/mailbox/senior-security-engineer
 # Remove the injected line to leave the config clean for any future assertions.
-sed_i '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
+sed_i '/^SENIOR_SECURITY_ENGINEER_CMD=null$/d' .claude/skills/pm/config/team.config.md
 
 # -- tracker comments cannot grant automated authority to leave Blocked -------
 cat > feat/human-held.md <<'EOF'
@@ -431,10 +458,10 @@ PT_FID="feat/preset-test.md"
 mkdir -p .teamwork/feat-preset-team
 cat > .teamwork/feat-preset-team/preset.env <<'EOF'
 PRESET=full-stack
-PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
 PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
-PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
 PROTOCOL_QA=senior-qa-engineer
 PROTOCOL_INTEGRATOR=integrator
 PROTOCOL_BACKEND=senior-full-stack-engineer
@@ -459,88 +486,96 @@ cat > feat/signer-test.md <<'EOF'
 
 Done.
 
-## 2 Generic reviewer [Review]
+## 2 Wrong security signer [Review]
 
 **Assignee:** senior-full-stack-engineer
 
 > [review-request] ready — senior-full-stack-engineer
 
-> [review-approval] LGTM — reviewer
+> [team-lead-approval] LGTM — team-lead
 
 > [architecture-approval] LGTM — principal-software-architect
 
 > [sceptical-architecture-approval] LGTM — sceptical-architect
 
-## 3 Preset QA approved [Review]
+> [security-approval] LGTM — reviewer
+
+## 3 Security reviewer approved [Review]
 
 **Assignee:** senior-full-stack-engineer
 
 > [review-request] ready — senior-full-stack-engineer
 
-> [review-approval] LGTM — senior-qa-engineer
+> [team-lead-approval] LGTM — team-lead
 
 > [architecture-approval] LGTM — principal-software-architect
 
 > [sceptical-architecture-approval] LGTM — sceptical-architect
+
+> [security-approval] LGTM — senior-security-engineer
 EOF
 SIG_FID="feat/signer-test.md"
 mkdir -p .teamwork/feat-signer-team
 cat > .teamwork/feat-signer-team/preset.env <<'EOF'
 PRESET=full-stack
-PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
 PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
-PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
 PROTOCOL_QA=senior-qa-engineer
 PROTOCOL_INTEGRATOR=integrator
 PROTOCOL_BACKEND=senior-full-stack-engineer
 PROTOCOL_FRONTEND=senior-full-stack-engineer
 EOF
 signer_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-signer-team "$SIG_FID" --once --dry-run 2>&1)"
-echo "$signer_plan" | grep -q "signed by 'reviewer', expected preset final gate 'senior-qa-engineer'" \
-  && echo "ok: generic reviewer: warning printed" \
+echo "$signer_plan" | grep -q "\\[security-approval\\] signed by 'reviewer', expected mandatory gate 'senior-security-engineer'" \
+  && echo "ok: wrong security signer: warning printed" \
   || { echo "FAIL: no signer warning in: $signer_plan"; FAILURES=$((FAILURES+1)); }
 echo "$signer_plan" | grep "launch integrator" | grep -qv "signer-test.*#2" \
-  && echo "ok: generic reviewer: task 2 not in merge queue" \
+  && echo "ok: wrong security signer: task 2 not in merge queue" \
   || { echo "FAIL: task 2 incorrectly in merge queue"; FAILURES=$((FAILURES+1)); }
 echo "$signer_plan" | grep -q "launch integrator.*signer-test.*#3" \
-  && echo "ok: preset QA (task 3) unlocks integrator" \
+  && echo "ok: correct four-party signers unlock integrator" \
   || { echo "FAIL: integrator not in plan or missing task 3; plan: $signer_plan"; FAILURES=$((FAILURES+1)); }
 echo "$signer_plan" | grep -q "launch team-lead" \
-  && echo "ok: generic reviewer: team-lead notified" \
+  && echo "ok: signer anomaly notifies team-lead" \
   || { echo "FAIL: team-lead not in plan"; FAILURES=$((FAILURES+1)); }
 
-# -- D2.4: multiline [review-approval] with signer on last line ----------------
+# -- D2.4: multiline [security-approval] with signer on last line --------------
 cat > feat/ml-signer-test.md <<'EOF'
 # Multiline Signer Test [Active]
 
-## 1 Multiline QA approved [Review]
+## 1 Multiline security approved [Review]
 
 **Assignee:** senior-full-stack-engineer
 
 > [review-request] ready — senior-full-stack-engineer
 
-> [review-approval] round 1
-> verdict: approved
-> — senior-qa-engineer
+> [team-lead-approval] LGTM — team-lead
 
 > [architecture-approval] LGTM — principal-software-architect
 
 > [sceptical-architecture-approval] LGTM — sceptical-architect
 
-## 2 Multiline generic reviewer [Review]
+> [security-approval] round 1
+> verdict: approved
+> — senior-security-engineer
+
+## 2 Multiline wrong security signer [Review]
 
 **Assignee:** senior-full-stack-engineer
 
 > [review-request] ready — senior-full-stack-engineer
 
-> [review-approval] round 1
+> [team-lead-approval] LGTM — team-lead
+
+> [architecture-approval] LGTM — principal-software-architect
+
+> [sceptical-architecture-approval] LGTM — sceptical-architect
+
+> [security-approval] round 1
 > verdict: approved
 > — reviewer
-
-> [architecture-approval] LGTM — principal-software-architect
-
-> [sceptical-architecture-approval] LGTM — sceptical-architect
 
 ## 3 As-role suffix [Review]
 
@@ -548,13 +583,15 @@ cat > feat/ml-signer-test.md <<'EOF'
 
 > [review-request] ready — senior-full-stack-engineer
 
-> [review-approval] round 1
-> verdict: approved
-> — senior-qa-engineer (as reviewer)
+> [team-lead-approval] LGTM — team-lead
 
 > [architecture-approval] LGTM — principal-software-architect
 
 > [sceptical-architecture-approval] LGTM — sceptical-architect
+
+> [security-approval] round 1
+> verdict: approved
+> — senior-security-engineer (as security-reviewer)
 
 ## 4 Posted-by suffix [Review]
 
@@ -562,22 +599,24 @@ cat > feat/ml-signer-test.md <<'EOF'
 
 > [review-request] ready — senior-full-stack-engineer
 
-> [review-approval] round 1
-> verdict: approved
-> — senior-qa-engineer (posted by team-lead)
+> [team-lead-approval] LGTM — team-lead
 
 > [architecture-approval] LGTM — principal-software-architect
 
 > [sceptical-architecture-approval] LGTM — sceptical-architect
+
+> [security-approval] round 1
+> verdict: approved
+> — senior-security-engineer (posted by team-lead)
 EOF
 ML_FID="feat/ml-signer-test.md"
 mkdir -p .teamwork/feat-ml-team
 cat > .teamwork/feat-ml-team/preset.env <<'EOF'
 PRESET=full-stack
-PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
 PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
-PROTOCOL_REVIEWER=senior-qa-engineer
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
 PROTOCOL_QA=senior-qa-engineer
 PROTOCOL_INTEGRATOR=integrator
 PROTOCOL_BACKEND=senior-full-stack-engineer
@@ -585,17 +624,17 @@ PROTOCOL_FRONTEND=senior-full-stack-engineer
 EOF
 ml_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-ml-team "$ML_FID" --once --dry-run 2>&1)"
 echo "$ml_plan" | grep -q "launch integrator.*ml-signer.*#1" \
-  && echo "ok: multiline QA approval unlocks integrator" \
-  || { echo "FAIL: multiline QA approval did not unlock integrator; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
+  && echo "ok: multiline security approval unlocks integrator" \
+  || { echo "FAIL: multiline security approval did not unlock integrator; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
 echo "$ml_plan" | grep "launch integrator" | grep -q "ml-signer.*#2" \
-  && { echo "FAIL: multiline generic reviewer: task 2 incorrectly in merge queue"; FAILURES=$((FAILURES+1)); } \
-  || echo "ok: multiline generic reviewer: task 2 not in merge queue"
-echo "$ml_plan" | grep -q "signed by 'reviewer'.*expected preset final gate 'senior-qa-engineer'" \
-  && echo "ok: multiline generic reviewer: signer warning printed" \
-  || { echo "FAIL: no signer warning for multiline generic reviewer; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
+  && { echo "FAIL: multiline wrong security signer: task 2 incorrectly in merge queue"; FAILURES=$((FAILURES+1)); } \
+  || echo "ok: multiline wrong security signer: task 2 not in merge queue"
+echo "$ml_plan" | grep -q "\\[security-approval\\] signed by 'reviewer'.*expected mandatory gate 'senior-security-engineer'" \
+  && echo "ok: multiline wrong security signer: warning printed" \
+  || { echo "FAIL: no warning for multiline wrong security signer; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
 echo "$ml_plan" | grep -q "launch integrator.*ml-signer.*#3" \
-  && echo "ok: (as reviewer) suffix: signer accepted, integrator unlocked" \
-  || { echo "FAIL: (as reviewer) suffix not accepted; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
+  && echo "ok: (as security-reviewer) suffix: signer accepted, integrator unlocked" \
+  || { echo "FAIL: (as security-reviewer) suffix not accepted; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
 echo "$ml_plan" | grep -q "launch integrator.*ml-signer.*#4" \
   && echo "ok: (posted by team-lead) suffix: signer accepted, integrator unlocked" \
   || { echo "FAIL: (posted by team-lead) suffix not accepted; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
@@ -862,11 +901,11 @@ sed_i 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/conf
 sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
 TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once >/dev/null 2>&1 || true
 sleep 0.2
-if [ -f .teamwork/feat-rk-team/pids/reviewer.log ] && \
-   ! grep -q "command not found\|unexpected EOF\|not found" .teamwork/feat-rk-team/pids/reviewer.log 2>/dev/null; then
+if [ -f .teamwork/feat-rk-team/pids/senior-security-engineer.log ] && \
+   ! grep -q "command not found\|unexpected EOF\|not found" .teamwork/feat-rk-team/pids/senior-security-engineer.log 2>/dev/null; then
   echo "ok: read_key: quoted CMD with outer inline comment ran cleanly (inner preserved)"
 else
-  echo "FAIL: read_key: quoted CMD broken by outer-comment stripping (or reviewer not launched)"; FAILURES=$((FAILURES+1))
+  echo "FAIL: read_key: quoted CMD broken by outer-comment stripping (or security reviewer not launched)"; FAILURES=$((FAILURES+1))
 fi
 sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"|' .claude/skills/pm/config/team.config.md
 

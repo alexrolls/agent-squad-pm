@@ -344,31 +344,43 @@ def main() -> None:
     review_status = by_kind.get("review", "Review")
     blocked_status = by_kind.get("blocked", "Blocked")
 
-    protocol_reviewer = None
-    # Generic/manual teams use the concrete protocol role. Preset teams must
-    # override it exactly once; a missing mapping would make the mandatory
-    # independent gate spoofable or silently optional.
+    protocol_team_lead = "team-lead"
+    protocol_principal_architect = "principal-architect"
     protocol_sceptical_architect = "sceptical-architect"
+    protocol_security_reviewer = "senior-security-engineer"
     protocol_product_manager = None
     try:
         preset_text = read_regular_at(workdir_fd, "preset.env", "team preset", 1024 * 1024)
     except FileNotFoundError:
         preset_text = None
     if preset_text is not None:
-        match = re.search(r"^PROTOCOL_REVIEWER=(.+)$", preset_text, re.M)
-        protocol_reviewer = match.group(1) if match else None
-        sceptical_matches = re.findall(
-            r"^PROTOCOL_SCEPTICAL_ARCHITECT=([^\r\n]+)$", preset_text, re.M
-        )
-        if len(sceptical_matches) != 1:
-            raise RuntimeError(
-                "team preset must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT"
+        required_protocol_roles = {
+            "TEAM_LEAD": "team-lead",
+            "PRINCIPAL_ARCHITECT": "principal-architect",
+            "SCEPTICAL_ARCHITECT": "sceptical-architect",
+            "SECURITY_REVIEWER": "senior-security-engineer",
+        }
+        resolved_protocol_roles: dict[str, str] = {}
+        for key, fallback in required_protocol_roles.items():
+            matches = re.findall(
+                rf"^PROTOCOL_{key}=([^\r\n]+)$", preset_text, re.M
             )
-        protocol_sceptical_architect = sceptical_matches[0].strip()
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", protocol_sceptical_architect):
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"team preset must define exactly one mandatory PROTOCOL_{key}"
+                )
+            value = matches[0].strip()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", value):
+                raise RuntimeError(f"team preset has an invalid mandatory PROTOCOL_{key}")
+            resolved_protocol_roles[key] = value or fallback
+        if len(set(resolved_protocol_roles.values())) != len(required_protocol_roles):
             raise RuntimeError(
-                "team preset has an invalid mandatory PROTOCOL_SCEPTICAL_ARCHITECT"
+                "team preset review board must use four distinct concrete agents"
             )
+        protocol_team_lead = resolved_protocol_roles["TEAM_LEAD"]
+        protocol_principal_architect = resolved_protocol_roles["PRINCIPAL_ARCHITECT"]
+        protocol_sceptical_architect = resolved_protocol_roles["SCEPTICAL_ARCHITECT"]
+        protocol_security_reviewer = resolved_protocol_roles["SECURITY_REVIEWER"]
         match = re.search(r"^PROTOCOL_PRODUCT_MANAGER=(.+)$", preset_text, re.M)
         protocol_product_manager = match.group(1) if match and match.group(1) != "null" else None
 
@@ -446,7 +458,17 @@ def main() -> None:
             task, "sceptical-design-approved", "sceptical-design-pushback"
         )
     ]
-    review_queue, architecture_queue, sceptical_architecture_queue, merge_queue, anomalies = [], [], [], [], []
+    team_lead_review_queue, architecture_queue, sceptical_architecture_queue = [], [], []
+    security_queue, merge_queue, anomalies = [], [], []
+
+    def approval_signer(task: dict, index: int) -> str | None:
+        body = str((task.get("comments") or [])[index].get("body") or "")
+        signature = re.search(
+            r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$",
+            body.strip(),
+        )
+        return signature.group(1) if signature else None
+
     for task in tasks:
         if task.get("status") != review_status:
             continue
@@ -461,41 +483,47 @@ def main() -> None:
         if findings > request:
             anomalies.append(task_id)
             continue
-        review_approval = last(task, "review-approval")
+        team_lead_approval = last(task, "team-lead-approval")
         architecture_approval = last(task, "architecture-approval")
         sceptical_approval = last(task, "sceptical-architecture-approval")
-        if review_approval > request and architecture_approval > request and sceptical_approval > request:
-            if protocol_reviewer:
-                body = str((task.get("comments") or [])[review_approval].get("body") or "")
-                signature = re.search(r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$", body.strip())
-                signer = signature.group(1) if signature else None
-                if signer != protocol_reviewer:
+        security_approval = last(task, "security-approval")
+        approvals = {
+            "team-lead-approval": (team_lead_approval, protocol_team_lead),
+            "architecture-approval": (
+                architecture_approval,
+                protocol_principal_architect,
+            ),
+            "sceptical-architecture-approval": (
+                sceptical_approval,
+                protocol_sceptical_architect,
+            ),
+            "security-approval": (security_approval, protocol_security_reviewer),
+        }
+        if all(index > request for index, _ in approvals.values()):
+            invalid = False
+            for marker_name, (index, expected_signer) in approvals.items():
+                signer = approval_signer(task, index)
+                if signer != expected_signer:
                     anomalies.append(task_id)
                     print(
-                        "dispatch: warning - %s [review-approval] signed by '%s', expected preset final gate '%s'"
-                        % (task_id, signer, protocol_reviewer),
+                        "dispatch: warning - %s [%s] signed by '%s', expected mandatory gate '%s'"
+                        % (task_id, marker_name, signer, expected_signer),
                         file=sys.stderr,
                     )
-                    continue
-            body = str((task.get("comments") or [])[sceptical_approval].get("body") or "")
-            signature = re.search(r"(?:\u2014|-)\s*([\w-]+)(?:\s*\((?:posted by[^)]*|as [^)]+)\))?\s*$", body.strip())
-            signer = signature.group(1) if signature else None
-            if signer != protocol_sceptical_architect:
-                anomalies.append(task_id)
-                print(
-                    "dispatch: warning - %s [sceptical-architecture-approval] signed by '%s', expected mandatory gate '%s'"
-                    % (task_id, signer, protocol_sceptical_architect),
-                    file=sys.stderr,
-                )
+                    invalid = True
+                    break
+            if invalid:
                 continue
             merge_queue.append(task_id)
         else:
-            if review_approval <= request:
-                review_queue.append(task_id)
+            if team_lead_approval <= request:
+                team_lead_review_queue.append(task_id)
             if architecture_approval <= request:
                 architecture_queue.append(task_id)
             if sceptical_approval <= request:
                 sceptical_architecture_queue.append(task_id)
+            if security_approval <= request:
+                security_queue.append(task_id)
 
     # The release executor creates this exact request only after recomputing the
     # closed integration chain.  Tracker containers are not uniformly
@@ -566,13 +594,27 @@ def main() -> None:
             ),
             "|".join(sceptical_architecture_queue),
         )
-    if review_queue:
-        emit("launch", "reviewer", "Dispatch queue - [Review]: %s. Drain every item and exit." % ", ".join(review_queue), "|".join(review_queue))
+    if security_queue:
+        emit(
+            "launch",
+            protocol_security_reviewer,
+            "Dispatch queue - independent security reviews: %s. Drain every item and exit."
+            % ", ".join(security_queue),
+            "|".join(security_queue),
+        )
+    if team_lead_review_queue:
+        emit(
+            "launch",
+            "team-lead",
+            "Dispatch queue - final quality reviews: %s. Drain every item and exit."
+            % ", ".join(team_lead_review_queue),
+            "|".join(team_lead_review_queue),
+        )
     if merge_queue:
         emit(
             "launch",
             "integrator",
-            "Dispatch queue - independently triple-approved, integrate in dependency order: %s."
+            "Dispatch queue - independently four-party-approved, integrate in dependency order: %s."
             % ", ".join(merge_queue),
             "|".join(merge_queue),
         )
@@ -657,6 +699,10 @@ def main() -> None:
         and (
             not task.get("assignee")
             or (hold_entry(str(task["taskId"])) or {}).get("state") == "resumed"
+            or (
+                last(task, "review-request") >= 0
+                and last(task, "review-findings") > last(task, "review-request")
+            )
         )
         and blockers_terminal(task)
     ]
@@ -696,7 +742,24 @@ def main() -> None:
         role = data["track"] if data["track"] in {"backend", "frontend", "qa"} else "backend"
         attempt = 1
         resumed = (hold_entry(task_id) or {}).get("state") == "resumed"
-        if resumed:
+        rework = (
+            last(task, "review-request") >= 0
+            and last(task, "review-findings") > last(task, "review-request")
+        )
+        if rework:
+            previous = execution_identity(
+                executions_fd, workdir, args.team, args.feature, task_id
+            )
+            if previous is None:
+                constrained.append(task_id + " (rework lacks durable execution identity)")
+                continue
+            role, previous_attempt = previous
+            if task.get("assignee") and str(task["assignee"]) != role:
+                raise RuntimeError(
+                    "rework task assignee conflicts with its durable execution identity"
+                )
+            attempt = previous_attempt + 1
+        elif resumed:
             previous = execution_identity(
                 executions_fd, workdir, args.team, args.feature, task_id
             )

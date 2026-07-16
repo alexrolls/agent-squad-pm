@@ -114,6 +114,34 @@ json.dump({
 },sys.stdout)
 PY
     ;;
+  ci)
+    commit="$1"
+    [ "${FAKE_CI_STATE:-green}" = "green" ] || {
+      printf 'ci:%s\n' "${FAKE_CI_STATE:-unknown}" >> "$FAKE_LOG"
+      exit 5
+    }
+    python3 - "$commit" <<'PY'
+import json,sys
+from datetime import datetime,timedelta,timezone
+commit=sys.argv[1]
+completed=datetime.now(timezone.utc)
+json.dump({
+  "schemaVersion":1,
+  "green":True,
+  "commit":commit,
+  "provider":"fixture-ci",
+  "pipelineId":"fixture-pipeline-"+commit[:16],
+  "requiredChecks":["build","test","security"],
+  "successfulChecks":["build","test","security"],
+  "failedChecks":[],
+  "pendingChecks":[],
+  "skippedChecks":[],
+  "completedAt":completed.isoformat(timespec="seconds"),
+  "expiresAt":(completed+timedelta(minutes=10)).isoformat(timespec="seconds"),
+},sys.stdout)
+PY
+    printf 'ci:green\n' >> "$FAKE_LOG"
+    ;;
   attest)
     feature_digest="$1"; team="$2"; commit="$3"; source_digest="$4"; evidence="$5"; product="$6"
     python3 - "$feature_digest" "$team" "$commit" "$source_digest" "$evidence" "$product" <<'PY'
@@ -180,6 +208,7 @@ json.dump({
   "stateRoot":state_root,
   "approvalTtlSeconds":900,
   "deliveryAttestationTtlSeconds":900,
+  "ciAttestationTtlSeconds":900,
   "planningIsolation":{
     "enforced":True,"provider":"fixture-planning-sandbox","separateIdentity":True,
     "credentialPathsUnmounted":True,"statePathsUnmounted":True,"productionEgress":False
@@ -191,21 +220,22 @@ json.dump({
   "trustedPath":"/usr/bin:/bin",
   "credentialEnvFile":credentials,
   "credentialEnvironmentAllowlist":["FAKE_SECRET"],
-  "planningEnvironmentAllowlist":["PATH","TMPDIR","LANG","FAKE_LOG","FAKE_PLAN_FAIL"],
+  "planningEnvironmentAllowlist":["PATH","TMPDIR","LANG","FAKE_LOG","FAKE_PLAN_FAIL","FAKE_CI_STATE"],
   "trackerEnvironmentAllowlist":["PATH","TMPDIR","LANG","TRACKER_ADAPTER"],
   "environmentAllowlist":["PATH","TMPDIR","LANG","FAKE_STATE","FAKE_LOG","FAKE_VERIFY_FAIL","FAKE_REOPEN_BEFORE_APPLY","FAKE_REOPEN_FEATURE_PATH"],
   "trustedCodeDigests":trusted,
-  "trustedHookDigests":{name:digest(hook) for name in ["plan","apply","status","verify","rollback","verifyDelivery"]},
+  "trustedHookDigests":{name:digest(hook) for name in ["plan","apply","status","verify","rollback","verifyCi","verifyDelivery"]},
   "hooks":{
     "plan":[hook,"plan","{plan_file}","{commit}","{environment}","{target_id}","{source_archive_digest}"],
     "apply":[hook,"apply","{release_id}","{artifact_digest}","{authorization_expires_at}"],
     "status":[hook,"status","{release_id}"],
     "verify":[hook,"verify","{release_id}","{artifact_digest}"],
     "rollback":[hook,"rollback","{release_id}","{plan_file}"],
+    "verifyCi":[hook,"ci","{commit}"],
     "verifyDelivery":[hook,"attest","{feature_id_digest}","{team}","{commit}","{source_archive_digest}","{integration_evidence_digest}","{product_acceptance_digest}"],
     "verifyApproval":None
   },
-  "timeoutsSeconds":{"plan":30,"apply":30,"status":30,"verify":30,"rollback":30,"verifyDelivery":30,"verifyApproval":30}
+  "timeoutsSeconds":{"plan":30,"apply":30,"status":30,"verify":30,"rollback":30,"verifyCi":30,"verifyDelivery":30,"verifyApproval":30}
 },open(path,"w"))
 PY
 
@@ -258,7 +288,8 @@ EOF
   git -C "$wt" add app.txt
   git -C "$wt" commit -qm 'task checkpoint'
   local package base head package_digest snapshot request_template request_body
-  local review_template review_body architecture_template architecture_body sceptical_template sceptical_body
+  local team_lead_template team_lead_body architecture_template architecture_body
+  local sceptical_template sceptical_body security_template security_body
   package="$(cd "$repo" && "$ROOT/bin/review-package.sh" "$team" "$tid")"
   base="$(sed -n 's/^Base: //p' "$package")"
   head="$(sed -n 's/^Head: //p' "$package")"
@@ -270,12 +301,14 @@ PY
   snapshot="$repo/.teamwork/$team/tasks.json"
   request_template="$TMP/$key-review-request-template.md"
   request_body="$TMP/$key-review-request.md"
-  review_template="$TMP/$key-review-template.md"
-  review_body="$TMP/$key-review.md"
+  team_lead_template="$TMP/$key-team-lead-template.md"
+  team_lead_body="$TMP/$key-team-lead.md"
   architecture_template="$TMP/$key-architecture-template.md"
   architecture_body="$TMP/$key-architecture.md"
   sceptical_template="$TMP/$key-sceptical-template.md"
   sceptical_body="$TMP/$key-sceptical.md"
+  security_template="$TMP/$key-security-template.md"
+  security_body="$TMP/$key-security.md"
   printf '[review-request] round: 2\nFiles: app.txt\n\n— backend\n' > "$request_template"
   python3 "$ROOT/bin/review_evidence.py" bind-request \
     "$request_template" "$base" "$head" "$package_digest" "$request_body"
@@ -283,21 +316,26 @@ PY
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$request_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
-  printf '[review-approval] round: 2\nFiles: app.txt\n\n— reviewer\n' > "$review_template"
+  printf '[team-lead-approval] round: 2\nFiles: app.txt\n\n— team-lead\n' > "$team_lead_template"
   printf '[architecture-approval] round: 2\nFiles: app.txt\n\n— principal-architect\n' > "$architecture_template"
   printf '[sceptical-architecture-approval] round: 2\nFiles: app.txt\n\n— sceptical-architect\n' > "$sceptical_template"
+  printf '[security-approval] round: 2\nFiles: app.txt\n\n— senior-security-engineer\n' > "$security_template"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$review_template" "$snapshot" "$tid" "$review_body"
+    "$team_lead_template" "$snapshot" "$tid" "$team_lead_body"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
     "$architecture_template" "$snapshot" "$tid" "$architecture_body"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
     "$sceptical_template" "$snapshot" "$tid" "$sceptical_body"
+  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+    "$security_template" "$snapshot" "$tid" "$security_body"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$review_body" >/dev/null)
+    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$architecture_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$sceptical_body" >/dev/null)
+  (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
+    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$security_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
@@ -344,7 +382,9 @@ files: generation-2.txt
 > - principal-architect
 EOF
   local tid="$fid#2" key branch wt package base head package_digest snapshot
-  local request_template request_body review_template review_body architecture_template architecture_body sceptical_template sceptical_body
+  local request_template request_body team_lead_template team_lead_body
+  local architecture_template architecture_body sceptical_template sceptical_body
+  local security_template security_body
   key="$(python3 "$ROOT/bin/runtime-state.py" key "$tid")"
   branch="agent-task/$team/$key"
   wt="$(cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
@@ -365,12 +405,14 @@ PY
   snapshot="$repo/.teamwork/$team/tasks.json"
   request_template="$TMP/$key-generation-request-template.md"
   request_body="$TMP/$key-generation-request.md"
-  review_template="$TMP/$key-generation-review-template.md"
-  review_body="$TMP/$key-generation-review.md"
+  team_lead_template="$TMP/$key-generation-team-lead-template.md"
+  team_lead_body="$TMP/$key-generation-team-lead.md"
   architecture_template="$TMP/$key-generation-architecture-template.md"
   architecture_body="$TMP/$key-generation-architecture.md"
   sceptical_template="$TMP/$key-generation-sceptical-template.md"
   sceptical_body="$TMP/$key-generation-sceptical.md"
+  security_template="$TMP/$key-generation-security-template.md"
+  security_body="$TMP/$key-generation-security.md"
   printf '[review-request] round: 2\nFiles: generation-2.txt\n\n— backend\n' > "$request_template"
   python3 "$ROOT/bin/review_evidence.py" bind-request \
     "$request_template" "$base" "$head" "$package_digest" "$request_body"
@@ -378,21 +420,26 @@ PY
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$request_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
-  printf '[review-approval] round: 2\nFiles: generation-2.txt\n\n— reviewer\n' > "$review_template"
+  printf '[team-lead-approval] round: 2\nFiles: generation-2.txt\n\n— team-lead\n' > "$team_lead_template"
   printf '[architecture-approval] round: 2\nFiles: generation-2.txt\n\n— principal-architect\n' > "$architecture_template"
   printf '[sceptical-architecture-approval] round: 2\nFiles: generation-2.txt\n\n— sceptical-architect\n' > "$sceptical_template"
+  printf '[security-approval] round: 2\nFiles: generation-2.txt\n\n— senior-security-engineer\n' > "$security_template"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$review_template" "$snapshot" "$tid" "$review_body"
+    "$team_lead_template" "$snapshot" "$tid" "$team_lead_body"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
     "$architecture_template" "$snapshot" "$tid" "$architecture_body"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
     "$sceptical_template" "$snapshot" "$tid" "$sceptical_body"
+  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+    "$security_template" "$snapshot" "$tid" "$security_body"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$review_body" >/dev/null)
+    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$architecture_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$sceptical_body" >/dev/null)
+  (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
+    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$security_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
@@ -448,6 +495,27 @@ prime_product_approval "$SUCCESS_REPO" "$SUCCESS_TEAM" "$CONFIG" "$SUCCESS_STATE
 check "missing feature-level product approval is a retryable wait" grep -q '^> state: awaiting-product-approval$' "$SUCCESS_FID"
 check "product gate stops before planning or apply" bash -c "[ ! -f '$SUCCESS_LOG' ] || { ! grep -qE '^(plan|apply)$' '$SUCCESS_LOG'; }"
 
+set +e
+env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$SUCCESS_REPO" \
+    FAKE_STATE="$SUCCESS_STATE" FAKE_LOG="$SUCCESS_LOG" FAKE_VERIFY_FAIL=0 FAKE_CI_STATE=red \
+    "$RELEASE" --repository "$SUCCESS_REPO" --workspace "$SUCCESS_REPO/.teamwork/$SUCCESS_TEAM" \
+    --team "$SUCCESS_TEAM" --feature "$SUCCESS_FID" --config "$CONFIG" >"$TMP/ci-red.out" 2>&1
+ci_red_rc=$?
+set -e
+check "red CI is a retryable deployment wait" test "$ci_red_rc" -eq 4
+check "red CI wait is visible in tracker" grep -q '^> state: awaiting-ci$' "$SUCCESS_FID"
+check "red CI cannot plan or apply" bash -c "! grep -qE '^(plan|apply)$' '$SUCCESS_LOG'"
+
+set +e
+env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$SUCCESS_REPO" \
+    FAKE_STATE="$SUCCESS_STATE" FAKE_LOG="$SUCCESS_LOG" FAKE_VERIFY_FAIL=0 FAKE_CI_STATE=pending \
+    "$RELEASE" --repository "$SUCCESS_REPO" --workspace "$SUCCESS_REPO/.teamwork/$SUCCESS_TEAM" \
+    --team "$SUCCESS_TEAM" --feature "$SUCCESS_FID" --config "$CONFIG" >"$TMP/ci-pending.out" 2>&1
+ci_pending_rc=$?
+set -e
+check "pending CI is a retryable deployment wait" test "$ci_pending_rc" -eq 4
+check "pending CI cannot plan or apply" bash -c "! grep -qE '^(plan|apply)$' '$SUCCESS_LOG'"
+
 # The protected base ref may advance while product approval is pending. Its
 # moving tip stays out of stable evidence. The chain base must remain in the
 # protected history, but an unrelated advance does not rewrite the reviewed
@@ -461,13 +529,13 @@ env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$SUCCESS_REPO" \
     "$RELEASE" --repository "$SUCCESS_REPO" --workspace "$SUCCESS_REPO/.teamwork/$SUCCESS_TEAM" \
     --team "$SUCCESS_TEAM" --feature "$SUCCESS_FID" --config "$CONFIG" >/dev/null
 
-check "automatic release executes plan/apply/status/verify" bash -c "grep -q '^plan$' '$SUCCESS_LOG' && grep -q '^apply$' '$SUCCESS_LOG' && grep -q '^verify$' '$SUCCESS_LOG'"
+check "automatic release executes green-CI/plan/apply/status/verify" bash -c "grep -q '^ci:green$' '$SUCCESS_LOG' && grep -q '^plan$' '$SUCCESS_LOG' && grep -q '^apply$' '$SUCCESS_LOG' && grep -q '^verify$' '$SUCCESS_LOG'"
 check "legitimate protected-base advance preserves reviewed release evidence" \
   test "$(git -C "$SUCCESS_REPO" rev-parse main)" = "$SUCCESS_MAIN_NEXT"
 check "successful release moves feature to terminal status" grep -q '^# Production delivery \[Resolved\]$' "$SUCCESS_FID"
 check "successful release projects deployment state" grep -q '^> state: succeeded$' "$SUCCESS_FID"
 TXN="$(find "$STATE_ROOT" -path '*/transaction.json' -print -quit)"
-check "successful transaction is durable and source-bound" python3 -c "import json; d=json.load(open('$TXN')); assert d['phase']=='succeeded' and d['artifactDigest'].startswith('sha256:') and d['sourceArchiveDigest'].startswith('sha256:') and d['productAcceptanceDigest'].startswith('sha256:') and d['productAcceptanceConsumedAt']"
+check "successful transaction is durable, source-bound, and green-CI-bound" python3 -c "import json; d=json.load(open('$TXN')); assert d['phase']=='succeeded' and d['artifactDigest'].startswith('sha256:') and d['sourceArchiveDigest'].startswith('sha256:') and d['productAcceptanceDigest'].startswith('sha256:') and d['productAcceptanceConsumedAt'] and d['ciState']=='green' and d['ciProofDigest'].startswith('sha256:') and d['ciApplyBoundaryDigest'].startswith('sha256:')"
 check "automatic release requires a source-bound role-isolation attestation" python3 -c "import json; t=json.load(open('$TXN')); d=json.load(open('$(dirname "$TXN")/delivery-attestation.json')); assert t['deliveryAttestationDigest'].startswith('sha256:') and t['deliveryAttestationId'].startswith('delivery-fixture-') and d['sourceArchiveDigest']==t['sourceArchiveDigest']"
 check "release plan sees only exact committed source" bash -c "[ ! -e '$(dirname "$TXN")/source/untracked-only.txt' ] && python3 -c \"import json; t=json.load(open('$TXN')); p=json.load(open('$(dirname "$TXN")/plan.json')); m=json.load(open('$(dirname "$TXN")/approval-manifest.json')); assert p['sourceArchiveDigest']==t['sourceArchiveDigest']==m['sourceArchiveDigest']\""
 check "trusted helpers execute from protected pinned copies" bash -c "test -x '$STATE_ROOT/trusted-code/'*/bin/tracker-ops.sh && test -x '$STATE_ROOT/trusted-code/'*/bin/finalize-integrations.sh"
@@ -730,6 +798,7 @@ INTERPRETER_FID="$INTERPRETER_REPO/.workspace/task-manager/feat/feature.md"
 prime_product_approval "$INTERPRETER_REPO" "$INTERPRETER_TEAM" "$INTERPRETER_CONFIG" "$TMP/interpreter.state" "$TMP/interpreter.log"
 refuse "production hooks cannot use a generic interpreter with an unpinned script" "dedicated pinned executable/wrapper" \
   env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$INTERPRETER_REPO" \
+      FAKE_STATE="$TMP/interpreter.state" FAKE_LOG="$TMP/interpreter.log" \
       "$RELEASE" --repository "$INTERPRETER_REPO" --workspace "$INTERPRETER_REPO/.teamwork/$INTERPRETER_TEAM" \
       --team "$INTERPRETER_TEAM" --feature "$INTERPRETER_FID" --config "$INTERPRETER_CONFIG"
 

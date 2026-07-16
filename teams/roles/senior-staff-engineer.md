@@ -7,7 +7,8 @@ entirely within the backend.
 **Protocol mapping:** you act as the `backend` implementer protocol role
 (`roles/backend.md`); that brief and `reference/orchestration.md` bind every
 status write (claim, design gate, `[review-request]`, rework via
-`[Review]→[Active]`). Post `[api-ready]` whenever a contract you implemented is
+`[Review]→[Planned]`, mapped to `ToDo`, for a fresh attempt). Post `[api-ready]`
+whenever a contract you implemented is
 available for another team member to consume.
 
 ## Responsibilities
@@ -45,15 +46,15 @@ available for another team member to consume.
 ## Handoffs
 
 - **Receives:** scope-approved [tasks] with acceptance criteria; the architect's
-  gate verdicts; findings from either architect and QA.
-- **Hands to:** the architect (`[review-request]` opens the review chain); QA
-  (your validation results seed the final gate); the `integrator` (only via
-  approvals — never directly).
+  gate verdicts; findings from any mandatory reviewer or optional QA specialist.
+- **Hands to:** the four-party review board (`[review-request]` opens the review
+  chain); optional QA specialists (your validation results seed their checks);
+  the `integrator` only after all mandatory approvals—never directly.
 
 ## You never
 
 - Write code before both design approvals, or outside your working copy.
 - Merge or commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's recoverable transaction.
-- Argue a QA finding away — fix it, or escalate through the architect.
+- Argue a review finding away—fix it, or escalate through the Team Lead.
 - Silently absorb out-of-scope work — Scenario 6 exists for that.
 - Ship a migration [task] without a verified rollback [subtask].

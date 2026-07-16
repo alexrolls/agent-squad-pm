@@ -79,12 +79,15 @@ Reality rarely matches the plan. When you must deviate from what the [task] desc
    commits on the task branch. Write the task report and evidence records.
 2. Submit `[review-request]` through `bin/submit-artifact.sh`; the durable outbox
    posts the comment and moves the [task] to `[Review]` idempotently.
-3. Single-agent: you now switch hats and review, or hand to the user. Team mode: notify the
-   reviewer (see `team-roles.md`).
+3. Single-agent: you now switch hats and review, or hand to the user. Team mode:
+   route the exact package to the Team Lead, Principal Architect, Sceptical
+   Principal Architect, and Senior Security Engineer.
 
-If review finds problems: **move the [task] back to `[Active]`**, fix, and return to
-`[Review]`. Backward moves are legal exactly where `config/statuses.config.json` lists
-them (on the default board: `Review → Active`). `[Blocked]` exits are listed so a
+If review finds problems: **move the [task] back to `[Planned]`** (mapped to
+`ToDo`) and let the dispatcher create a fresh implementation attempt. That
+attempt proceeds through `[Active]`/`In Progress` and returns with a new request
+to `[Review]`/`In Review`. Backward moves are legal exactly where
+`config/statuses.config.json` lists them. `[Blocked]` exits are listed so a
 human project-management action can be represented, but Startup Factory itself
 is forbidden to author them.
 
@@ -92,8 +95,8 @@ is forbidden to author them.
 
 ## Scenario 5 — Finalize a [task]
 
-Only after the work is reviewed **and** verified (tests/build green, change actually does
-what the [task] asked):
+Only after all four mandatory reviewers approve the exact package and the work
+is verified (tests/build green, change actually does what the [task] asked):
 
 1. Confirm the [task] is in `[Review]`. If not, andon cord.
 2. The terminal status carries `requiresCommit: true`. The integrator runs
@@ -303,19 +306,22 @@ from `reference/deployment.md`:
    exact feature id, final HEAD, integration-evidence digest,
    and `acceptance-criteria: passed`. Missing, stale, ambiguous, or later-pushed-
    back evidence emits a product-acceptance request and waits before planning.
-3. Generate a normalized plan bound to the exact branch commit and immutable
+3. Require a protected `verifyCi` proof that every required CI/CD check for the
+   exact final commit succeeded, with no failed, pending, skipped, missing,
+   stale, or unverifiable check. Recheck at the apply-process boundary.
+4. Generate a normalized plan bound to the exact branch commit and immutable
    artifact digest.
-4. Pass the plan and every structured hook argv through `bin/policy-check.py`.
+5. Pass the plan and every structured hook argv through `bin/policy-check.py`.
    A denied operation stops permanently; an approval-only operation remains
    blocked until the external exact-manifest verifier authorizes it.
-5. Query current release state before apply. After a crash or uncertain response,
+6. Query current release state before apply. After a crash or uncertain response,
    query again; never blindly apply twice.
-6. Apply, independently verify production health and version, and record the
+7. Apply, independently verify production health and version, and record the
    durable transaction. A command exit alone is not success.
-7. On objective verification failure, run only a predeclared safe rollback to
+8. On objective verification failure, run only a predeclared safe rollback to
    the immediately previous immutable artifact; otherwise escalate and remain
    failed.
-8. Upsert the `[deployment]` feature projection. The release executor—and no
+9. Upsert the `[deployment]` feature projection. The release executor—and no
    agent role—moves the [feature] to its terminal status only after verification
    succeeds. Disabled delivery remains visibly awaiting deployment, not resolved.
 
@@ -328,7 +334,7 @@ from `reference/deployment.md`:
 | 1 Plan | create `[feature]` `[Planned]`; create `[tasks]` `[Planned]` |
 | 2 Start | `[task]` → `[Active]` (feature → `[Active]` on first) |
 | 3 Diverge | comment only |
-| 4 Review | `[task]` → `[Review]` (or back to `[Active]` on rework) |
+| 4 Review | `[task]` → `[Review]` (or back to `[Planned]`/`ToDo` for fresh-attempt rework) |
 | 5 Finalize | recoverable merge/broker transaction + `[task]` → `[Ready to deploy]`; feature remains non-terminal awaiting verified production delivery |
 | 6 New work | create `[task]` `[Planned]` |
 | 7 Block | report + authorized inbound `[task]` → `[Blocked]`; stop only that task; only a human may move it outbound, and queued re-entry requires resume review plus a fresh attempt |

@@ -68,9 +68,9 @@ Tasks:
 |---|---|---|---|
 | `[Planned]` | team-lead | Active, Blocked | initial; entering Blocked requires its explicit authority |
 | `[Active]` | implementer | Review, Blocked | |
-| `[Review]` | reviewer | Active, Ready to deploy, Blocked | rework returns to Active |
+| `[Review]` | review board | Planned, Ready to deploy, Blocked | mapped to `In Review`; findings requeue to Planned/`ToDo` |
 | `[Blocked]` | human | Planned, Active, Review | task-scoped human lock; listed exits normalize human actions only |
-| `[Ready to deploy]` | integrator | — | terminal; `requiresCommit` |
+| `[Ready to deploy]` | integrator | — | mapped to `Ready for production`; terminal; `requiresCommit` |
 
 This table is an **example** — the JSON is authoritative. Projects add, rename, or
 remove statuses by editing the config; no other file changes as long as owners and
@@ -113,10 +113,12 @@ comment. The full workflow-role rules and required content live in
 | `[api-ready]` | Backend contract available for frontend. |
 | `[divergence]` | What was done differently from the plan, and why. |
 | `[review-request]` | Implementation complete; ready for review. |
-| `[review-findings]` | Numbered problems to fix; task returns to `[Active]`. |
-| `[review-approval]` | Reviewer sign-off with explicit list of approved file paths. |
+| `[review-findings]` | Numbered problems to fix; task returns to `[Planned]`/`ToDo` for a fresh attempt. |
+| `[review-approval]` | Optional reviewer/QA supporting sign-off with explicit approved paths. |
+| `[team-lead-approval]` | Mandatory independent quality/specification sign-off. |
 | `[architecture-approval]` | Principal-architect sign-off. |
 | `[sceptical-architecture-approval]` | Independent release-bound architecture sign-off. |
+| `[security-approval]` | Mandatory independent Senior Security Engineer sign-off. |
 | `[product-approval]` | Product owner scope/acceptance sign-off. |
 | `[product-pushback]` | Product owner scope gate closed. |
 | `[handoff]` | Team-lead reassignment summary for a fresh agent. |

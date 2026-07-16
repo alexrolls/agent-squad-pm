@@ -66,6 +66,10 @@ class AwaitingAuthorization(ReleaseError):
     pass
 
 
+class AwaitingCi(AwaitingAuthorization):
+    pass
+
+
 class ProcessDeadline(RuntimeError):
     def __init__(self, stdout: str, stderr: str):
         super().__init__("process deadline exceeded")
@@ -1691,7 +1695,10 @@ def validate_manifest_bindings(
         raise ReleaseError("release manifest has no hook bindings")
     expected_names = {
         name
-        for name in ("apply", "status", "verify", "rollback", "verifyApproval", "verifyDelivery")
+        for name in (
+            "apply", "status", "verify", "rollback", "verifyApproval",
+            "verifyDelivery", "verifyCi",
+        )
         if (config.get("hooks") or {}).get(name)
     }
     if set(recorded) != expected_names:
@@ -1732,7 +1739,10 @@ def write_manifest(
     values["authorization_expires_at"] = expires.isoformat(timespec="seconds")
     bindings = {
         name: hook_binding(name, config, values, repository)
-        for name in ("apply", "status", "verify", "rollback", "verifyApproval", "verifyDelivery")
+        for name in (
+            "apply", "status", "verify", "rollback", "verifyApproval",
+            "verifyDelivery", "verifyCi",
+        )
         if (config.get("hooks") or {}).get(name)
     }
     manifest = {
@@ -1818,6 +1828,129 @@ def verify_approval(
         raise ReleaseError("approval verifier must print one JSON proof object") from exc
     validate_approval_proof(proof, manifest, require_fresh=True)
     atomic_json(proof_file, proof)
+    return proof
+
+
+def validate_ci_proof(
+    proof: dict,
+    *,
+    commit: str,
+    config: dict,
+    require_fresh: bool,
+) -> None:
+    expected_fields = {
+        "schemaVersion", "green", "commit", "provider", "pipelineId",
+        "requiredChecks", "successfulChecks", "failedChecks", "pendingChecks",
+        "skippedChecks", "completedAt", "expiresAt",
+    }
+    if not isinstance(proof, dict) or set(proof) != expected_fields:
+        raise ReleaseError("CI verifier must return the exact closed proof schema")
+    if type(proof.get("schemaVersion")) is not int or proof.get("schemaVersion") != 1:
+        raise ReleaseError("CI proof schemaVersion must be 1")
+    if proof.get("commit") != commit:
+        raise ReleaseError("CI proof is not bound to the exact release commit")
+    provider = proof.get("provider")
+    if (
+        not isinstance(provider, str)
+        or not provider.strip()
+        or provider != provider.strip()
+        or len(provider) > 256
+        or any(ord(character) < 32 for character in provider)
+    ):
+        raise ReleaseError("CI proof needs a bounded provider identity")
+    pipeline_id = proof.get("pipelineId")
+    if (
+        not isinstance(pipeline_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", pipeline_id)
+    ):
+        raise ReleaseError("CI proof needs a stable bounded pipelineId")
+
+    check_lists: dict[str, list[str]] = {}
+    for field in (
+        "requiredChecks", "successfulChecks", "failedChecks", "pendingChecks",
+        "skippedChecks",
+    ):
+        value = proof.get(field)
+        if (
+            not isinstance(value, list)
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                or item != item.strip()
+                or len(item) > 256
+                or any(ord(character) < 32 for character in item)
+                for item in value
+            )
+            or len(value) != len(set(value))
+        ):
+            raise ReleaseError(
+                f"CI proof {field} must be a unique bounded string list"
+            )
+        check_lists[field] = value
+    if not check_lists["requiredChecks"]:
+        raise ReleaseError("CI proof must name at least one required check")
+    if (
+        proof.get("green") is not True
+        or set(check_lists["successfulChecks"]) != set(check_lists["requiredChecks"])
+        or check_lists["failedChecks"]
+        or check_lists["pendingChecks"]
+        or check_lists["skippedChecks"]
+    ):
+        raise AwaitingCi(
+            "CI/CD pipeline is not green for the exact release commit; "
+            "failed, pending, skipped, or missing required checks block deployment"
+        )
+
+    completed = parse_time(proof.get("completedAt"), "CI completedAt")
+    expires = parse_time(proof.get("expiresAt"), "CI expiresAt")
+    ttl = config.get("ciAttestationTtlSeconds", 900)
+    if type(ttl) is not int or ttl < 60 or ttl > 86400:
+        raise ReleaseError(
+            "ciAttestationTtlSeconds must be an integer from 60 to 86400"
+        )
+    if expires <= completed or expires - completed > timedelta(seconds=ttl):
+        raise ReleaseError("CI proof validity exceeds the configured maximum")
+    current = datetime.now(timezone.utc)
+    if completed > current + timedelta(minutes=5):
+        raise ReleaseError("CI proof completedAt is in the future")
+    if require_fresh and current >= expires:
+        raise AwaitingCi("CI/CD green proof expired before deployment")
+
+
+def verify_ci(
+    config: dict,
+    values: dict[str, str],
+    repository: Path,
+    planning_env: dict[str, str],
+    logs: Path,
+    *,
+    commit: str,
+    proof_file: Path | None = None,
+    expected_binding: dict | None = None,
+) -> dict:
+    result = run_hook(
+        "verifyCi", "ci.verify", config, values,
+        repository=repository, env=planning_env, secrets=[], logs=logs,
+        check=False, expected_binding=expected_binding,
+    )
+    if result.returncode:
+        raise AwaitingCi(
+            "CI/CD pipeline is not green for the exact release commit"
+        )
+    try:
+        proof = strict_json(result.stdout)
+    except ValueError as exc:
+        raise ReleaseError("CI verifier must print one JSON proof object") from exc
+    if not isinstance(proof, dict):
+        raise ReleaseError("CI verifier must print one JSON proof object")
+    validate_ci_proof(
+        proof,
+        commit=commit,
+        config=config,
+        require_fresh=True,
+    )
+    if proof_file is not None:
+        atomic_json(proof_file, proof)
     return proof
 
 
@@ -1926,8 +2059,8 @@ def obtain_delivery_attestation(
 
 def check_sibling_transactions(releases: Path, release_id: str, commit: str) -> None:
     safe_preapply = {
-        "new", "awaiting-product-approval", "awaiting-attestation", "planned",
-        "awaiting-approval",
+        "new", "awaiting-product-approval", "awaiting-ci",
+        "awaiting-attestation", "planned", "awaiting-approval",
     }
     postapply = {"applying", "verifying", "rolling-back"}
     if not releases.exists():
@@ -2186,7 +2319,8 @@ def verify_integrations(
             "claim", "design-note", "design-approved", "design-pushback",
             "sceptical-design-approved", "sceptical-design-pushback",
             "review-request", "review-findings", "review-approval",
-            "architecture-approval", "sceptical-architecture-approval",
+            "team-lead-approval", "architecture-approval",
+            "sceptical-architecture-approval", "security-approval",
             "handoff", "andon",
         }
 
@@ -2322,6 +2456,10 @@ def deployment_projection(transaction: dict) -> str:
         f"integration-evidence-digest: {transaction.get('integrationEvidenceDigest')}",
         f"product-acceptance: {transaction.get('productAcceptanceState') or 'pending'}",
         f"product-acceptance-digest: {transaction.get('productAcceptanceDigest') or 'pending'}",
+        f"ci: {transaction.get('ciState') or 'pending'}",
+        f"ci-provider: {transaction.get('ciProvider') or 'pending'}",
+        f"ci-pipeline: {transaction.get('ciPipelineId') or 'pending'}",
+        f"ci-proof-digest: {transaction.get('ciProofDigest') or 'pending'}",
         f"plan-digest: {transaction.get('planDigest')}",
         f"approval-id: {transaction.get('approvalId') or 'not-required-or-pending'}",
         f"updated-at: {transaction.get('updatedAt')}",
@@ -2435,6 +2573,23 @@ def reset_preapply_transaction_for_attestation(transaction: dict) -> None:
     transaction["phase"] = "new"
 
 
+def reset_preapply_transaction_for_ci(transaction: dict) -> None:
+    """Invalidate every derived release authority after CI stops being green."""
+
+    for key in (
+        "artifactDigest", "planDigest", "manifestDigest", "manifestNonce",
+        "manifestExpiresAt", "deliveryAttestationDigest", "deliveryAttestationId",
+        "deliveryAttestationExpiresAt", "approvalId", "approvalApprover",
+        "approvalProofDigest", "approvalExpiresAt", "approvalVerifiedAt",
+        "approvalConsumedAt", "productAcceptanceConsumedAt",
+        "previousArtifactDigest", "failure", "ciProofDigest", "ciProvider",
+        "ciPipelineId", "ciCompletedAt", "ciExpiresAt", "ciVerifiedAt",
+        "ciApplyBoundaryDigest",
+    ):
+        transaction.pop(key, None)
+    transaction["phase"] = "awaiting-ci"
+
+
 def reset_preapply_transaction_for_evidence(transaction: dict) -> None:
     """Invalidate product and release authority when the tracker/evidence set changes."""
 
@@ -2511,7 +2666,7 @@ def execute(args: argparse.Namespace) -> int:
         raise ReleaseError("deployment mode must be automatic or approval-required")
     if config.get("environment") != "production":
         raise ReleaseError("release executor is reserved for the production environment")
-    required = {"plan", "apply", "status", "verify"}
+    required = {"plan", "apply", "status", "verify", "verifyCi"}
     missing = sorted(name for name in required if not (config.get("hooks") or {}).get(name))
     if missing:
         raise ReleaseError("missing required deployment hooks: " + ", ".join(missing))
@@ -2607,6 +2762,8 @@ def execute(args: argparse.Namespace) -> int:
         plan_file = release_dir / "plan.json"
         manifest_file = release_dir / "approval-manifest.json"
         proof_file = release_dir / "approval-proof.json"
+        ci_proof_file = release_dir / "ci-proof.json"
+        ci_apply_proof_file = release_dir / "ci-apply-boundary-proof.json"
         delivery_attestation_file = release_dir / "delivery-attestation.json"
         product_request_file = workspace / "product-acceptance-request.json"
         snapshot_path = release_dir / "tasks.json"
@@ -2720,8 +2877,8 @@ def execute(args: argparse.Namespace) -> int:
                 or transaction.get("phase") == "awaiting-product-approval"
             ):
                 safe_preapply = {
-                    "new", "awaiting-product-approval", "awaiting-attestation",
-                    "planned", "awaiting-approval",
+                    "new", "awaiting-product-approval", "awaiting-ci",
+                    "awaiting-attestation", "planned", "awaiting-approval",
                 }
                 if transaction.get("phase") not in safe_preapply or transaction.get("approvalConsumedAt"):
                     raise AwaitingAuthorization(
@@ -2740,6 +2897,68 @@ def execute(args: argparse.Namespace) -> int:
             atomic_json(transaction_file, transaction)
 
         values["product_acceptance_digest"] = product_acceptance_digest
+
+        preapply_phases = {
+            "new", "awaiting-product-approval", "awaiting-ci",
+            "awaiting-attestation", "planned", "awaiting-approval",
+        }
+        if (
+            transaction.get("phase") in preapply_phases
+            and not transaction.get("productAcceptanceConsumedAt")
+            and not transaction.get("approvalConsumedAt")
+        ):
+            try:
+                ci_proof = verify_ci(
+                    config,
+                    values,
+                    repository,
+                    planning_env,
+                    logs,
+                    commit=commit,
+                    proof_file=ci_proof_file,
+                )
+            except AwaitingCi as exc:
+                reset_preapply_transaction_for_ci(transaction)
+                transaction.update({
+                    "ciState": "waiting",
+                    "ciReason": str(exc)[:512],
+                    "updatedAt": now(),
+                })
+                atomic_json(transaction_file, transaction)
+                project_transaction(
+                    transaction, release_dir, repository, args.feature, tracker_env
+                )
+                raise
+            if transaction.get("phase") == "awaiting-ci":
+                transaction["phase"] = "new"
+            transaction.pop("ciReason", None)
+            transaction.update({
+                "ciState": "green",
+                "ciProofDigest": canonical_digest(ci_proof),
+                "ciProvider": ci_proof["provider"],
+                "ciPipelineId": ci_proof["pipelineId"],
+                "ciCompletedAt": ci_proof["completedAt"],
+                "ciExpiresAt": ci_proof["expiresAt"],
+                "ciVerifiedAt": now(),
+                "updatedAt": now(),
+            })
+            atomic_json(transaction_file, transaction)
+        elif transaction.get("phase") in {
+            "applying", "verifying", "rolling-back", "succeeded", "failed",
+            "denied", "rolled-back", "superseded",
+        }:
+            if (
+                transaction.get("ciState") != "green"
+                or not re.fullmatch(
+                    r"sha256:[0-9a-f]{64}",
+                    str(transaction.get("ciProofDigest") or ""),
+                )
+                or transaction.get("ciProvider") is None
+                or transaction.get("ciPipelineId") is None
+            ):
+                raise ReleaseError(
+                    "in-flight deployment transaction lacks historical green CI evidence"
+                )
 
         delivery_attestation_digest: str | None = None
         if config["mode"] == "automatic":
@@ -2771,8 +2990,8 @@ def execute(args: argparse.Namespace) -> int:
                     )
                 except AwaitingAuthorization:
                     safe_preapply = {
-                        "new", "awaiting-product-approval", "awaiting-attestation",
-                        "planned", "awaiting-approval",
+                        "new", "awaiting-product-approval", "awaiting-ci",
+                        "awaiting-attestation", "planned", "awaiting-approval",
                     }
                     if authority_consumed or transaction.get("phase") not in safe_preapply:
                         raise ReleaseError(
@@ -3350,13 +3569,50 @@ def execute(args: argparse.Namespace) -> int:
                         manifest,
                         require_fresh=True,
                     )
+                boundary_ci = verify_ci(
+                    config,
+                    values,
+                    repository,
+                    planning_env,
+                    logs,
+                    commit=commit,
+                    proof_file=ci_apply_proof_file,
+                    expected_binding=expected_bindings.get("verifyCi"),
+                )
+                transaction.update({
+                    "ciState": "green",
+                    "ciProofDigest": canonical_digest(boundary_ci),
+                    "ciApplyBoundaryDigest": canonical_digest(boundary_ci),
+                    "ciProvider": boundary_ci["provider"],
+                    "ciPipelineId": boundary_ci["pipelineId"],
+                    "ciCompletedAt": boundary_ci["completedAt"],
+                    "ciExpiresAt": boundary_ci["expiresAt"],
+                    "ciVerifiedAt": now(),
+                })
 
             def consume_apply_authority() -> None:
                 # This callback runs inside run_hook after executable binding and
                 # policy validation, directly before Popen. Validate once before
                 # consuming state, persist the crash-recovery marker, then check
                 # freshness again so a proof cannot expire during those writes.
-                revalidate_apply_authority()
+                try:
+                    revalidate_apply_authority()
+                except AwaitingCi as exc:
+                    reset_preapply_transaction_for_ci(transaction)
+                    transaction.update({
+                        "ciState": "waiting",
+                        "ciReason": str(exc)[:512],
+                        "updatedAt": now(),
+                    })
+                    atomic_json(transaction_file, transaction)
+                    project_transaction(
+                        transaction,
+                        release_dir,
+                        repository,
+                        args.feature,
+                        tracker_env,
+                    )
+                    raise
                 claim_target_lease(
                     target_active_file,
                     state_root=state_root,
@@ -3380,14 +3636,20 @@ def execute(args: argparse.Namespace) -> int:
                 atomic_json(transaction_file, transaction)
                 try:
                     revalidate_apply_authority()
-                except AwaitingAuthorization:
+                except AwaitingAuthorization as exc:
                     release_target_lease(
                         target_active_file,
                         release_id,
                         require_owner=True,
                     )
                     transaction.pop("productAcceptanceConsumedAt", None)
-                    if config["mode"] == "automatic":
+                    if isinstance(exc, AwaitingCi):
+                        reset_preapply_transaction_for_ci(transaction)
+                        transaction.update({
+                            "ciState": "waiting",
+                            "ciReason": str(exc)[:512],
+                        })
+                    elif config["mode"] == "automatic":
                         reset_preapply_transaction_for_attestation(transaction)
                         transaction["phase"] = "awaiting-attestation"
                     else:

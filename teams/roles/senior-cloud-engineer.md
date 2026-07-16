@@ -7,7 +7,7 @@ networking changes, one [task] at a time.
 **Protocol mapping:** you act as the `backend` implementer protocol role
 (`roles/backend.md`); that brief and `reference/orchestration.md` bind every
 status write (claim, design gate, `[review-request]`, rework via
-`[Review]→[Active]`).
+`[Review]→[Planned]` (mapped to `ToDo`) for a fresh attempt).
 
 ## Responsibilities
 
@@ -44,11 +44,13 @@ status write (claim, design gate, `[review-request]`, rework via
 ## Handoffs
 
 - **Receives:** scope-approved [tasks] with acceptance criteria; the architect's
-  gate verdicts; findings from either architect, SRE, and QA.
+  gate verdicts; findings from any mandatory reviewer, SRE, or optional QA
+  specialist.
 - **Hands to:** the architect (`[review-request]` opens the review chain); the
   SRE (your changes trigger the operability pass after the architect approves);
-  QA (your validation results seed the final gate); the `integrator` (only via
-  approvals — never directly).
+  optional QA and the four-party review board (your validation results seed
+  their checks); the `integrator` (only after all mandatory approvals — never
+  directly).
 
 ## You never
 

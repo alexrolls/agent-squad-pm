@@ -27,9 +27,9 @@ heartbeat files, then acts top to bottom:
 | Queued/`[Active]`/`[Review]` [task] directly `blockedBy` a currently `[Blocked]` [task] | Route a graph-digest-bound dependency-impact review to the team-lead; enter `[Blocked]` only after an authenticated `blocked` verdict survives fresh graph validation. A partial/independent verdict gives only that exact graph a scheduling clearance. |
 | `[design-note]` with no later `[design-approved]`/`[design-pushback]` | Launch principal-architect with the **whole** pending-design queue |
 | `[design-note]` with no later `[sceptical-design-approved]`/`[sceptical-design-pushback]` | Launch sceptical-architect with the **whole** independent-design queue |
-| [Task](s) in `[Review]` missing `[review-approval]` / `[architecture-approval]` / `[sceptical-architecture-approval]` since the last `[review-request]` | Launch reviewer / principal-architect / sceptical-architect with their **whole** review queues |
-| [Task](s) in `[Review]` holding all three approvals | Launch integrator with the merge queue in dependency order |
-| Dispatchable `[Planned]` [tasks] (not held, both design approvals current, every blocker terminal or carrying a fresh partial/independent clearance for its current Blocked graph, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
+| [Task](s) in `[Review]` missing `[team-lead-approval]`, `[architecture-approval]`, `[sceptical-architecture-approval]`, or `[security-approval]` since the last `[review-request]` | Launch Team Lead / Principal Architect / Sceptical Principal Architect / Senior Security Engineer with their **whole** review queues |
+| [Task](s) in `[Review]` holding all four mandatory approvals | Launch integrator with the merge queue in dependency order |
+| Dispatchable `[Planned]` [tasks] (including review rework; not held, both design approvals current, every blocker terminal or carrying a fresh partial/independent clearance for its current Blocked graph, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
 | Valid `product-acceptance-request.json` after all integrations | Launch the configured product-manager role with the exact feature-level acceptance request; use team-lead only when no product role is mapped |
 | `[Planned]` task missing metadata/gate, resource conflict, stale/artifact-less-idle teammate | Launch team-lead with the whole exception queue |
 | Nothing actionable | Exit cleanly, print "nothing actionable" |
@@ -91,10 +91,9 @@ heartbeat files, then acts top to bottom:
 - **PM projection:** every non-dry pass idempotently upserts one `[progress]`
   artifact per task and one `[digest]` per feature. No agent is trusted to keep
   the human view current manually.
-- **Preset rosters:** the script launches the eight protocol roles. Where a
-  preset maps a queue to a specialized role (e.g. `senior-qa-engineer` as
-  reviewer), the launched team-lead routes the queue; the reviewer launch is
-  skipped if its `_CMD` is null.
+- **Preset rosters:** the script resolves nine protocol lanes and any optional
+  specialists. The four review-board mappings must resolve to distinct concrete
+  roles; the launch fails closed otherwise.
 - **Long features (harness):** past ~20 [tasks] the orchestrator should
   compress processed-event state between turns (its context is the loop
   state); the tracker remains the source of truth for anything dropped.

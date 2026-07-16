@@ -16,21 +16,27 @@ The scenarios in `lifecycle.md` don't change — only *who* performs each write 
 
 ## Roles
 
-When running an actual agent team (`reference/orchestration.md`), the abstract roles map to concrete role names: Coordinator = `team-lead`, Implementer = `backend` / `frontend` / `qa`, Reviewer = `reviewer`, Finalizer = `integrator`, plus `principal-architect` (primary architecture) and `sceptical-architect` (independent challenge). Actionable instructions (mailboxes, escalation) always use the concrete names.
+When running an actual agent team (`reference/orchestration.md`), the abstract
+roles map to concrete role names: Coordinator/quality reviewer = `team-lead`,
+Implementer = `backend` / `frontend` / `qa`, optional Reviewer = `reviewer`,
+Finalizer = `integrator`, plus `principal-architect`, `sceptical-architect`, and
+`security-reviewer`. Actionable instructions always use the concrete names.
 
 | Role | Owns |
 |---|---|
 | **Coordinator** | Plans the [feature], creates [tasks], assigns them, decides what new work enters the current iteration. Never writes code. |
 | **Implementer** | Picks up a [task], writes the code, records divergences. |
-| **Reviewer** | Reviews an implementer's work, approves or sends it back. Never modifies code. |
+| **Reviewer** | Optional specialist review evidence. Never replaces a mandatory review-board verdict or modifies code. |
 | **Finalizer** | Runs final validation, writes the feature-branch integration commit, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move. |
 | **Principal Architect** | Primary architecture position: planning approval, per-[task] design gate, architecture review, and sole editor of upcoming [task] descriptions. Never writes code. |
 | **Sceptical Architect** | Mandatory in every cross-functional team. Independent blind-first challenge: planning/design peer review and release-bound architecture approval. Never writes code and cannot be disabled or omitted. |
-| **Team Lead** | Process authority: plans, launches, supervises task holds, reassigns, and escalates. It may adjudicate an architecture trade-off only when independent of both architects; otherwise the human decides. Never writes code or overrides the Finalizer/Integrator or unresolved Critical risk. |
+| **Senior Security Engineer** | Mandatory independent security reviewer: threat modeling, abuse-path analysis, focused verification, and `[security-approval]` or findings. Never writes the reviewed code. |
+| **Team Lead** | Process authority and mandatory independent quality/specification reviewer. Never writes code or overrides another mandatory gate, the Finalizer/Integrator, CI, or unresolved Critical risk. |
 | **Release Executor** | Deterministic, credential-separated production transaction. It alone performs the terminal [feature] transition after independent production verification; it is not an LLM role. |
 
-Small teams collapse roles (one agent can be Reviewer + Finalizer). The ownership *table*
-still holds — it's about which transition, not how many humans/agents exist.
+Optional implementation/specialist roles may be omitted, but in team mode the
+Team Lead, Principal Architect, Sceptical Principal Architect, and Senior
+Security Engineer must remain four distinct concrete agents.
 
 ---
 
@@ -57,7 +63,7 @@ Refinements:
   after the integration commit succeeds (on the default board: the integrator
   commits and records an immutable transaction; the dispatcher independently
   validates it and idempotently writes `[Review]` → `[Ready to deploy]` after
-  all three review approvals exist).
+  all four mandatory review-board approvals exist).
 - **Routing:** when an item enters a status, the mover notifies the new owner's mailbox
   (`reference/orchestration.md` → *Status routing*). A `{"team": ...}` owner is reached
   via that team's lead, who dispatches internally.
@@ -83,7 +89,7 @@ Worked example — the default board:
 |---|---|---|
 | `[Planned]` | team-lead (Coordinator) | create [tasks]; sanction claims (`Planned → Active`); enter Blocked when necessary |
 | `[Active]` | implementer | `Active → Review` (with `[review-request]`); route a real block to the team-lead/PM authority |
-| `[Review]` | reviewer | `Review → Active` (findings); approval hands off to the integrator for `Review → Ready to deploy`; route a real block to the team-lead/PM authority |
+| `[Review]` | four-agent review board | `Review → Planned` (findings/rework); four approvals hand off to the integrator for `Review → Ready to deploy`; route a real block to the team-lead/PM authority |
 | `[Blocked]` | human | Only the human may perform `Blocked → Planned / Active / Review`. Startup Factory stops/fences that task and cannot perform these moves. |
 | `[Ready to deploy]` | integrator | terminal — entered after a recorded integration commit |
 
@@ -109,7 +115,7 @@ role: `team-lead`). Independent portfolio work continues.
 - **Late findings supersede; they do not erase.** Before production release, a
   later legitimate finding causes the deterministic broker to journal an exact
   recovery record, commit a validated revert, archive the old transaction, and
-  reopen the task to working through the broker-only terminal-reopen operation.
+  reopen the task to queued/`[Planned]` through the broker-only terminal-reopen operation.
   A new attempt must merge the preserved history and pass a completely new review.
 - **Ad-hoc work has no [task].** If an agent is pulled off to fix something unrelated
   (e.g. a production incident), it does **not** touch task statuses for that work — it
@@ -133,7 +139,7 @@ single adapter, and swap tools without touching a single role.
 ## Running an actual team
 
 This file defines *ownership*. The full multi-agent mechanics — mailboxes,
-heartbeats, claiming, the two-person design gate, independent triple review, the recovery ladder, task holds, launching
+heartbeats, claiming, the two-person design gate, independent four-party review, the recovery ladder, task holds, launching
 heterogeneous LLM agents — live in `reference/orchestration.md` with one brief per
 role in `roles/`. Configure the team in `config/team.config.md` and launch with
 `bin/launch-team.sh`.

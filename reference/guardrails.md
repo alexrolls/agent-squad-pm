@@ -60,7 +60,9 @@ component explicitly records them. Do not claim blanket tracker coverage.
   management ports, and unrestricted trust relationships.
 - **Git/release integrity:** force-pushing or deleting protected refs, history
   rewrites, `reset --hard`, broad `clean`, bypassing hooks/gates, mutable release
-  tags, deploying a different commit/artifact than the reviewed transaction.
+  tags, deploying a different commit/artifact than the reviewed transaction, or
+  deploying any environment while required CI is red, pending, skipped,
+  missing, stale, or unverifiable.
 - **External effects:** public/customer messages, status-page publication, or
   transmission of private data without exact recipient/content authorization.
 - **Bypasses:** `sudo`, privileged containers, host sockets/mounts, encoded or
@@ -95,6 +97,8 @@ A normal project-management comment is not authorization.
 - Production release of the exact reviewed immutable artifact only when the
   trusted deployment configuration explicitly selects `automatic`, the
   normalized plan contains no denied/approval-only change, a protected external
+  `verifyCi` hook proves every required check for the exact commit is green,
+  and a protected external
   `verifyDelivery` attestor proves OS role isolation, protected planning
   isolation, and approval authenticity
   for the exact feature commit, `integrationEvidenceDigest`, and
@@ -137,8 +141,9 @@ Pre-integration launch and workspace handling are also fail closed:
 `bin/policy-check.py` is a mandatory fail-closed gate for structured, externally
 installed production hooks. Its built-in baseline cannot be weakened by project config.
 It rejects shell syntax and known destructive operations before a subprocess starts.
-The release executor also requires external protected config/state, exact file and hook
-digests, an OS lock, canonical plan effects, and structured status/verification evidence.
+The release executor also requires external protected config/state, exact file
+and hook digests, an OS lock, canonical plan effects, exact-commit green CI
+proof, and structured status/verification evidence.
 Privileged hooks are dedicated pinned executables—generic interpreters are
 rejected—and cannot receive the agent repository path or run from it.
 The source-consuming `plan` wrapper is also dedicated and pinned, but it must

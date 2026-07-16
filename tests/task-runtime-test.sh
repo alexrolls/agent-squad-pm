@@ -40,7 +40,8 @@ mkdir -p .agent-squad/{bin,config,roles,reference} feat
 cp "$SKILL_DIR"/bin/*.sh "$SKILL_DIR"/bin/*.py .agent-squad/bin/
 cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" .agent-squad/config/
 cp "$SKILL_DIR/roles/backend.md" "$SKILL_DIR/roles/reviewer.md" \
-  "$SKILL_DIR/roles/sceptical-architect.md" .agent-squad/roles/
+  "$SKILL_DIR/roles/sceptical-architect.md" "$SKILL_DIR/roles/team-lead.md" \
+  "$SKILL_DIR/roles/senior-security-engineer.md" .agent-squad/roles/
 cp "$SKILL_DIR/teams/roles/principal-software-architect.md" \
   "$SKILL_DIR/teams/roles/senior-technical-product-manager.md" .agent-squad/roles/
 cp "$SKILL_DIR/reference/guardrails.md" "$SKILL_DIR/reference/orchestration.md" .agent-squad/reference/
@@ -327,10 +328,10 @@ check "outbox retry keeps target status" grep -q '^## 1 Implement endpoint \[Rev
 # short-lived capability minted for the exact launched role instance. Actor
 # strings in raw outbox JSON cannot manufacture a principal.
 cat > .teamwork/feature-runtime/preset.env <<'EOF'
-PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
 PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
-PROTOCOL_REVIEWER=reviewer
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
 EOF
 cat > gate-submit-probe.sh <<'EOF'
 #!/usr/bin/env bash
@@ -511,14 +512,22 @@ Independent challenge found no unresolved material risk.
 EOF
 sceptical_entry="$(launch_gate_submission sceptical-architect sceptical-architecture-approval sceptical-architecture-verdict.md sceptical.path)"
 .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$sceptical_entry" >/dev/null
-cat > review-verdict.md <<'EOF'
-[review-approval]
-Focused tests and changed files reviewed.
+cat > security-verdict.md <<'EOF'
+[security-approval]
+Threat model, authorization boundaries, and abuse cases reviewed.
 
-- reviewer
+- senior-security-engineer
 EOF
-review_entry="$(launch_gate_submission reviewer review-approval review-verdict.md review.path)"
-.agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$review_entry" >/dev/null
+security_entry="$(launch_gate_submission senior-security-engineer security-approval security-verdict.md security.path)"
+.agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$security_entry" >/dev/null
+cat > team-lead-verdict.md <<'EOF'
+[team-lead-approval]
+Specification, tests, maintainability, and operational readiness reviewed.
+
+- team-lead
+EOF
+team_lead_entry="$(launch_gate_submission team-lead team-lead-approval team-lead-verdict.md team-lead.path)"
+.agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$team_lead_entry" >/dev/null
 "$OPS" export "$FID" .teamwork/feature-runtime/approval-snapshot.json >/dev/null
 check "gate approvals bind the latest request digest/head/package" python3 - .teamwork/feature-runtime/approval-snapshot.json <<'PY'
 import hashlib,json,re,sys
@@ -526,7 +535,12 @@ payload=json.load(open(sys.argv[1])); task=payload['tasks'][0]
 comments=[str(c.get('body') or '') for c in task['comments']]
 request=next(body for body in reversed(comments) if body.startswith('[review-request]'))
 expected='sha256:'+hashlib.sha256(request.encode()).hexdigest()
-for marker in ('[architecture-approval]', '[sceptical-architecture-approval]', '[review-approval]'):
+for marker in (
+    '[team-lead-approval]',
+    '[architecture-approval]',
+    '[sceptical-architecture-approval]',
+    '[security-approval]',
+):
     body=next(body for body in reversed(comments) if body.startswith(marker))
     assert re.search(r'(?m)^Review-Request-SHA256: '+re.escape(expected)+r'$', body)
     assert re.search(r'(?m)^Task-Branch-Head: [0-9a-f]{40}$', body)
@@ -536,10 +550,10 @@ PY
 # Product verdict ownership is conditional: the configured product-manager owns
 # it exclusively, with team-lead fallback only when that role is absent.
 cat > .teamwork/feature-runtime/preset.env <<'EOF'
-PROTOCOL_TEAM_LEAD=principal-software-architect
+PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-software-architect
 PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
-PROTOCOL_REVIEWER=reviewer
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 EOF
 cat > product-verdict.md <<'EOF'
@@ -550,7 +564,7 @@ EOF
 unsigned_product_entry="$(.agent-squad/bin/submit-artifact.sh feature-runtime "$FID" "$TID" 1 senior-technical-product-manager product-approval product-verdict.md -)"
 refuse "raw forged product marker has no gate authority" "capability is required" \
   .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$unsigned_product_entry"
-lead_product_entry="$(launch_gate_submission principal-software-architect product-approval product-verdict.md lead-product.path)"
+lead_product_entry="$(launch_gate_submission team-lead product-approval product-verdict.md lead-product.path)"
 refuse "configured product-manager excludes team-lead product verdict" "product-manager exclusively owns" \
   .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$lead_product_entry"
 product_entry="$(launch_gate_submission senior-technical-product-manager product-approval product-verdict.md product.path)"
@@ -561,7 +575,7 @@ cat > fallback-verdict.md <<'EOF'
 [product-pushback]
 reason: fallback ownership fixture
 EOF
-fallback_entry="$(launch_gate_submission principal-software-architect product-pushback fallback-verdict.md fallback.path)"
+fallback_entry="$(launch_gate_submission team-lead product-pushback fallback-verdict.md fallback.path)"
 .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$fallback_entry" >/dev/null
 check "team-lead product fallback works only without product role" grep -q 'fallback ownership fixture' "$FID"
 accepted_delivery_count="$(grep -c 'delivery-id:' "$FID")"
@@ -672,7 +686,7 @@ round: 1
 - reviewer
 EOF
 "$OPS" comment "$TID" findings.md >/dev/null
-"$OPS" state "$TID" Active >/dev/null
+"$OPS" state "$TID" Planned >/dev/null
 dispatch_output="$(TEAM_RUNNER=background .agent-squad/bin/dispatch.sh feature-runtime "$FID" --once --unblock=off 2>&1)"
 attempt2_wt=".teamwork/feature-runtime/worktrees/backend#2-$key"
 for _i in $(seq 1 30); do [ -f "$attempt2_wt/task-fast-prompt.txt" ] && break; sleep 0.1; done

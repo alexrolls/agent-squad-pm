@@ -359,7 +359,13 @@ def files(body,marker):
 raw=subprocess.run(["git","-c","core.hooksPath=/dev/null","-c","core.fsmonitor=false","diff","--name-only","-z",
                     data["reviewBaseCommit"]+".."+data["taskBranchHead"]],cwd=repo,capture_output=True,env=env,check=True).stdout
 actual={item.decode("utf-8","surrogateescape") for item in raw.split(b"\0") if item}
-for marker in ("review-request","review-approval","architecture-approval","sceptical-architecture-approval"):
+for marker in (
+    "review-request",
+    "team-lead-approval",
+    "architecture-approval",
+    "sceptical-architecture-approval",
+    "security-approval",
+):
     if files(str(comments[positions[marker]].get("body") or ""),marker)!=actual: fail("[%s] Files evidence mismatch"%marker)
 snapshot_digest="sha256:"+hashlib.sha256(snapshot.read_bytes()).hexdigest()
 # This second read is intentionally adjacent to the authorization journal
@@ -419,7 +425,7 @@ supersede_one() {
     *) die "late invalidation recovery only applies to merged integrations" ;;
   esac
   key="$(basename "$entry" .json)"
-  local recovery_dir history_dir recovery changed recovery_fields recovery_id pre_head revert_commit recovery_snapshot
+  local recovery_dir history_dir recovery changed recovery_fields recovery_id pre_head revert_commit recovery_snapshot queued_status
   recovery_dir="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative integrations/.recoveries)"
   history_dir="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative integrations/history)"
   mkdir -p "$recovery_dir" "$history_dir"
@@ -523,18 +529,18 @@ os.replace(temp,path)
 PY
   recovery_snapshot="$pm_dir/integration-recovery-snapshot.json"
   "$SKILL_DIR/bin/tracker-ops.sh" export "$feature" "$recovery_snapshot" >/dev/null
-  working_status="$(python3 - "$SKILL_DIR/config/statuses.config.json" <<'PY'
+  queued_status="$(python3 - "$SKILL_DIR/config/statuses.config.json" <<'PY'
 import json,sys
-values=[item["name"] for item in json.load(open(sys.argv[1]))["tasks"]["statuses"] if item.get("kind")=="working"]
-if len(values)!=1: raise SystemExit("finalize-integrations: expected one working task status")
+values=[item["name"] for item in json.load(open(sys.argv[1]))["tasks"]["statuses"] if item.get("kind")=="queued"]
+if len(values)!=1: raise SystemExit("finalize-integrations: expected one queued task status")
 print(values[0])
 PY
 )"
   assert_task_not_held "$task"
   if [ "$phase" = "completed" ]; then
-    STARTUP_FACTORY_INTEGRATION_BROKER=1 "$SKILL_DIR/bin/tracker-ops.sh" task-reopen "$task" "$working_status"
+    STARTUP_FACTORY_INTEGRATION_BROKER=1 "$SKILL_DIR/bin/tracker-ops.sh" task-reopen "$task" "$queued_status"
   else
-    "$SKILL_DIR/bin/tracker-ops.sh" state "$task" "$working_status"
+    "$SKILL_DIR/bin/tracker-ops.sh" state "$task" "$queued_status"
   fi
   if ! python3 - "$recovery_snapshot" "$task" "$recovery_id" <<'PY'
 import json,sys
@@ -871,7 +877,12 @@ if data.get("transactionId") != expected_txid:
 # independent gate even in --validate-only mode. A fresh tracker snapshot below
 # additionally binds the current approval signature to this concrete role.
 preset = workspace / "preset.env"
-expected_signers = {"SCEPTICAL_ARCHITECT": "sceptical-architect"}
+expected_signers = {
+    "TEAM_LEAD": "team-lead",
+    "PRINCIPAL_ARCHITECT": "principal-architect",
+    "SCEPTICAL_ARCHITECT": "sceptical-architect",
+    "SECURITY_REVIEWER": "senior-security-engineer",
+}
 try:
     preset_info = preset.lstat()
 except FileNotFoundError:
@@ -883,15 +894,28 @@ if preset_info is not None:
         fail("team preset must be a bounded non-symlink regular file")
     preset_text = preset.read_text()
     expected_signers = {}
-    for protocol_name in ("REVIEWER", "PRINCIPAL_ARCHITECT", "SCEPTICAL_ARCHITECT"):
+    for protocol_name in (
+        "TEAM_LEAD",
+        "PRINCIPAL_ARCHITECT",
+        "SCEPTICAL_ARCHITECT",
+        "SECURITY_REVIEWER",
+    ):
         matches = re.findall(r"^PROTOCOL_%s=([^\r\n]+)$" % protocol_name, preset_text, re.M)
         if len(matches) > 1:
             fail("team preset contains duplicate PROTOCOL_%s" % protocol_name)
         if matches:
             expected_signers[protocol_name] = matches[0].strip()
-    mandatory_sceptical = expected_signers.get("SCEPTICAL_ARCHITECT")
-    if not mandatory_sceptical or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", mandatory_sceptical):
-        fail("team preset must define one valid mandatory PROTOCOL_SCEPTICAL_ARCHITECT")
+    if len(set(expected_signers.values())) != 4:
+        fail("team preset review board must use four distinct concrete agents")
+    for protocol_name in (
+        "TEAM_LEAD",
+        "PRINCIPAL_ARCHITECT",
+        "SCEPTICAL_ARCHITECT",
+        "SECURITY_REVIEWER",
+    ):
+        signer = expected_signers.get(protocol_name)
+        if not signer or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", signer):
+            fail("team preset must define one valid mandatory PROTOCOL_%s" % protocol_name)
 
 if snapshot_raw:
     try:
@@ -917,12 +941,20 @@ if snapshot_raw:
         if match:
             positions[match.group(1)] = index
     request = positions.get("review-request", -1)
-    review = positions.get("review-approval", -1)
+    team_lead = positions.get("team-lead-approval", -1)
     architecture = positions.get("architecture-approval", -1)
     sceptical = positions.get("sceptical-architecture-approval", -1)
+    security = positions.get("security-approval", -1)
     findings = positions.get("review-findings", -1)
-    if request < 0 or review <= request or architecture <= request or sceptical <= request or findings > request:
-        fail("fresh tracker state is no longer independently triple-approved")
+    if (
+        request < 0
+        or team_lead <= request
+        or architecture <= request
+        or sceptical <= request
+        or security <= request
+        or findings > request
+    ):
+        fail("fresh tracker state is no longer independently four-party-approved")
     try:
         evidence_digest = validate_review_evidence(
             payload,
@@ -962,8 +994,8 @@ if snapshot_raw:
         if not has_integration_event:
             fail("completed transaction lacks its broker-owned durable event")
 
-    # The existing protocol exposes Files: lists on the request and approvals.
-    # Bind the request and all three approvals to the exact reviewed Git file set.
+    # The protocol exposes Files: lists on the request and all four mandatory
+    # approvals. Bind every verdict to the exact reviewed Git file set.
     def file_list(body, marker):
         match = re.search(r"(?mi)^\s*Files:\s*([^\n]+)$", body)
         if not match:
@@ -981,17 +1013,19 @@ if snapshot_raw:
     actual_files = {item.decode("utf-8", "surrogateescape") for item in actual_raw.stdout.split(b"\0") if item}
     for marker, index in (
         ("review-request", request),
-        ("review-approval", review),
+        ("team-lead-approval", team_lead),
         ("architecture-approval", architecture),
         ("sceptical-architecture-approval", sceptical),
+        ("security-approval", security),
     ):
         if file_list(str(comments[index].get("body") or ""), marker) != actual_files:
             fail("[%s] Files: evidence does not equal the exact reviewed Git file set" % marker)
 
     for protocol_name, marker_name, marker_index in (
-        ("REVIEWER", "review-approval", review),
+        ("TEAM_LEAD", "team-lead-approval", team_lead),
         ("PRINCIPAL_ARCHITECT", "architecture-approval", architecture),
         ("SCEPTICAL_ARCHITECT", "sceptical-architecture-approval", sceptical),
+        ("SECURITY_REVIEWER", "security-approval", security),
     ):
         expected_signer = expected_signers.get(protocol_name)
         if expected_signer is None:

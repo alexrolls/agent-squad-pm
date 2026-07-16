@@ -31,6 +31,99 @@ SPEC.loader.exec_module(release)
 
 
 class ReleaseLifecycleTest(unittest.TestCase):
+    @staticmethod
+    def valid_ci_proof(commit: str = "a" * 40) -> dict:
+        completed = datetime.now(timezone.utc)
+        return {
+            "schemaVersion": 1,
+            "green": True,
+            "commit": commit,
+            "provider": "fixture-ci",
+            "pipelineId": "fixture-pipeline-12345678",
+            "requiredChecks": ["build", "test", "security"],
+            "successfulChecks": ["build", "test", "security"],
+            "failedChecks": [],
+            "pendingChecks": [],
+            "skippedChecks": [],
+            "completedAt": completed.isoformat(timespec="seconds"),
+            "expiresAt": (completed + timedelta(minutes=10)).isoformat(
+                timespec="seconds"
+            ),
+        }
+
+    def test_ci_proof_requires_exact_commit_and_closed_schema(self) -> None:
+        proof = self.valid_ci_proof()
+        proof["pipelineId"] = "1"
+        release.validate_ci_proof(
+            proof,
+            commit="a" * 40,
+            config={"ciAttestationTtlSeconds": 900},
+            require_fresh=True,
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "exact release commit"):
+            release.validate_ci_proof(
+                proof,
+                commit="b" * 40,
+                config={"ciAttestationTtlSeconds": 900},
+                require_fresh=True,
+            )
+        with self.assertRaisesRegex(release.ReleaseError, "bounded provider identity"):
+            release.validate_ci_proof(
+                {**proof, "provider": " fixture-ci "},
+                commit="a" * 40,
+                config={"ciAttestationTtlSeconds": 900},
+                require_fresh=True,
+            )
+        with self.assertRaisesRegex(release.ReleaseError, "exact closed proof schema"):
+            release.validate_ci_proof(
+                {**proof, "untrustedOverride": True},
+                commit="a" * 40,
+                config={"ciAttestationTtlSeconds": 900},
+                require_fresh=True,
+            )
+
+    def test_ci_proof_blocks_every_non_green_check_state(self) -> None:
+        proof = self.valid_ci_proof()
+        non_green = (
+            {**proof, "green": False},
+            {**proof, "successfulChecks": ["build", "test"]},
+            {**proof, "failedChecks": ["security"]},
+            {**proof, "pendingChecks": ["security"]},
+            {**proof, "skippedChecks": ["security"]},
+        )
+        for candidate in non_green:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(release.AwaitingCi):
+                    release.validate_ci_proof(
+                        candidate,
+                        commit="a" * 40,
+                        config={"ciAttestationTtlSeconds": 900},
+                        require_fresh=True,
+                    )
+
+    def test_expired_green_ci_proof_cannot_authorize_apply(self) -> None:
+        completed = datetime.now(timezone.utc) - timedelta(minutes=20)
+        proof = {
+            **self.valid_ci_proof(),
+            "completedAt": completed.isoformat(timespec="seconds"),
+            "expiresAt": (completed + timedelta(minutes=10)).isoformat(
+                timespec="seconds"
+            ),
+        }
+        with self.assertRaises(release.AwaitingCi):
+            release.validate_ci_proof(
+                proof,
+                commit="a" * 40,
+                config={"ciAttestationTtlSeconds": 900},
+                require_fresh=True,
+            )
+        release.validate_ci_proof(
+            proof,
+            commit="a" * 40,
+            config={"ciAttestationTtlSeconds": 900},
+            require_fresh=False,
+        )
+
     def test_preapply_sibling_is_superseded_but_postapply_sibling_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             releases = Path(raw)

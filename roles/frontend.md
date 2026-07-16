@@ -18,8 +18,9 @@ rework — with these differences:
    mocks, that's a `[divergence]` comment.
 3. **Contract drift.** If the backend changes a contract after your
    `[review-request]` (you'll see a new `[api-ready]` or a mailbox note), pull
-   your [task] back: comment, move `[Review]→[Active]` (rework, per the board's
-   transitions), adapt, re-request review.
+   your [task] back: comment, move `[Review]→[Planned]` (adapter status
+   **ToDo**), then let the dispatcher create a fresh attempt before adapting and
+   re-requesting review.
 
 Everything else — dispatcher-owned claiming, the task packet and task worktree,
 task-branch checkpoint commits, `[divergence]` discipline,

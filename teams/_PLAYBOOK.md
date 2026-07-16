@@ -10,20 +10,24 @@ The protocol in `reference/orchestration.md` always governs mechanics — claimi
 markers, statuses, mailboxes, worktrees, integration. A preset team *narrows* the
 protocol; it never contradicts it.
 
-## The three fixed rules
+## The four fixed review-board rules
 
-1. **The Principal Architect leads the team.** It acts as the `team-lead` AND
-   `principal-architect` protocol roles: it plans, launches, supervises, unblocks,
-   reassigns, escalates, owns the primary design position, and performs divergence
-   sweeps.
-2. **The Sceptical Architect is independent.** It forms a blind-first position,
-   challenges every design, and supplies a release-bound architecture approval.
-   Because the lead and principal architect are the same preset agent, unresolved
-   material disagreement or Critical risk acceptance goes to the human.
-3. **The Senior QA Engineer is the final review gate.** No [task] reaches the
-   integrator until QA's `[review-approval]` exists, and QA approves only after
-   every other required approval for that [task] is already on record. Work is
-   "done" only after QA's approval AND the integrator's merge + `[Ready to deploy]`.
+1. **The Team Lead owns process and quality review.** It plans, launches,
+   supervises, reassigns, escalates, and independently supplies
+   `[team-lead-approval]`; it never doubles as a preset architect.
+2. **The Principal Architect owns the primary technical position.** It runs the
+   design gate, divergence sweeps, and independently supplies
+   `[architecture-approval]`.
+3. **The Sceptical Principal Architect is independent.** It forms a blind-first
+   position, challenges every design and implementation, and independently
+   supplies `[sceptical-architecture-approval]`.
+4. **The Senior Security Engineer is independent and mandatory.** It threat-models
+   the exact change, tests abuse paths, and independently supplies
+   `[security-approval]`.
+
+No [task] reaches the integrator until all four commit-bound approvals exist on
+the current review request. QA and other specialists may add evidence or
+`[review-findings]`, but they never replace a mandatory board member.
 
 Every member is bound by the delivery contract (`reference/orchestration.md` →
 *Report before idle*): no one goes idle with an undelivered artifact, and the
@@ -66,29 +70,28 @@ is context, not a trigger.
    attempt in both execution modes; the [task]'s [subtasks] as checklist,
    `[divergence]` comments for every deviation, checkpoint commits, and
    self-validation with the `VALIDATE_*` commands before requesting review.
-5. **Review — in this order:**
-   1. **Architect** — architecture review → `[architecture-approval]`.
-   2. **Sceptical Architect** — blind-first challenge →
-      `[sceptical-architecture-approval]` or `[review-findings]`.
-   3. **Team-specific specialist reviews** (listed in the team file, if any).
-      Problems → `[review-findings]`; a clean pass → a plain comment stating the
-      review ran and passed (specialists never invent new markers).
-   4. **QA — the final gate.** Runs the reviewer's three phases with a Phase-1
-      checklist seeded by the [design-approved] architecture checklist plus the
-      TPM's acceptance criteria (add items, never subtract); every criterion needs a
-      `file:line` citation and a test citation; runs the applicable suites.
-      Approval → `[review-approval]`, always the **last** approval.
+5. **Review board.** When implementation matches the specification and is nearly
+   releasable, move the [task] to `[Review]` (mapped to `In Review`) and generate
+   one exact review package. The Team Lead, Principal Architect, Sceptical
+   Principal Architect, and Senior Security Engineer independently review that
+   same package and post their own bound approval or `[review-findings]`.
+   Team-specific QA, SRE, penetration-test, accessibility, or other specialist
+   passes may run too.
 
-   The protocol allows parallel triple review; in the default `sequential` mode
-   preset teams sequence it so QA always judges the final shape of the change
-   (see *Review modes* below for the trade-offs of the other modes).
+   Any blocking quality, architecture, security, test, operability, or
+   specification finding moves the [task] `[Review] → [Planned]` (mapped to
+   `ToDo`). The dispatcher creates a fresh attempt; after rework the [task]
+   proceeds through `[Active]`/`In Progress`, requests a new review package, and
+   all four reviewers decide again. No prior approval survives a new request or
+   branch movement.
 6. **Integration.** The standard `integrator` (`roles/integrator.md`) verifies
    the exact review package, validates the task branch, merges and validates the
    feature branch, commits, then idempotently marks `[Ready to deploy]`. A
    durable transaction record makes retries safe. Every preset roster includes
    it.
-7. **Close / release.** When all [tasks] are `[Ready to deploy]`, the architect
-   runs the feature-completion checklist. The release executor validates the
+7. **Close / release.** When all [tasks] are `[Ready to deploy]` (mapped to
+   `Ready for production`), the Team Lead runs the feature-completion checklist.
+   The release executor validates the
    closed integration chain and writes
    `<TEAMWORK_ROOT>/<team>/product-acceptance-request.json`. The TPM re-runs the
    feature-level acceptance criteria and posts the request's `canonicalBody`
@@ -101,49 +104,40 @@ is context, not a trigger.
    the gate. The team-lead may author this envelope only when the team has no
    product-manager role. Production cannot begin until the deterministic
    release executor accepts the envelope; only independently verified
-   production success resolves the [feature]. Disabled delivery remains
+   production success resolves the [feature] (mapped to `Live`). Before planning
+   and again at the apply-process boundary, the protected CI verifier must prove
+   every required check for the exact commit is green. Red, pending, skipped,
+   missing, stale, or unverifiable CI cannot deploy to production or any other
+   environment. Disabled delivery remains
    awaiting in the PM registry with the feature non-terminal; the disabled
    executor creates no tracker `[deployment]` projection.
 
 ## Review modes
 
 A team file may declare `REVIEW_MODE=` next to its `ROSTER=` line; absent, the
-default is `sequential` (the order in stage 5):
+default is `sequential`:
 
-- `sequential` — each review stage starts after the previous approval. QA judges
-  the final shape of the change; strongest ordering, highest review wall time.
-- `parallel` — both architects, specialists, and QA review the same diff concurrently;
-  QA still **posts** `[review-approval]` only after every other required
-  approval is on record, so it remains the last-in-time gate. Trades "QA sees
-  the final shape" for wall time; any `[review-findings]` sends the [task] back
-  and every reviewer re-reviews the reworked diff.
-- `tiered` — reviews are sized to risk: for small [tasks], QA executes the
-  principal architect's numbered checklist and the principal binds its approval
-  to that evidence. The sceptical release gate is never collapsed. Full
-  principal review remains required for larger [tasks] and for **any** [task]
-  touching a contract registered in `CONTRACTS.md`.
+- `sequential` — launch board members one after another; highest wall time and
+  easiest operational debugging.
+- `parallel` — launch all four board members against the same immutable package;
+  preferred once the team machinery is stable.
+- `tiered` — vary checklist depth and optional specialist passes by risk, but
+  never collapse, delegate, or skip any of the four mandatory verdicts.
 
-**Recommendation:** `sequential` for a team's first feature; `tiered` once the
-team has run history; `parallel` where triple review on every [task] is wanted
-concurrently rather than serially. Tiered eligibility is a mechanical test the
-lead applies at dispatch — combined review only if (a) the `[design-note]`
-declared `Architectural impact: no` **and** (b) the [task] touches no contract
-registered in `CONTRACTS.md`; anything else gets full triple review.
-
-Whatever the mode, the invariants hold: every required approval exists before
-integration, QA's approval is last, file lists must equal the diff.
+Whatever the mode, all four approvals must exist before integration, each file
+list must equal the diff, and any finding invalidates the round.
 
 ## Escalation
 
-The architect (as `team-lead`) runs the supervision loop, the non-Blocked
-recovery ladder, and task-hold analysis
+The Team Lead runs the supervision loop, the non-Blocked recovery ladder, and
+task-hold analysis
 from `reference/orchestration.md`. Scope and business-rule questions go to the
 TPM first; the TPM escalates to the human when the answer is not derivable from
-the approved [feature]. Architecture rulings require both peers. The preset lead
-cannot adjudicate its own principal-architect position, so unresolved material
-disagreement goes to the human. Neither architect overrides the integrator's
-validation failures or QA's gate
-verdict. No agent moves `[Blocked]` outbound; only a human may return it to the
+the approved [feature]. Architecture rulings require both peers. The independent
+Team Lead may adjudicate only non-Critical trade-offs; Critical risk acceptance
+goes to the human. No reviewer overrides the integrator, another mandatory
+reviewer, or the protected CI verifier. No agent moves `[Blocked]` outbound;
+only a human may return it to the
 queued resume-review barrier. Other queued [tasks] continue meanwhile.
 
 ## Appendix — message templates
@@ -179,11 +173,10 @@ Check: [design-approved] numbered architecture checklist (your Phase-1 seed —
         add items, never subtract) + its conditions; review-ledger.md lines that
         apply; CONTRACTS.md exports this [task] registered or consumes
 Evidence: the [review-request]'s evidence records (commit, command, exit,
-        counts, log path) — spot-check per the protocol's *Evidence and
-        re-execution* matrix; QA re-runs regardless.
-Report back: [architecture-approval] / [sceptical-architecture-approval] /
-        [review-approval] with the explicit file
-        list, or [review-findings] — deliver before idling.
+        counts, log path) — spot-check or re-run according to your role.
+Report back: [team-lead-approval] / [architecture-approval] /
+        [sceptical-architecture-approval] / [security-approval] with the exact
+        file list, or [review-findings] — deliver before idling.
 ```
 
 Report-block shapes (`[review-request]`, `[divergence]`, `[andon]`, approvals)

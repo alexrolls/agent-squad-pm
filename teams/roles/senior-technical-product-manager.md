@@ -51,8 +51,9 @@ below.
 ## Handoffs
 
 - **Receives:** the raw ask from the human; scope questions from anyone, any time.
-- **Hands to:** the architect (scope-approved plan → tracker creation); QA (your
-  acceptance criteria are QA's Phase-1 checklist for the final gate).
+- **Hands to:** the architect (scope-approved plan → tracker creation); the Team
+  Lead and optional QA specialists (your acceptance criteria are inputs to the
+  final four-party review).
 
 ## You never
 
