@@ -2,6 +2,12 @@
 # End-to-end parallel branch integration and retry safety using the Markdown tracker.
 set -euo pipefail
 
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -25,6 +31,7 @@ bind_review() {
   printf '[review-request] exact package review\nFiles: %s\n\n- backend\n' "$files" > "$prefix.request"
   printf '[review-approval] exact package approved\nFiles: %s\n\n- reviewer\n' "$files" > "$prefix.review"
   printf '[architecture-approval] exact package approved\nFiles: %s\n\n- principal-architect\n' "$files" > "$prefix.architecture"
+  printf '[sceptical-architecture-approval] exact package approved\nFiles: %s\n\n- sceptical-architect\n' "$files" > "$prefix.sceptical"
   .agent-squad/bin/review_evidence.py bind-request \
     "$prefix.request" "$base" "$head" "$package_digest" "$prefix.request.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.request.bound"
@@ -33,8 +40,11 @@ bind_review() {
     "$prefix.review" "$snapshot" "$task" "$prefix.review.bound"
   .agent-squad/bin/review_evidence.py bind-approval \
     "$prefix.architecture" "$snapshot" "$task" "$prefix.architecture.bound"
+  .agent-squad/bin/review_evidence.py bind-approval \
+    "$prefix.sceptical" "$snapshot" "$task" "$prefix.sceptical.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.review.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.architecture.bound"
+  .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.sceptical.bound"
   .agent-squad/bin/tracker-ops.sh export "$FID" "$snapshot"
 }
 
@@ -83,7 +93,7 @@ VALIDATE_LINT=null
 VALIDATE_FORMAT=null
 ```
 EOF
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .agent-squad/config/team.config.md
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .agent-squad/config/team.config.md
 git add .agent-squad/config/project-management.config.md .agent-squad/config/team.config.md
 git commit -q -m config
 cat > .workspace/task-manager/feature.md <<'EOF'
@@ -406,7 +416,7 @@ check "late invalidation returns tracker task to active rework" grep -q '^## 2 B
 check "superseded canonical transaction is retired" test ! -e "$tx2"
 
 # Rework proceeds from the preserved history: a new attempt adds a fix, receives
-# a new request/dual approval after the finding, and integrates normally.
+# a new request/triple approval after the finding, and integrates normally.
 $LAUNCH worktree-remove feature-integration backend "$TID2" 1 >/dev/null
 wt2="$($LAUNCH worktree feature-integration backend "$TID2" 2)"
 .agent-squad/bin/task-packet.sh feature-integration "$FID" "$TID2" backend 2 "$wt2" "agent-task/feature-integration/$(python3 .agent-squad/bin/runtime-state.py key "$TID2")" >/dev/null
@@ -470,6 +480,15 @@ perl -0pi -e 's/("approvalEvidenceDigest": "sha256:)[0-9a-f]{64}/$1 . ("0" x 64)
 refuse "broker rejects a forged approval evidence binding" \
   .agent-squad/bin/finalize-integrations.sh --validate-only feature-integration "$FID" "$tx2"
 mv "$tx2.backup" "$tx2"
+
+printf 'PROTOCOL_TEAM_LEAD=team-lead\n' > .teamwork/feature-integration/preset.env
+refuse "integration refuses a preset missing the mandatory Sceptical Architect" \
+  .agent-squad/bin/finalize-integrations.sh --validate-only feature-integration "$FID" "$tx2"
+printf 'PROTOCOL_SCEPTICAL_ARCHITECT=other-sceptical-architect\n' \
+  >> .teamwork/feature-integration/preset.env
+refuse "integration binds approval to the mandatory Sceptical Architect identity" \
+  .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
+rm .teamwork/feature-integration/preset.env
 
 printf '{"schemaVersion":1,"phase":"awaiting-tracker"}\n' > .teamwork/feature-integration/integrations/forged.json
 refuse "broker rejects malformed transaction before tracker writes" \

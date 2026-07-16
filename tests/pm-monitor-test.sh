@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MONITOR_IMPL="$ROOT/bin/pm-agent.py"
 TMP="$(mktemp -d)"
@@ -38,8 +44,8 @@ VALIDATE_LINT=null
 VALIDATE_FORMAT=null
 VALIDATE_SCRIPT=null
 EOF
-sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$PM_SANDBOX_RUNNER\"|" "$TEST_SKILL/config/team.config.md"
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$PM_LIFECYCLE_ROOT\"|" "$TEST_SKILL/config/team.config.md"
+sed_i "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$PM_SANDBOX_RUNNER\"|" "$TEST_SKILL/config/team.config.md"
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$PM_LIFECYCLE_ROOT\"|" "$TEST_SKILL/config/team.config.md"
 MONITOR="$TMP/pm-agent"
 cat > "$MONITOR" <<'PY'
 #!/usr/bin/env python3
@@ -382,15 +388,15 @@ WRITABLE_RUNNER_SKILL="$TMP/writable-runner-skill"
 cp -R "$TEST_SKILL" "$NO_RUNNER_SKILL"
 cp -R "$TEST_SKILL" "$LOCAL_RUNNER_SKILL"
 cp -R "$TEST_SKILL" "$WRITABLE_RUNNER_SKILL"
-sed -i '' 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=null|' "$NO_RUNNER_SKILL/config/team.config.md"
+sed_i 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=null|' "$NO_RUNNER_SKILL/config/team.config.md"
 LOCAL_AGENT_RUNNER="$REPO/repository-agent-sandbox-runner"
 cp "$PM_SANDBOX_RUNNER" "$LOCAL_AGENT_RUNNER"
 chmod 700 "$LOCAL_AGENT_RUNNER"
-sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$LOCAL_AGENT_RUNNER\"|" "$LOCAL_RUNNER_SKILL/config/team.config.md"
+sed_i "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$LOCAL_AGENT_RUNNER\"|" "$LOCAL_RUNNER_SKILL/config/team.config.md"
 WRITABLE_AGENT_RUNNER="$TMP/writable-agent-sandbox-runner"
 cp "$PM_SANDBOX_RUNNER" "$WRITABLE_AGENT_RUNNER"
 chmod 722 "$WRITABLE_AGENT_RUNNER"
-sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$WRITABLE_AGENT_RUNNER\"|" "$WRITABLE_RUNNER_SKILL/config/team.config.md"
+sed_i "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$WRITABLE_AGENT_RUNNER\"|" "$WRITABLE_RUNNER_SKILL/config/team.config.md"
 preflight_refused "missing protected agent runner" "$CONFIG" "$NO_RUNNER_SKILL" "AGENT_SANDBOX_RUNNER"
 preflight_refused "repository-local agent runner" "$CONFIG" "$LOCAL_RUNNER_SKILL" "external to the agent repository"
 preflight_refused "writable agent runner" "$CONFIG" "$WRITABLE_RUNNER_SKILL" "group- or world-writable"
@@ -404,16 +410,16 @@ cp -R "$TEST_SKILL" "$NO_LIFECYCLE_SKILL"
 cp -R "$TEST_SKILL" "$LOCAL_LIFECYCLE_SKILL"
 cp -R "$TEST_SKILL" "$WRITABLE_LIFECYCLE_SKILL"
 cp -R "$TEST_SKILL" "$SYMLINK_LIFECYCLE_SKILL"
-sed -i '' 's|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=null|' "$NO_LIFECYCLE_SKILL/config/team.config.md"
+sed_i 's|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=null|' "$NO_LIFECYCLE_SKILL/config/team.config.md"
 LOCAL_LIFECYCLE_ROOT="$REPO/repository-lifecycle"
 mkdir -m 700 "$LOCAL_LIFECYCLE_ROOT"
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LOCAL_LIFECYCLE_ROOT\"|" "$LOCAL_LIFECYCLE_SKILL/config/team.config.md"
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LOCAL_LIFECYCLE_ROOT\"|" "$LOCAL_LIFECYCLE_SKILL/config/team.config.md"
 WRITABLE_LIFECYCLE_ROOT="$TMP/writable-lifecycle"
 mkdir -m 777 "$WRITABLE_LIFECYCLE_ROOT"
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$WRITABLE_LIFECYCLE_ROOT\"|" "$WRITABLE_LIFECYCLE_SKILL/config/team.config.md"
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$WRITABLE_LIFECYCLE_ROOT\"|" "$WRITABLE_LIFECYCLE_SKILL/config/team.config.md"
 SYMLINK_LIFECYCLE_ROOT="$TMP/lifecycle-link"
 ln -s "$PM_LIFECYCLE_ROOT" "$SYMLINK_LIFECYCLE_ROOT"
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$SYMLINK_LIFECYCLE_ROOT\"|" "$SYMLINK_LIFECYCLE_SKILL/config/team.config.md"
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$SYMLINK_LIFECYCLE_ROOT\"|" "$SYMLINK_LIFECYCLE_SKILL/config/team.config.md"
 preflight_refused "missing protected lifecycle state" "$CONFIG" "$NO_LIFECYCLE_SKILL" "LIFECYCLE_ROOT"
 preflight_refused "repository-local lifecycle state" "$CONFIG" "$LOCAL_LIFECYCLE_SKILL" "disjoint"
 preflight_refused "writable lifecycle state" "$CONFIG" "$WRITABLE_LIFECYCLE_SKILL" "group/world-writable"
