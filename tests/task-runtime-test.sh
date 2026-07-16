@@ -2,6 +2,12 @@
 # Task-scoped runtime test: lean packets, model routing, events, outbox, and PM projection.
 set -euo pipefail
 
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -63,7 +69,7 @@ VALIDATE_LINT=null
 VALIDATE_FORMAT=null
 ```
 EOF
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .agent-squad/config/team.config.md
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .agent-squad/config/team.config.md
 cat > feat/feature.md <<'EOF'
 # Runtime fixture [Active]
 
@@ -110,7 +116,7 @@ Path guard fixture.
 EOF
 CFG=.agent-squad/config/team.config.md
 ABS_ROOT="$TMP/forbidden-teamwork-root"
-sed -i '' "s|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=$ABS_ROOT|" "$CFG"
+sed_i "s|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=$ABS_ROOT|" "$CFG"
 refuse "launcher rejects absolute TEAMWORK_ROOT" "TEAMWORK_ROOT" \
   "$LAUNCH" compose abs-root "$FID" backend
 refuse "task packet rejects absolute TEAMWORK_ROOT" "TEAMWORK_ROOT" \
@@ -132,7 +138,7 @@ refuse "integrator rejects absolute TEAMWORK_ROOT" "TEAMWORK_ROOT" \
 refuse "integration broker rejects absolute TEAMWORK_ROOT" "TEAMWORK_ROOT" \
   .agent-squad/bin/finalize-integrations.sh abs-root "$FID"
 check "absolute workspace guard creates no state" test ! -e "$ABS_ROOT"
-sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=.teamwork|' "$CFG"
+sed_i 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=.teamwork|' "$CFG"
 
 # Managed children are resolved too, so an attacker cannot pre-place a symlink
 # beneath a valid team root and redirect a later mkdir/read/write.
@@ -237,7 +243,7 @@ rm -f linked-progress-note.md
 printf '%s\n' "$entry" > "$STARTUP_FACTORY_CANONICAL_WORKSPACE/linked-entry.path"
 EOF
 chmod +x task-submit-probe.sh
-sed -i '' "s|^TASK_FAST_CMD=.*|TASK_FAST_CMD=\"$(pwd)/task-submit-probe.sh {prompt_file}\"|" "$CFG"
+sed_i "s|^TASK_FAST_CMD=.*|TASK_FAST_CMD=\"$(pwd)/task-submit-probe.sh {prompt_file}\"|" "$CFG"
 rm -f ".teamwork/feature-runtime/pids/tasks/backend--$key--a1.pid" \
   .teamwork/feature-runtime/linked-entry.path
 TEAM_RUNNER=background "$LAUNCH" start-task feature-runtime "$FID" backend "$TID" 1 >/dev/null
@@ -252,7 +258,7 @@ PY
 check "linked task worktree gets no shadow outbox" test ! -e "$wt/.teamwork"
 .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$linked_entry" >/dev/null
 check "broker accepts a legitimate launched-task signature" grep -q 'Submitted from the linked task worktree' "$FID"
-sed -i '' 's|^TASK_FAST_CMD=.*|TASK_FAST_CMD="cat {prompt_file} > task-fast-prompt.txt"|' "$CFG"
+sed_i 's|^TASK_FAST_CMD=.*|TASK_FAST_CMD="cat {prompt_file} > task-fast-prompt.txt"|' "$CFG"
 
 cat > review.md <<'EOF'
 [review-request]
@@ -341,7 +347,7 @@ chmod +x gate-submit-probe.sh
 launch_gate_submission() { # role marker body output-file [target] -> entry path
   local role="$1" marker="$2" body_file="$3" output_file="$4" target="${5:--}" key_name
   key_name="$(printf '%s_CMD' "$(printf '%s' "$role" | tr 'a-z-' 'A-Z_')")"
-  sed -i '' "/^${key_name}=/d" "$CFG"
+  sed_i "/^${key_name}=/d" "$CFG"
   printf '%s="%s %s %s %s %s {prompt_file}"\n' "$key_name" "$(pwd)/gate-submit-probe.sh" \
     "$marker" "$body_file" "$output_file" "$target" >> "$CFG"
   rm -f ".teamwork/feature-runtime/$output_file" ".teamwork/feature-runtime/pids/$role.pid"
@@ -490,7 +496,7 @@ refuse "broker rejects a cross-role gate capability" "claimed actor does not mat
   .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$cross_role_entry"
 
 missing_sceptical_mapping_entry="$(launch_gate_submission principal-software-architect architecture-approval architecture-verdict.md missing-sceptical-mapping.path)"
-sed -i '' '/^PROTOCOL_SCEPTICAL_ARCHITECT=/d' .teamwork/feature-runtime/preset.env
+sed_i '/^PROTOCOL_SCEPTICAL_ARCHITECT=/d' .teamwork/feature-runtime/preset.env
 refuse "broker rejects a preset that omits the mandatory Sceptical Architect" "must define one valid mandatory PROTOCOL_SCEPTICAL_ARCHITECT" \
   .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$missing_sceptical_mapping_entry"
 printf 'PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect\n' >> .teamwork/feature-runtime/preset.env
@@ -550,7 +556,7 @@ refuse "configured product-manager excludes team-lead product verdict" "product-
 product_entry="$(launch_gate_submission senior-technical-product-manager product-approval product-verdict.md product.path)"
 .agent-squad/bin/process-outbox.sh feature-runtime "$FID" "$product_entry" >/dev/null
 check "configured product-manager can publish product verdict" grep -q 'fixture: broker-role-ownership' "$FID"
-sed -i '' '/^PROTOCOL_PRODUCT_MANAGER=/d' .teamwork/feature-runtime/preset.env
+sed_i '/^PROTOCOL_PRODUCT_MANAGER=/d' .teamwork/feature-runtime/preset.env
 cat > fallback-verdict.md <<'EOF'
 [product-pushback]
 reason: fallback ownership fixture

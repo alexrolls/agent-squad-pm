@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # dispatch smoke test: offline, Markdown adapter, stub agent commands.
 set -euo pipefail
+
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -39,7 +46,7 @@ VALIDATE_TEST=null
 VALIDATE_LINT=null
 ```
 EOF
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
 DISPATCH=".claude/skills/pm/bin/dispatch.sh"
 
 mkdir -p feat
@@ -295,7 +302,7 @@ echo "$fallback_plan" | grep -q "launch team-lead" \
 # Inject REVIEWER_CMD=null into the fixture config so the reviewer role is disabled.
 printf '\nREVIEWER_CMD=null\n' >> .claude/skills/pm/config/team.config.md
 # Restore task 3 to [Review] in case earlier blocks altered it.
-sed -i '' 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
+sed_i 's/^## 3 In review \[.*\]$/## 3 In review [Review]/' "$FID"
 # Clear reviewer pid and mailbox so this is a clean slate for the assertion.
 rm -rf .teamwork/feat-team/pids/reviewer.pid .teamwork/feat-team/mailbox/reviewer
 null_out="$(TEAM_RUNNER=background "$DISPATCH" feat-team "$FID" --once)"
@@ -304,7 +311,7 @@ echo "$null_out" | grep -q "skipped (REVIEWER_CMD=null" \
 check "null-CMD: reviewer.pid not created" test ! -f .teamwork/feat-team/pids/reviewer.pid
 check "null-CMD: reviewer mailbox not written" test ! -d .teamwork/feat-team/mailbox/reviewer
 # Remove the injected line to leave the config clean for any future assertions.
-sed -i '' '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
+sed_i '/^REVIEWER_CMD=null$/d' .claude/skills/pm/config/team.config.md
 
 # -- tracker comments cannot grant automated authority to leave Blocked -------
 cat > feat/human-held.md <<'EOF'
@@ -652,7 +659,7 @@ resources: schema:c
 > - sceptical-architect
 EOF
 PAR_FID=feat/parallel-test.md
-sed -i '' 's/^EXECUTION=sequential$/EXECUTION=parallel/' .claude/skills/pm/config/team.config.md
+sed_i 's/^EXECUTION=sequential$/EXECUTION=parallel/' .claude/skills/pm/config/team.config.md
 printf 'MAX_ACTIVE_IMPLEMENTERS=2\n' >> .claude/skills/pm/config/team.config.md
 PAR_TEAM=feat-parallel-team
 parallel_plan="$(TEAM_RUNNER=background "$DISPATCH" "$PAR_TEAM" "$PAR_FID" --once --dry-run)"
@@ -704,7 +711,7 @@ if echo "$unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
 else
   echo "ok: unsafe task remains exclusive within its wave"
 fi
-sed -i '' -e 's/^## 1 Exclusive migration \[Planned\]$/## 1 Exclusive migration [Active]/' \
+sed_i -e 's/^## 1 Exclusive migration \[Planned\]$/## 1 Exclusive migration [Active]/' \
   -e '/^## 1 Exclusive migration /,/^## 2 /s/^\*\*Assignee:\*\* —$/**Assignee:** backend/' "$UNSAFE_FID"
 active_unsafe_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-unsafe-team "$UNSAFE_FID" --once --dry-run)"
 if echo "$active_unsafe_plan" | grep -q "claim $UNSAFE_FID#2"; then
@@ -719,7 +726,7 @@ check "parallel task 2 becomes Active" grep -q '^## 2 Backend B \[Active\]$' "$P
 check "conflicting task remains Planned" grep -q '^## 3 Conflicts with A \[Planned\]$' "$PAR_FID"
 check "same role gets two isolated worktrees" test "$(find ".teamwork/$PAR_TEAM/worktrees" -maxdepth 1 -type d -name 'backend#1-*' | wc -l | tr -d ' ')" -ge 2
 check "two execution records persisted" test "$(find ".teamwork/$PAR_TEAM/executions" -type f -name '*.json' | wc -l | tr -d ' ')" -ge 2
-sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
+sed_i '/^MAX_ACTIVE_IMPLEMENTERS=2$/d;s/^EXECUTION=parallel$/EXECUTION=sequential/' .claude/skills/pm/config/team.config.md
 
 # -- a first successful claim advances the feature lifecycle -----------------
 cat > feat/activation-test.md <<'EOF'
@@ -843,16 +850,16 @@ EOF
 RK_FID="feat/rk-test.md"
 
 # Unquoted key with inline comment: Python int(STUCK_AFTER_MINUTES) must succeed
-sed -i '' 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=7   # inline comment/' .claude/skills/pm/config/team.config.md
+sed_i 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=7   # inline comment/' .claude/skills/pm/config/team.config.md
 if TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once --dry-run >/dev/null 2>&1; then
   echo "ok: read_key: unquoted value with inline comment parses clean (int(7) ok)"
 else
   echo "FAIL: read_key: inline comment not stripped — Python int() threw ValueError"; FAILURES=$((FAILURES+1))
 fi
-sed -i '' 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/config/team.config.md
+sed_i 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/config/team.config.md
 
 # Quoted key with outer inline comment: CMD must still be executable (inner content preserved)
-sed -i '' 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
+sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
 TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once >/dev/null 2>&1 || true
 sleep 0.2
 if [ -f .teamwork/feat-rk-team/pids/reviewer.log ] && \
@@ -861,7 +868,7 @@ if [ -f .teamwork/feat-rk-team/pids/reviewer.log ] && \
 else
   echo "FAIL: read_key: quoted CMD broken by outer-comment stripping (or reviewer not launched)"; FAILURES=$((FAILURES+1))
 fi
-sed -i '' 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"|' .claude/skills/pm/config/team.config.md
+sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"|' .claude/skills/pm/config/team.config.md
 
 echo "---"
 [ "$FAILURES" -eq 0 ] && echo "ALL PASS" || { echo "$FAILURES FAILURE(S)"; exit 1; }

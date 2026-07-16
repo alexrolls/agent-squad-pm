@@ -2,6 +2,12 @@
 # End-to-end parallel branch integration and retry safety using the Markdown tracker.
 set -euo pipefail
 
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -87,7 +93,7 @@ VALIDATE_LINT=null
 VALIDATE_FORMAT=null
 ```
 EOF
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .agent-squad/config/team.config.md
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .agent-squad/config/team.config.md
 git add .agent-squad/config/project-management.config.md .agent-squad/config/team.config.md
 git commit -q -m config
 cat > .workspace/task-manager/feature.md <<'EOF'

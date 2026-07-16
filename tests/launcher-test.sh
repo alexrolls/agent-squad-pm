@@ -2,6 +2,12 @@
 # Launcher smoke test: runs in a throwaway git repo with a stub agent command.
 set -euo pipefail
 
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { sed -i '' "$@"; }
+fi
+
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
@@ -69,8 +75,8 @@ VALIDATE_TEST=null
 VALIDATE_LINT=null
 ```
 EOF
-sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$SANDBOX_RUNNER\"|" .claude/skills/pm/config/team.config.md
-sed -i '' "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
+sed_i "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$SANDBOX_RUNNER\"|" .claude/skills/pm/config/team.config.md
+sed_i "s|^BROKER_LIFECYCLE_ROOT=.*|BROKER_LIFECYCLE_ROOT=\"$LIFECYCLE_ROOT\"|" .claude/skills/pm/config/team.config.md
 LAUNCH=".claude/skills/pm/bin/launch-team.sh"
 
 printf 'TRACKER_WRITERS=all\n' >> .claude/skills/pm/config/team.config.md
@@ -81,13 +87,13 @@ elif grep -q 'duplicate configuration key TRACKER_WRITERS' duplicate-config.out;
 else
   echo "FAIL: launcher reported wrong duplicate-key error"; FAILURES=$((FAILURES+1))
 fi
-sed -i '' '$d' .claude/skills/pm/config/team.config.md
+sed_i '$d' .claude/skills/pm/config/team.config.md
 
 # -- enforced sandbox runner trust and direct-mode fallback -----------------
 CFG_SANDBOX=.claude/skills/pm/config/team.config.md
 expect_runner_refused() { # description value expected-error
   local description="$1" value="$2" expected="$3" out
-  sed -i '' "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$value\"|" "$CFG_SANDBOX"
+  sed_i "s|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER=\"$value\"|" "$CFG_SANDBOX"
   if out="$("$LAUNCH" status sandbox-check 2>&1)"; then
     echo "FAIL: $description accepted"; FAILURES=$((FAILURES+1))
   elif printf '%s' "$out" | grep -q "$expected"; then
@@ -116,8 +122,8 @@ expect_runner_refused "directory sandbox runner" "$TMP" "regular file"
 expect_runner_refused "group/world-writable sandbox runner" "$WRITABLE_RUNNER" "group- or world-writable"
 expect_runner_refused "non-executable sandbox runner" "$NONEXEC_RUNNER" "must be executable"
 
-sed -i '' 's|^AGENT_SANDBOX_ENFORCED=.*|AGENT_SANDBOX_ENFORCED=false|' "$CFG_SANDBOX"
-sed -i '' 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER="relative-runner"|' "$CFG_SANDBOX"
+sed_i 's|^AGENT_SANDBOX_ENFORCED=.*|AGENT_SANDBOX_ENFORCED=false|' "$CFG_SANDBOX"
+sed_i 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER="relative-runner"|' "$CFG_SANDBOX"
 runner_lines_before="$(wc -l < "$SANDBOX_RUNNER_LOG" 2>/dev/null || printf '0')"
 TEAM_RUNNER=background "$LAUNCH" start manual-direct FEAT-DIRECT backend
 runner_lines_after="$(wc -l < "$SANDBOX_RUNNER_LOG" 2>/dev/null || printf '0')"
@@ -125,8 +131,8 @@ check "manual non-enforced mode retains direct execution" test -f .teamwork/manu
 [ "$runner_lines_before" = "$runner_lines_after" ] \
   && echo "ok: manual non-enforced mode does not invoke configured runner" \
   || { echo "FAIL: manual non-enforced mode invoked sandbox runner"; FAILURES=$((FAILURES+1)); }
-sed -i '' 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER="'"$SANDBOX_RUNNER"'"|' "$CFG_SANDBOX"
-sed -i '' 's|^AGENT_SANDBOX_ENFORCED=.*|AGENT_SANDBOX_ENFORCED=true|' "$CFG_SANDBOX"
+sed_i 's|^AGENT_SANDBOX_RUNNER=.*|AGENT_SANDBOX_RUNNER="'"$SANDBOX_RUNNER"'"|' "$CFG_SANDBOX"
+sed_i 's|^AGENT_SANDBOX_ENFORCED=.*|AGENT_SANDBOX_ENFORCED=true|' "$CFG_SANDBOX"
 : > "$SANDBOX_RUNNER_LOG"
 
 # -- start: composes prompt, runs stub in background mode ---------------------
@@ -159,7 +165,7 @@ case "${STARTUP_FACTORY_OUTBOX_CAPABILITY_ID-unset}|${STARTUP_FACTORY_OUTBOX_CAP
 esac
 EOF
 chmod +x env-probe.sh
-sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="./env-probe.sh {prompt_file}"|' .claude/skills/pm/config/team.config.md
+sed_i 's|^BACKEND_CMD=.*|BACKEND_CMD="./env-probe.sh {prompt_file}"|' .claude/skills/pm/config/team.config.md
 LINEAR_API_KEY=tracker-secret AWS_ACCESS_KEY_ID=cloud-secret KUBECONFIG=/secret/kube SSH_AUTH_SOCK=/secret/agent \
   SAFE_AGENT_FLAG=allowed UNLISTED_AGENT_VALUE=must-not-leak \
   TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 backend
@@ -180,13 +186,13 @@ assert any(name.endswith('.json') for name in os.listdir(records))
 assert all(stat.S_IMODE(os.stat(os.path.join(records,name)).st_mode) == 0o600 for name in os.listdir(records))
 PY
 
-sed -i '' 's|^AGENT_ENV_ALLOWLIST=.*|AGENT_ENV_ALLOWLIST="PATH LINEAR_API_KEY"|' .claude/skills/pm/config/team.config.md
+sed_i 's|^AGENT_ENV_ALLOWLIST=.*|AGENT_ENV_ALLOWLIST="PATH LINEAR_API_KEY"|' .claude/skills/pm/config/team.config.md
 if LINEAR_API_KEY=tracker-secret TEAM_RUNNER=background "$LAUNCH" start blocked-env FEAT-ENV backend >/dev/null 2>&1; then
   echo "FAIL: broker mode accepted a tracker credential in AGENT_ENV_ALLOWLIST"; FAILURES=$((FAILURES+1))
 else
   echo "ok: broker mode refuses tracker credentials in AGENT_ENV_ALLOWLIST"
 fi
-sed -i '' 's|^AGENT_ENV_ALLOWLIST=.*|AGENT_ENV_ALLOWLIST="PATH TMPDIR LANG LC_ALL TERM SAFE_AGENT_FLAG"|' .claude/skills/pm/config/team.config.md
+sed_i 's|^AGENT_ENV_ALLOWLIST=.*|AGENT_ENV_ALLOWLIST="PATH TMPDIR LANG LC_ALL TERM SAFE_AGENT_FLAG"|' .claude/skills/pm/config/team.config.md
 
 # Broker mode strips tracker credentials from the team lead too. The broker is
 # a deterministic process, not an LLM role with a privileged environment.
@@ -225,14 +231,14 @@ fi
 
 CFG_ROOT=.claude/skills/pm/config/team.config.md
 ABS_ESCAPE="$TMP/absolute-workspace"
-sed -i '' "s|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=$ABS_ESCAPE|" "$CFG_ROOT"
+sed_i "s|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=$ABS_ESCAPE|" "$CFG_ROOT"
 if "$LAUNCH" compose absolute-root FEAT-ROOT backend >/dev/null 2>&1; then
   echo "FAIL: absolute TEAMWORK_ROOT should be refused"; FAILURES=$((FAILURES+1))
 else
   echo "ok: absolute TEAMWORK_ROOT refused"
 fi
 check "absolute TEAMWORK_ROOT wrote nothing" test ! -e "$ABS_ESCAPE"
-sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=../traversal-workspace|' "$CFG_ROOT"
+sed_i 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=../traversal-workspace|' "$CFG_ROOT"
 if "$LAUNCH" compose traversal-root FEAT-ROOT backend >/dev/null 2>&1; then
   echo "FAIL: traversing TEAMWORK_ROOT should be refused"; FAILURES=$((FAILURES+1))
 else
@@ -241,14 +247,14 @@ fi
 check "traversing TEAMWORK_ROOT wrote nothing" test ! -e "$TMP/traversal-workspace"
 mkdir -p "$TMP/symlink-workspace"
 ln -s "$TMP/symlink-workspace" workspace-link
-sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=workspace-link|' "$CFG_ROOT"
+sed_i 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=workspace-link|' "$CFG_ROOT"
 if "$LAUNCH" compose symlink-root FEAT-ROOT backend >/dev/null 2>&1; then
   echo "FAIL: escaping TEAMWORK_ROOT symlink should be refused"; FAILURES=$((FAILURES+1))
 else
   echo "ok: escaping TEAMWORK_ROOT symlink refused"
 fi
 check "TEAMWORK_ROOT symlink escape wrote nothing" test -z "$(find "$TMP/symlink-workspace" -mindepth 1 -print -quit)"
-sed -i '' 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=.teamwork|' "$CFG_ROOT"
+sed_i 's|^TEAMWORK_ROOT=.*|TEAMWORK_ROOT=.teamwork|' "$CFG_ROOT"
 mkdir -p .teamwork/other-team
 ln -s other-team .teamwork/cross-team
 if "$LAUNCH" compose cross-team FEAT-ROOT backend >/dev/null 2>&1; then
@@ -307,7 +313,7 @@ LINEAR_API_KEY=must-not-leak HOME=/secret/home "$LAUNCH" worktree test-feature b
 check "WORKTREE_SETUP provisioned the tree" test -f ".teamwork/test-feature/worktrees/backend#1-$T77_KEY/provisioned.txt"
 check "WORKTREE_SETUP receives no scheduler credentials or ambient HOME" test -f ".teamwork/test-feature/worktrees/backend#1-$T77_KEY/provisioned.txt"
 check "WORKTREE_SETUP uses protected runner argv" grep -Fq "$PWD/.teamwork/test-feature/worktrees/backend#1-$T77_KEY|/usr/bin/env|-i" "$SANDBOX_RUNNER_LOG"
-sed -i '' '/^WORKTREE_SETUP=/d' "$CFG_WT"
+sed_i '/^WORKTREE_SETUP=/d' "$CFG_WT"
 printf 'WORKTREE_SETUP="false"\n' >> "$CFG_WT"
 if "$LAUNCH" worktree test-feature backend T-78 >/dev/null 2>&1; then
   echo "FAIL: failing WORKTREE_SETUP should die"; FAILURES=$((FAILURES+1))
@@ -315,7 +321,7 @@ else
   echo "ok: failing WORKTREE_SETUP is fail-loud"
 fi
 check "failed provisioning removed the tree" test ! -d ".teamwork/test-feature/worktrees/backend#1-$T78_KEY"
-sed -i '' '/^WORKTREE_SETUP="false"$/d' "$CFG_WT"
+sed_i '/^WORKTREE_SETUP="false"$/d' "$CFG_WT"
 
 # -- attempt-bound relaunch isolation ------------------------------------------
 "$LAUNCH" worktree-remove test-feature backend T-77
@@ -328,7 +334,7 @@ check "attempt 2 gets a fresh tree on the same branch" test -d ".teamwork/test-f
 
 # -- every cross-functional preset requires a live Sceptical Architect ----------
 cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/missing-sceptical.md
-sed -i '' '/^PROTOCOL_SCEPTICAL_ARCHITECT=/d' .claude/skills/pm/teams/missing-sceptical.md
+sed_i '/^PROTOCOL_SCEPTICAL_ARCHITECT=/d' .claude/skills/pm/teams/missing-sceptical.md
 if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team missing-sceptical mandatory-missing FEAT-MANDATORY 2>&1)"; then
   echo "FAIL: preset without Sceptical Architect mapping launched"; FAILURES=$((FAILURES+1))
 elif printf '%s' "$mandatory_out" | grep -q 'must define exactly one mandatory PROTOCOL_SCEPTICAL_ARCHITECT'; then
@@ -345,7 +351,7 @@ fi
 check "invalid harness preset creates no workspace" test ! -e .teamwork/mandatory-compose
 
 cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/missing-sceptical-roster.md
-sed -i '' 's/ sceptical-architect//' .claude/skills/pm/teams/missing-sceptical-roster.md
+sed_i 's/ sceptical-architect//' .claude/skills/pm/teams/missing-sceptical-roster.md
 if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" gate-team missing-sceptical-roster mandatory-roster FEAT-MANDATORY 2>&1)"; then
   echo "FAIL: preset without Sceptical Architect in roster launched"; FAILURES=$((FAILURES+1))
 elif printf '%s' "$mandatory_out" | grep -q 'mandatory Sceptical Architect.*exactly once'; then
@@ -356,7 +362,7 @@ fi
 check "missing mandatory roster role creates no workspace" test ! -e .teamwork/mandatory-roster
 
 cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/duplicate-sceptical-roster.md
-sed -i '' 's/^ROSTER=/ROSTER=sceptical-architect /' .claude/skills/pm/teams/duplicate-sceptical-roster.md
+sed_i 's/^ROSTER=/ROSTER=sceptical-architect /' .claude/skills/pm/teams/duplicate-sceptical-roster.md
 if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team duplicate-sceptical-roster mandatory-duplicate FEAT-MANDATORY 2>&1)"; then
   echo "FAIL: preset with duplicate Sceptical Architect roster entries launched"; FAILURES=$((FAILURES+1))
 elif printf '%s' "$mandatory_out" | grep -q 'mandatory Sceptical Architect.*exactly once'; then
@@ -375,7 +381,7 @@ else
   echo "FAIL: disabled mandatory role produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
 fi
 check "disabled mandatory role creates no workspace" test ! -e .teamwork/mandatory-disabled
-sed -i '' '/^SCEPTICAL_ARCHITECT_CMD=null$/d' .claude/skills/pm/config/team.config.md
+sed_i '/^SCEPTICAL_ARCHITECT_CMD=null$/d' .claude/skills/pm/config/team.config.md
 
 # -- team preset: launch a full roster from teams/full-stack.md ----------------
 SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
@@ -463,14 +469,14 @@ else
 fi
 printf 'EXECUTION=parallel\n' >> "$CFG"
 check "knob accepted under parallel" "$LAUNCH" compose test-feature FEAT-1 backend
-sed -i '' '/^MAX_ACTIVE_IMPLEMENTERS=1$/d;/^EXECUTION=parallel$/d' "$CFG"
+sed_i '/^MAX_ACTIVE_IMPLEMENTERS=1$/d;/^EXECUTION=parallel$/d' "$CFG"
 printf 'EXECUTION=parallel\nMAX_ACTIVE_IMPLEMENTERS=zero\n' >> "$CFG"
 if "$LAUNCH" compose test-feature FEAT-1 backend >/dev/null 2>&1; then
   echo "FAIL: non-integer MAX_ACTIVE_IMPLEMENTERS should be refused"; FAILURES=$((FAILURES+1))
 else
   echo "ok: non-integer knob refused"
 fi
-sed -i '' '/^EXECUTION=parallel$/d;/^MAX_ACTIVE_IMPLEMENTERS=zero$/d' "$CFG"
+sed_i '/^EXECUTION=parallel$/d;/^MAX_ACTIVE_IMPLEMENTERS=zero$/d' "$CFG"
 
 # -- preflight: aborts before any launch when the adapter probe fails -----------
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
@@ -593,7 +599,7 @@ fi
 
 # -- lifecycle authority is external; workspace/PID tampering never selects a signal target --
 CFG_LIFECYCLE=.claude/skills/pm/config/team.config.md
-sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="sleep 30"|' "$CFG_LIFECYCLE"
+sed_i 's|^BACKEND_CMD=.*|BACKEND_CMD="sleep 30"|' "$CFG_LIFECYCLE"
 
 record_for() { # team instance
   python3 - "$LIFECYCLE_ROOT" "$1" "$2" <<'PY'
@@ -835,7 +841,7 @@ kill "$identity_agent_pid" 2>/dev/null || true
 wait "$identity_agent_pid" 2>/dev/null || true
 rm -f "$identity_record"
 
-sed -i '' 's|^BACKEND_CMD=.*|BACKEND_CMD="cat {prompt_file} > backend-received.txt"|' "$CFG_LIFECYCLE"
+sed_i 's|^BACKEND_CMD=.*|BACKEND_CMD="cat {prompt_file} > backend-received.txt"|' "$CFG_LIFECYCLE"
 
 # -- task-scoped stop: exact collision-safe task selection, stale retirement, idempotence --
 STOP_TASK_TEAM=stop-task-scope
