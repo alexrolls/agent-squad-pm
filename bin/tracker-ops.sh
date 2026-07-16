@@ -22,7 +22,7 @@
 #   tracker-ops.sh scan           <outfile> --status <Status>...            # board-wide normalized discovery
 #   tracker-ops.sh feature-state  <featureId> <Status>                      # set [feature] status (generic name)
 #   tracker-ops.sh feature-reopen <featureId> <Status>                      # PM-supervisor-only terminal→queued reopen
-#   tracker-ops.sh task-reopen    <taskId> <Status>                         # integration-broker-only terminal→working rework
+#   tracker-ops.sh task-reopen    <taskId> <Status>                         # integration-broker-only terminal→queued rework
 #   tracker-ops.sh upsert-deployment <featureId> [bodyfile]                 # one managed [deployment] projection
 #
 # Adapter comes from PRODUCT_MANAGEMENT_TOOL in config/project-management.config.md
@@ -1968,8 +1968,8 @@ def op_task_reopen(args):
         die("task-reopen is reserved for the deterministic integration broker")
     task_id, target_name = args
     target = status_by_name(target_name)
-    if target.get('terminal') or target.get('kind') != 'working':
-        die("task-reopen target must be the configured non-terminal working status")
+    if target.get('terminal') or target.get('kind') != 'queued':
+        die("task-reopen target must be the configured non-terminal queued status")
     current_name = backend.current_status(task_id)
     if current_name is None:
         die("cannot reverse-map the current status of %s — andon" % task_id)

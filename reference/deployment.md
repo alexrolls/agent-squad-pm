@@ -39,6 +39,10 @@ executor refuses unless all of these hold:
   lexicographically smallest task id), unambiguous, and bound to the exact
   feature id, anchor task id, final HEAD, and `integrationEvidenceDigest`, with
   `acceptance-criteria: passed`; any later pushback invalidates it;
+- a protected, digest-pinned `verifyCi` hook proves every configured required
+  CI/CD check for the exact feature commit succeeded; failed, pending, skipped,
+  missing, stale, or unverifiable checks stop before planning and are checked
+  again immediately before the apply process starts;
 - the tracked index/worktree is clean (untracked bytes and ignored submodule
   dirt are not release inputs), and the requested branch resolves to a full
   immutable commit; archive inspection separately rejects every gitlink;
@@ -161,6 +165,7 @@ setting `enabled`):
   "maxSourceFiles": 200000,
   "approvalTtlSeconds": 900,
   "deliveryAttestationTtlSeconds": 900,
+  "ciAttestationTtlSeconds": 900,
   "planningIsolation": {
     "enforced": true,
     "provider": "protected-build-sandbox",
@@ -198,6 +203,7 @@ setting `enabled`):
     "status": "sha256:<64 lowercase hex>",
     "verify": "sha256:<64 lowercase hex>",
     "rollback": "sha256:<64 lowercase hex>",
+    "verifyCi": "sha256:<64 lowercase hex>",
     "verifyDelivery": "sha256:<64 lowercase hex>",
     "verifyApproval": "sha256:<64 lowercase hex>"
   },
@@ -207,6 +213,7 @@ setting `enabled`):
     "status": ["/protected/hooks/release-status", "--release", "{release_id}"],
     "verify": ["/protected/hooks/release-verify", "--release", "{release_id}"],
     "rollback": ["/protected/hooks/release-rollback", "--transaction", "{transaction_file}"],
+    "verifyCi": ["/protected/hooks/verify-ci", "--commit", "{commit}"],
     "verifyDelivery": ["/protected/hooks/verify-delivery", "--feature-digest", "{feature_id_digest}", "--commit", "{commit}", "--source-digest", "{source_archive_digest}", "--evidence", "{integration_evidence_digest}", "--product-acceptance", "{product_acceptance_digest}"],
     "verifyApproval": ["/protected/hooks/verify-approval", "--manifest", "{manifest_file}"]
   },
@@ -216,6 +223,7 @@ setting `enabled`):
     "status": 120,
     "verify": 600,
     "rollback": 900,
+    "verifyCi": 60,
     "verifyDelivery": 60,
     "verifyApproval": 60
   }
@@ -228,7 +236,7 @@ with only the exact variables its scriptable backend consumes. The release
 executor interprets normalized tracker records, not provider-specific objects.
 
 Only configured hooks need a `trustedHookDigests` entry; `plan`, `apply`,
-`status`, and `verify` are required. `verifyApproval` is required in
+`status`, `verify`, and `verifyCi` are required. `verifyApproval` is required in
 `approval-required`; `verifyDelivery` is required in `automatic`. The sixteen
 `trustedCodeDigests` keys above are exact and all are required whenever delivery
 is enabled with a shipped adapter. A custom adapter adds exactly one required
@@ -246,8 +254,9 @@ There are four positive environment boundaries:
   `config/team.config.md`); the launcher starts them with `env -i`, then adds
   fixed `STARTUP_FACTORY_*` role metadata and the non-secret hardening value
   `AWS_EC2_METADATA_DISABLED=true`.
-- `planningEnvironmentAllowlist` is used by `plan`, `verifyDelivery`, and
-  `verifyApproval`; it must contain no production secret. `HOME` is intentionally
+- `planningEnvironmentAllowlist` is used by `plan`, `verifyCi`,
+  `verifyDelivery`, and `verifyApproval`; it must contain no production secret.
+  `HOME` is intentionally
   absent from the shipped template.
 - `trackerEnvironmentAllowlist` is used only for deterministic export,
   integration revalidation, projections, and the terminal status write. List only
@@ -324,6 +333,38 @@ itself is not a manifest hook binding; its argv/pin are covered by the immutable
 config digest and its output by `planDigest`.
 
 ## Hook contracts
+
+### `verifyCi` (required in every enabled mode)
+
+This protected hook queries the authoritative CI provider for the exact
+`{commit}`. It exits non-zero unless the latest applicable required-check set is
+fully successful, and on success prints exactly:
+
+```json
+{
+  "schemaVersion": 1,
+  "green": true,
+  "commit": "<exact 40-character release commit>",
+  "provider": "github-actions",
+  "pipelineId": "workflow-run-12345678",
+  "requiredChecks": ["build", "test", "security"],
+  "successfulChecks": ["build", "test", "security"],
+  "failedChecks": [],
+  "pendingChecks": [],
+  "skippedChecks": [],
+  "completedAt": "2026-07-16T12:00:00+00:00",
+  "expiresAt": "2026-07-16T12:15:00+00:00"
+}
+```
+
+The schema is closed. `requiredChecks` must be non-empty and equal the
+successful set; failed, pending, skipped, or missing checks block deployment.
+The proof must bind the exact commit, use unique bounded check names, and remain
+fresh for no longer than `ciAttestationTtlSeconds` (60–86400 seconds). The
+executor verifies CI before plan, records the proof in protected transaction
+state, and runs the hook twice more inside the apply launch boundary—before and
+after persisting the one-use production-authority marker. No agent, approval,
+deadline, or target environment can waive this gate.
 
 ### `plan`
 
@@ -482,7 +523,8 @@ recovery, remains owned across cron passes and failures, and is released only
 after verified success or verified rollback. A failed owner fences the target
 until explicit operator recovery. Durable state lives only under
 the protected state root and uses phases `new`, `awaiting-product-approval`,
-`awaiting-attestation`, `planned`, `awaiting-approval`, `applying`, `verifying`,
+`awaiting-ci`, `awaiting-attestation`, `planned`, `awaiting-approval`,
+`applying`, `verifying`,
 and `rolling-back`, with terminal `succeeded`, `denied`, `failed`, `rolled-back`,
 and `superseded` outcomes. When a newer reviewed commit receives a release pass,
 an older transaction that is still safely pre-apply and has consumed no product
@@ -545,6 +587,6 @@ provider-side idempotency key; uncertain apply responses are resolved through
 The same rule applies when a detached release worker loses liveness after its
 launch barrier opens, or tracker authority changes during a release. The PM
 supervisor records the attempt as deployment-blocked (worker-loss exit `125`)
-and requires protected provider `status` reconciliation; a later Todo status
+and requires protected provider `status` reconciliation; a later ToDo status
 does not retroactively authorize the uncertain attempt or permit a blind
 re-apply.

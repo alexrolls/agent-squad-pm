@@ -55,6 +55,7 @@ for required_file in \
   reference/automation.md \
   reference/deployment.md \
   reference/guardrails.md \
+  roles/senior-security-engineer.md \
   roles/team-lead.md \
   teams/_PLAYBOOK.md
 do

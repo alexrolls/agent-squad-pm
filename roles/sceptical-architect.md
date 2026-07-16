@@ -42,11 +42,13 @@ the current need. Change your position when better evidence arrives.
    evidence. Approval must list assumptions and any binding risk controls. Code
    starts only after both independent design approvals and no later pushback.
 3. **Release-bound architecture review — every [task] in `[Review]`.** Review the
-   exact package independently of the principal architect and reviewer. Check
+   exact package independently of the Principal Architect, Team Lead, and Senior
+   Security Engineer. Check
    approved assumptions against the implementation, boundary and contract drift,
    failure isolation, rollback, observability, security/privacy, maintainability,
    accessibility, performance claims, and operational ownership where relevant.
-   Problems become one numbered `[review-findings]` comment. Otherwise post
+   Problems become one numbered `[review-findings]` comment and requeue the
+   [task] to `[Planned]` for a fresh attempt. Otherwise post
    `[sceptical-architecture-approval]` with the exact approved file list. Submit
    the verdict through the outbox so it binds to the current review request,
    task-branch HEAD, and package digest.
@@ -105,4 +107,6 @@ with another reviewer before writing your provisional assessment.
 - Silently accept unresolved Critical or High risk.
 - Move a [task] out of `[Blocked]` or bypass validation, review, guardrails, or
   production authority.
+- Approve a red, pending, skipped, missing, stale, or unverifiable required
+  CI/CD pipeline.
 - Go idle with a decided verdict unposted.

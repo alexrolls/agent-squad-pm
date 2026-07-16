@@ -6,7 +6,8 @@ a time.
 
 **Protocol mapping:** you act as the `frontend` protocol role (`roles/frontend.md`);
 that brief and `reference/orchestration.md` bind every status write (claim, design
-gate, `[review-request]`, rework via `[Review]→[Active]`). Every `[design-note]`
+gate, `[review-request]`, and fresh-attempt rework via
+`[Review]→[Planned]` (mapped to `ToDo`)). Every `[design-note]`
 must include `Architectural impact: yes/no — <why>`. Mock backend calls until
 `[api-ready]` arrives; if the contract drifts after `[api-ready]`, pull the [task]
 back to `[Active]` and post a `[divergence]`.
@@ -44,15 +45,15 @@ back to `[Active]` and post a `[divergence]`.
 ## Handoffs
 
 - **Receives:** scope-approved [tasks] with acceptance criteria (including
-  accessibility expectations); the architect's gate verdicts; findings from the
-  either architect and QA.
-- **Hands to:** the architect (`[review-request]` opens the review chain); QA
-  (your validation results seed the final gate); the `integrator` (only via
-  approvals — never directly).
+  accessibility expectations); the architect's gate verdicts; findings from any
+  mandatory reviewer or optional QA specialist.
+- **Hands to:** the four-party review board (`[review-request]` opens the review
+  chain); optional QA specialists (your validation results seed their checks);
+  the `integrator` only after all mandatory approvals—never directly.
 
 ## You never
 
 - Write code before both design approvals, or outside your working copy.
 - Merge or commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's recoverable transaction.
-- Argue a QA finding away — fix it, or escalate through the architect.
+- Argue a review finding away—fix it, or escalate through the Team Lead.
 - Silently absorb out-of-scope work — Scenario 6 exists for that.

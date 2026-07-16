@@ -97,7 +97,7 @@ class LinearPaginationTest(unittest.TestCase):
                     return {"project": {"issues": connection([{
                         "id": "issue-id", "identifier": "ENG-1", "title": "Ship it",
                         "description": "body", "updatedAt": "2026-04-01T00:00:00Z",
-                        "state": {"name": "Todo"}, "assignee": {"name": "Ada"},
+                        "state": {"name": "ToDo"}, "assignee": {"name": "Ada"},
                         "team": {"id": "team-id", "key": "ENG", "name": "Engineering"},
                     }], True, "issues-2")}}
                 return {"project": {"issues": connection([])}}
@@ -144,7 +144,7 @@ class LinearPaginationTest(unittest.TestCase):
                 ])}
             if "team(id:" in query and "states(first:" in query:
                 return {"team": {"states": connection([
-                    {"id": "todo-id", "name": "Todo"},
+                    {"id": "todo-id", "name": "ToDo"},
                     {"id": "blocked-id", "name": "Blocked"},
                 ])}}
             if "issues(first:" in query:
@@ -154,7 +154,7 @@ class LinearPaginationTest(unittest.TestCase):
                 return {"issues": connection([{
                     "id": "issue-id", "identifier": "ENG-2", "title": "Queued",
                     "description": None, "updatedAt": "2026-04-02T00:00:00Z",
-                    "state": {"name": "Todo"}, "assignee": None,
+                    "state": {"name": "ToDo"}, "assignee": None,
                     "team": {"id": "team-id", "key": "ENG", "name": "Engineering"},
                     "project": {"id": "project-id", "name": "Delivery"},
                 }])}
@@ -172,7 +172,7 @@ class LinearPaginationTest(unittest.TestCase):
                                          feature_field=True)
         self.assertEqual("ENG-2", rows[0]["taskId"])
         self.assertEqual("team-id", issue_queries[0][1]["teamId"])
-        self.assertEqual(["Blocked", "Todo"], issue_queries[0][1]["statuses"])
+        self.assertEqual(["Blocked", "ToDo"], issue_queries[0][1]["statuses"])
 
     def test_export_rejects_multi_team_project_instead_of_omitting_tasks(self):
         project_id = "00000000-0000-0000-0000-000000000001"
@@ -190,7 +190,7 @@ class LinearPaginationTest(unittest.TestCase):
                 return {"project": {"issues": connection([{
                     "id": "other-issue", "identifier": "OPS-1", "title": "Other team",
                     "description": None, "updatedAt": "2026-04-02T00:00:00Z",
-                    "state": {"name": "Todo"}, "assignee": None,
+                    "state": {"name": "ToDo"}, "assignee": None,
                     "team": {"id": "other-team", "key": "OPS", "name": "Operations"},
                 }])}}
             self.fail("unexpected Linear query: %s" % query)
@@ -217,13 +217,13 @@ class LinearPaginationTest(unittest.TestCase):
                 cursors.append(variables.get("after"))
                 if variables.get("after") is None:
                     return {"projectStatuses": connection(
-                        [{"id": "planned", "name": "Planned"}], True, "page-2")}
+                        [{"id": "planned", "name": "ToDo"}], True, "page-2")}
                 return {"projectStatuses": connection(
-                    [{"id": "completed", "name": "Completed"}])}
+                    [{"id": "completed", "name": "Live"}])}
             if "projectUpdate" in query:
                 self.assertEqual("completed", variables["sid"])
                 return {"projectUpdate": {"success": True,
-                                           "project": {"status": {"name": "Completed"}}}}
+                                           "project": {"status": {"name": "Live"}}}}
             self.fail("unexpected Linear query: %s" % query)
 
         self.linear.gql = gql
@@ -245,7 +245,7 @@ class JiraPaginationTest(unittest.TestCase):
     def issue(key, issue_type="Story", project_key="PROJ", parent=None):
         fields = {
             "summary": "Task %s" % key, "description": "description",
-            "status": {"name": "To Do"}, "assignee": None,
+            "status": {"name": "ToDo"}, "assignee": None,
             "issuelinks": [], "labels": [], "updated": "2026-05-01T00:00:00Z",
             "project": {"key": project_key}, "issuetype": {"name": issue_type},
         }
@@ -314,7 +314,7 @@ class JiraPaginationTest(unittest.TestCase):
                 return {"key": "PROJ"}
             if parsed.path.endswith("/search/jql"):
                 self.assertEqual(
-                    'project = "PROJ" AND issuetype = "Story" AND status in ("To Do","Blocked")',
+                    'project = "PROJ" AND issuetype = "Story" AND status in ("ToDo","Blocked")',
                     payload["jql"])
                 self.assertEqual(
                     ["summary", "description", "status", "assignee", "issuelinks",
@@ -393,7 +393,7 @@ class JiraPaginationTest(unittest.TestCase):
 
 class GitHubPaginationTest(unittest.TestCase):
     @staticmethod
-    def issue(number, status="status:planned", milestone=None, state="open"):
+    def issue(number, status="status:todo", milestone=None, state="open"):
         return {
             "number": number,
             "title": "Issue %d" % number,
@@ -441,7 +441,8 @@ class GitHubPaginationTest(unittest.TestCase):
                 return json.dumps([
                     [self.issue(1, milestone=target),
                      {"number": 99, "pull_request": {"url": "pull/99"}}],
-                    [self.issue(2, status="ignored", milestone=target, state="closed")],
+                    [self.issue(2, status="status:ready-for-production",
+                                milestone=target, state="closed")],
                 ])
             if endpoint.path == "repos/owner/repo/issues/1/comments":
                 return json.dumps([
@@ -487,7 +488,7 @@ class GitHubPaginationTest(unittest.TestCase):
                 return json.dumps([
                     [{"number": 88, "pull_request": {"url": "pull/88"}},
                      self.issue(3, status="status:blocked", milestone=milestone)],
-                    [self.issue(4, status="status:planned", milestone=milestone)],
+                    [self.issue(4, status="status:todo", milestone=milestone)],
                 ])
             if endpoint.path == "repos/owner/repo/issues/3/comments":
                 return json.dumps([

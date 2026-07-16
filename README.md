@@ -7,16 +7,17 @@ delivery.** Connect the project-management tool your team already loves—Linear
 Jira, GitHub Issues, local Markdown, or your own adapter—and make it the durable
 control plane for a cross-functional team of AI agents.
 
-Put a `[task]` in Todo—the shipped Linear mapping of the generic queued state.
+Put a `[task]` in ToDo—the shipped mapping of the generic queued state.
 When automation is enabled and scheduled, the deterministic PM supervisor
 checks the board every three minutes by default, leaves anything labeled
 `human-work` to people, routes every other queued task by its explicit team
 preset (or your configured default), and drives it through architecture,
-implementation, review, QA, and integration. It also observes Blocked work as a
-human-controlled safety lock: the matching task workers stop, while independent
-Todo work continues. When your release policy and exact approval allow it, a
+implementation, a four-party `In Review` gate, optional specialist QA, and
+integration. It also observes Blocked work as a human-controlled safety lock:
+the matching task workers stop, while independent ToDo work continues. When
+your release policy, exact approval, and protected green CI proof allow it, a
 separate credential-isolated executor deploys the reviewed immutable artifact,
-verifies the target, and only then closes the parent `[feature]`.
+verifies the target, and only then closes the parent `[feature]` as `Live`.
 
 Bring your own models, repository, stack, tracker, and infrastructure.
 Provider-neutral structured hooks can target production in any cloud,
@@ -37,14 +38,16 @@ production authority.
 ![Startup Factory demo](https://raw.githubusercontent.com/alexrolls/startup-factory/main/exports/execmatchai-issues-57s-70s.gif)
 
 ```text
-Todo -> route team -> design -> implement -> review -> QA -> integrate -> approve -> deploy -> verify
-                       Blocked -> stop only this task -> human unlock -> review changes -> fresh attempt
+ToDo -> In Progress -> In Review -> Ready for production -> deploy -> Live
+                          findings -> ToDo -> fresh attempt -> In Progress
+             red / pending / missing CI ----------------------X deploy anywhere
 ```
 
 > **Safe by default:** board automation and production delivery both ship
 > disabled. Ordinary agents never receive production credentials; enabling a
 > release requires protected external configuration, hooks, identities, and
-> verification.
+> verification. Only an exact, current green CI/CD proof for the release commit
+> permits deployment.
 
 ## Table of contents
 
@@ -132,11 +135,11 @@ authentication.
 | **Move fast without merge chaos** | A deterministic dispatcher launches only design-approved, dependency-ready, resource-safe work. Each attempt gets its own task branch and worktree; integration stays serialized. |
 | **See the whole delivery, not just agent output** | One live `[progress]` record per `[task]` and one `[digest]` per `[feature]` show tracker status, execution stage, actor, and attempt in your project-management tool. |
 | **Use the right model for each job** | Mix Claude, Codex, Gemini, or any file-reading CLI by role, then route individual tasks to fast, standard, or strong model profiles. |
-| **Keep quality gates explicit** | Architecture approval precedes implementation. Review uses an exact package, QA re-runs required checks, and the integrator runs your build, test, and lint commands before merging. |
+| **Keep quality gates explicit** | Architecture approval precedes implementation. In Review requires independent approvals from the Principal Architect, Sceptical Principal Architect, Senior Security Engineer, and Team Lead over one exact package; optional QA may add evidence, and the integrator runs your build, test, and lint commands before merging. |
 | **Recover instead of restarting** | Immutable task packets, durable events, checkpoint branches, an idempotent outbox, and attempt-aware relaunches make interrupted work inspectable and recoverable. |
 | **Keep your stack and your tracker** | The same workflow runs across languages, frameworks, LLMs, and project-management tools. Start offline with Markdown and switch adapters without rewriting the process. |
 | **Turn the board into a safe delivery queue** | A deterministic cron/service pass observes queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only for eligible queued tasks. |
-| **Pause one task without stopping the factory** | On the next scan, `[Blocked]` immediately fences only the matching task. Independent Todo work and other features continue; only a human can unlock it. |
+| **Pause one task without stopping the factory** | On the next scan, `[Blocked]` immediately fences only the matching task. Independent ToDo work and other features continue; only a human can unlock it. |
 | **Keep dangerous authority out of agents** | One deny/approval/allow contract governs every role. The code gate blocks dangerous privileged release hooks and plans; your required OS sandbox and least-privilege identities enforce ordinary-agent filesystem, network, process, and IAM boundaries. |
 
 ## Full transparency in your tracker
@@ -154,14 +157,14 @@ projected back into the configured tool.
 | Validation and review | Evidence records, changed-file lists, review findings, exact artifact paths, and explicit `NOT validated` declarations |
 | Blockers and human decisions | Proven `blocked-by` relationships plus escalations with a question, options, and a default if you are unavailable |
 | Release-policy denials | Idempotent `[DENIED ACTION]` audit comments for normalized production plans; other preflight refusals remain in protected runtime logs |
-| Delivery | The integrated commit, completed validation gates, `[Ready to deploy]`, and an idempotent `[deployment]` projection through verified production |
+| Delivery | The integrated commit, completed validation gates, generic `[Ready to deploy]` (shipped as `Ready for production`), protected green CI proof, and an idempotent `[deployment]` projection through verified production and `Live` |
 
 Use as much of the system as your project needs:
 
 | Layer | What it gives you | Where |
 |---|---|---|
 | **1. PM port** | One AI agent creates/tracks/completes `[features]` and `[tasks]` in any configured tracker through one tool-agnostic workflow. | `SKILL.md`, `reference/`, `adapters/` |
-| **2. Governed squad** | A lead coordinates, two independent architects gate design and release evidence, specialists implement, QA verifies, and an integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
+| **2. Governed squad** | A lead coordinates, two independent architects gate design, specialists implement, and four distinct agents—the Team Lead, both architects, and Senior Security Engineer—must approve the exact review package before the integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
 | **3. Task-driven runtime** | Event-driven dispatch, bounded parallel waves, model routing, exact review packages, durable handoffs, and recoverable integration. | `bin/dispatch.sh`, `bin/runtime-state.py`, `bin/integrate-task.sh` |
 | **4. Preset teams** | Five ready-made rosters for full-stack, backend, frontend, security, and infrastructure work, all resolved through the same team launcher. | `teams/`, `bin/launch-team.sh` |
 | **5. Portfolio automation** | One bounded cron/service pass observes generic queued/blocked statuses, bootstraps only queued feature runs, and reconciles comments, task holds, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
@@ -602,12 +605,15 @@ instead copied to operator-protected storage outside agent mounts.
 ### Configure your board
 
 `config/statuses.config.json` defines both state machines: every status, legal
-`transitions`, owner, and per-tracker `tool` mapping. The shipped task flow is
-`Planned → Active → Review → Ready to deploy`, with `Blocked` as the
-task-scoped human-held state. Its listed outbound transitions normalize human
-project-management actions; Startup Factory itself cannot author them. The
-shipped feature flow is
-`Planned → Active → Resolved`. Add, rename, or remove
+`transitions`, owner, and per-tracker `tool` mapping. The internal task flow is
+`Planned → Active → Review → Ready to deploy`, shipped to project tools as
+`ToDo → In Progress → In Review → Ready for production`; `Blocked` is the
+task-scoped human-held state. Review findings move the task from `Review` back
+to `Planned`/`ToDo`, and the dispatcher starts a fresh implementation attempt
+that returns through `In Progress`. The listed outbound transitions normalize
+human project-management actions; Startup Factory itself cannot author them.
+The internal feature flow is `Planned → Active → Resolved`, shipped with
+`Resolved` mapped to `Live`. Add, rename, or remove
 statuses by editing the JSON, then run `bin/launch-team.sh validate-board` to
 check the structural graph, reachability, owners, and marker roles. Separately
 verify that your active adapter maps every status to a real tracker state (the
@@ -619,7 +625,7 @@ feature status `Resolved`; disabled or unverified delivery remains non-terminal.
 
 | Section | Keys | Purpose |
 |---|---|---|
-| Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `SCEPTICAL_ARCHITECT_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
+| Role → command | `TEAM_LEAD_CMD`, `PRINCIPAL_ARCHITECT_CMD`, `SCEPTICAL_ARCHITECT_CMD`, `SENIOR_SECURITY_ENGINEER_CMD`, `INTEGRATOR_CMD`, `BACKEND_CMD`, `FRONTEND_CMD`, `QA_CMD`, `REVIEWER_CMD`, `TEAM_DEFAULT_CMD` | Which CLI runs each role ([see above](#multi-agent-teams--map-each-role-to-a-cli-command)) |
 | Task model routing | `TASK_FAST_CMD`, `TASK_STANDARD_CMD`, `TASK_STRONG_CMD` | Optional task-level command overrides selected from packet metadata and conservative risk classification; each falls back to the role command |
 | Coordination | `TEAMWORK_ROOT` (`.teamwork`), `AGENT_ENV_ALLOWLIST` (non-secret minimum), `POLL_INTERVAL_SECONDS` (120), `STUCK_AFTER_MINUTES` (15), `ESCALATE_AFTER_ATTEMPTS` (2), `TRACKER_WRITERS` (`broker`), `EXECUTION` (`sequential`), `MAX_ACTIVE_IMPLEMENTERS` (`null`) | Canonical symlink-free workspace paths; LLMs start with `env -i`; deterministic broker keeps tracker credentials out of every LLM role; event-driven supervision with polling fallback; bounded sequential/parallel scheduling |
 | Worktree provisioning | `WORKTREE_SETUP` | Non-empty setup command run once inside every fresh task worktree through the same sandbox boundary; autonomous mode rejects null/no-op provisioning. |
@@ -636,7 +642,7 @@ integrator learns about your stack.
 | File | Purpose | Safe default |
 |---|---|---|
 | `config/automation.config.json` | Scan cadence, separate observation/launch kinds, task-hold policy, run cap, branch/worktree root, allowed/default team presets | `enabled: false` |
-| `config/deployment.config.json` | Disabled template for protected external target/state paths, trusted base, code/hook pins, four positive environment boundaries, attestation/approval hooks, and timeouts | `enabled: false`, `approval-required` |
+| `config/deployment.config.json` | Disabled template for protected external target/state paths, trusted base, code/hook pins, positive environment boundaries, protected CI/attestation/approval hooks, and timeouts | `enabled: false`, `approval-required` |
 | `config/guardrails.config.json` | Project additions to the built-in immutable deny policy and automatic cost/change limits | Zero cost delta; cannot weaken built-ins |
 
 #### Board automation configuration
@@ -656,7 +662,7 @@ protected external storage before enabling it. The scheduler reads these keys:
 | `maxFeaturesPerPass` | `2` | Maximum new feature runs bootstrapped in one pass, from 1–1000; existing runs reconcile first. The omission fallback is 1. |
 | `requireAgentSandbox` | `true` | Mandatory invariant; `false` or missing is rejected. |
 | `requireSingleTrackerWriter` | `true` | Mandatory invariant requiring deterministic broker writes. |
-| `observeStatusKinds` | `queued`, `blocked` | Exact adapter-neutral kinds to observe. The shipped Linear mapping is Todo and Blocked; observation is not launch authority. |
+| `observeStatusKinds` | `queued`, `blocked` | Exact adapter-neutral kinds to observe. The shipped project mapping is ToDo and Blocked; observation is not launch authority. |
 | `launchStatusKinds` | `queued` | The only kind eligible for a new automatic launch. `[Blocked]` is observed solely to enforce its hold. |
 | `blockedTaskPolicy` | task-scoped, human exit, no automatic resume | Fixed fail-closed policy: continue independent work, refresh all communication, propagate only lead-confirmed direct dependencies, and use a fresh attempt after human resume. Missing, unknown, or weaker values are rejected. |
 | `ignoredTaskLabels` | `human-work` | Case-insensitive tracker labels that reserve a task for people. New matching tasks are never claimed or launched; if the label appears mid-flight, the next reconcile stops/fences that task while independent work continues. Removing it restores normal status-specific handling on the next scan. |
@@ -706,22 +712,28 @@ and verifier below is installed and tested.
 | `target` | Set a stable non-secret `id`; add provider-neutral routing such as `provider`, `region`, `service`, account, namespace, or cluster fields needed by your hooks. |
 | `stateRoot`, `trustedPath` | Absolute external release transaction/state root and protected executable-search path. |
 | `gitLfsPolicy`, `maxSourceArchiveBytes`, `maxSourceBytes`, `maxSourceFiles` | Bound and validate the isolated source snapshot consumed by planning. |
-| `approvalTtlSeconds`, `deliveryAttestationTtlSeconds` | Maximum age of exact approval and automatic-delivery attestation evidence. |
+| `approvalTtlSeconds`, `deliveryAttestationTtlSeconds`, `ciAttestationTtlSeconds` | Maximum age of exact approval, automatic-delivery attestation, and protected green CI evidence. |
 | `planningIsolation` | Declare the protected sandbox provider, separate identity, unmounted credential/state paths, and production-egress posture. Safe templates are intentionally incomplete. |
 | `credentialEnvFile`, `credentialEnvironmentAllowlist` | Mode-0600-or-stricter external credential source and the exact names the privileged hooks may receive. Ordinary agents and plan hooks never inherit it. |
-| `planningEnvironmentAllowlist`, `trackerEnvironmentAllowlist`, `environmentAllowlist` | Three independent positive allowlists for planning, tracker projection, and release hooks. |
+| `planningEnvironmentAllowlist`, `trackerEnvironmentAllowlist`, `environmentAllowlist` | Independent positive allowlists for planning/CI verification, tracker projection, and privileged release hooks. |
 | `trustedCodeDigests`, `trustedHookDigests` | SHA-256 pins for the protected executor/helper set and every dedicated hook executable. |
 | `hooks.plan` | Produce a canonical structured plan from isolated source, binding the exact source archive and immutable `artifactDigest`. Required when delivery is enabled. |
+| `hooks.verifyCi` | Required whenever delivery is enabled. Return a protected, fresh, exact-commit proof that every required check succeeded and no check is failed, pending, skipped, missing, stale, or unverifiable. It is re-run before planning and twice at the apply boundary. |
 | `hooks.status`, `hooks.apply`, `hooks.verify` | Read current target state, apply the exact reviewed artifact, and independently prove the deployed version and health. |
 | `hooks.rollback` | Optional bounded recovery hook; automatic rollback may target only the immediately previous immutable artifact matching observed pre-apply status. |
 | `hooks.verifyApproval` | Required by `approval-required`; validate an external exact-manifest authorization. Tracker comments never satisfy it. |
 | `hooks.verifyDelivery` | Required by `automatic`; attest role isolation, planning isolation, and approval authenticity for the exact commit and evidence digests. |
-| `timeoutsSeconds` | Per-hook bounds for plan, status, apply, verify, rollback, approval, and attestation. Their conservative total must fit inside `releaseTimeoutSeconds`. |
+| `timeoutsSeconds` | Per-hook bounds for CI verification, plan, status, apply, verify, rollback, approval, and attestation. Their conservative total must fit inside `releaseTimeoutSeconds`. |
 
 | Release mode | What can proceed |
 |---|---|
 | `approval-required` | Apply proceeds for a policy-clean manifest only after the protected `verifyApproval` hook confirms the exact target, commit, artifact, evidence digests, expiry, and nonce. |
 | `automatic` | Only a non-destructive, reversible immutable-artifact release with no approval-only effects and a valid protected `verifyDelivery` attestation. |
+
+Both release modes also require the protected `verifyCi` hook to prove a green
+pipeline for the exact release commit. Red, failed, pending, skipped, missing,
+stale, or unverifiable CI blocks apply before any supported environment can be
+changed; no agent or tracker comment can waive that gate.
 
 The provider hooks are the production-target boundary. Startup Factory does not
 hard-code AWS, Azure, GCP, Kubernetes, VMs, bare metal, or a particular CI/CD
@@ -774,8 +786,11 @@ every agent mount, for authenticated PID/start-time/tmux lifecycle authority.
 Just talk to your agent in the generic vocabulary:
 
 - *"Plan a feature: …"* → creates a `[feature]` + `[tasks]`
-- *"Start task ENG-142"* → `[Active]`, then implements
-- *"Send it to review"* / *"Finalize it"* → `[Review]` → `[Ready to deploy]`
+- *"Start task ENG-142"* → generic `[Active]` / shipped `In Progress`, then implements
+- *"Send it to review"* → generic `[Review]` / shipped `In Review`, launching
+  the four mandatory independent reviewers
+- *"Finalize it"* → only after all four approvals, generic
+  `[Ready to deploy]` / shipped `Ready for production`
 - *"Switch the tracker to Linear"* → follows the adapter's setup
 
 ### A whole team
@@ -876,7 +891,7 @@ reject output from an escaped stale process.
 | `state <taskId> <Status>` | Make and verify a legal generic `[task]` status write. Startup Factory rejects every outbound `[Blocked]` transition; a human must perform that move in the project-management tool. |
 | `feature-state <featureId> <Status>` | Make and verify a legal generic `[feature]` status write. |
 | `feature-reopen <featureId> <Status>` | PM-supervisor-only terminal-to-queued reopen for a new delivery generation. |
-| `task-reopen <taskId> <Status>` | Integration-broker-only terminal-to-working reopen after late valid findings. |
+| `task-reopen <taskId> <Status>` | Integration-broker-only terminal-to-queued reopen after late valid findings; the shipped target is `Planned`/`ToDo`, followed by a fresh claim into `Active`/`In Progress`. |
 | `comment <taskId> [bodyfile]` | Add a comment, reading its body from a file or stdin. |
 | `comment-once <taskId> <deliveryId> <bodyfile>` | Deliver one idempotent comment for a durable outbox item. |
 | `update-comment <taskId> <commentId> [bodyfile]` | Edit an existing comment where the adapter supports it. |
@@ -893,18 +908,25 @@ These commands use Linear/Jira REST, the `gh` CLI, or Markdown files. The
 adapter docs remain the operation contract; interactive MCP sessions use their
 native tools instead. Comment bodies are never shell arguments.
 
-**The flow every team follows:** the Principal Architect leads and owns the
-primary architecture position; the Sceptical Architect independently challenges
-planning and every `[task]` design before code, then supplies a release-bound
-architecture approval → the dispatcher creates immutable task packets and isolated
-worktrees → specialists checkpoint their task branches → the **Senior QA
-Engineer is the final review gate** over an exact review package → the
-integrator validates and merges one task at a time, then idempotently marks it
-`[Ready to deploy]`. Runtime events trigger PM progress and feature-digest
-upserts. The lead detects stuck/conflicting/crashed agents and recovers them —
-message → decide → reassign → relaunch — escalating to you only as a last
-resort. A tracker `[Blocked]` state is different: it is a human lock that no
-Startup Factory role can remove.
+**The flow every team follows:** the Principal Architect owns the primary
+architecture position; the Sceptical Principal Architect independently
+challenges planning and every `[task]` design before code → the dispatcher
+creates immutable task packets and isolated worktrees → specialists checkpoint
+their task branches and submit one exact review package → the task enters
+generic `[Review]`, mapped to `In Review`, and four distinct agents review it:
+Principal Architect, Sceptical Principal Architect, Senior Security Engineer,
+and Team Lead. Optional QA/reviewer specialists may add evidence but cannot
+replace any mandatory verdict. Any blocking quality, architecture, or security
+finding returns the task to generic `[Planned]`, mapped to `ToDo`, for a fresh
+attempt through `In Progress`. Only all four current bound approvals let the
+integrator validate and merge, then idempotently mark generic
+`[Ready to deploy]`, mapped to `Ready for production`. Deployment additionally
+requires exact current green CI; after verified production succeeds, the
+feature is mapped to `Live`. Runtime events trigger PM progress and
+feature-digest upserts. The lead detects stuck/conflicting/crashed agents and
+recovers them—message → decide → reassign → relaunch—escalating to you only as
+a last resort. A tracker `[Blocked]` state is different: it is a human lock that
+no Startup Factory role can remove.
 
 ## Automate the board and production delivery
 
@@ -1139,8 +1161,11 @@ The release transaction requires the canonical symlink-free feature workspace,
 a gap-free integration chain rooted under `trustedBaseRef`, an exact
 commit/evidence-bound feature-level product acceptance marker, and current
 trusted code/hook/config bindings. Missing or stale product acceptance is routed
-back to the product role before any release plan or apply. The executor always
-queries current deployment state before apply,
+back to the product role before any release plan or apply. A protected
+`verifyCi` hook must also prove that the exact release commit has a current
+green pipeline; the executor checks this before planning and twice at the apply
+boundary, so a red or newly regressed pipeline cannot race into deployment.
+The executor always queries current deployment state before apply,
 checks the artifact digest, independently verifies health/version, redacts loaded
 credentials from logs, and records success only after verification. The release
 executor alone performs the terminal [feature] transition; disabled or waiting
@@ -1162,16 +1187,18 @@ those directories and rechecks their identity plus feature HEAD at apply.
 
 | Preset | Roster | Use when |
 |---|---|---|
-| `full-stack` | Principal Software Architect · Sceptical Architect · Senior Technical PM · Senior Full Stack Engineer · Senior QA | Features cutting through schema, API, and UI — the default |
-| `deep-backend` | Principal Backend Architect · Sceptical Architect · TPM · Senior Staff Engineer · Senior QA | Domain logic, data models, APIs, performance |
-| `deep-frontend` | Principal Frontend Architect · Sceptical Architect · TPM · Senior Frontend Engineer · Senior QA | UI architecture, client state, design systems, a11y |
-| `deep-security` | Principal Security Architect · Sceptical Architect · TPM · Senior Security Engineer · Senior Penetration Tester · Senior QA | Security features & hardening on your own codebase |
-| `deep-infra` | Principal Cloud & Infrastructure Architect · Sceptical Architect · TPM · Senior Cloud Engineer · Senior SRE · Senior QA | Cloud infra, IaC, delivery pipelines, reliability |
+| `full-stack` | Team Lead · Principal Software Architect · Sceptical Architect · Senior Security Engineer · Senior Technical PM · Senior Full Stack Engineer · Senior QA | Features cutting through schema, API, and UI — the default |
+| `deep-backend` | Team Lead · Principal Backend Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Staff Engineer · Senior QA | Domain logic, data models, APIs, performance |
+| `deep-frontend` | Team Lead · Principal Frontend Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Frontend Engineer · Senior QA | UI architecture, client state, design systems, a11y |
+| `deep-security` | Team Lead · Principal Security Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Security Implementation Engineer · Senior Penetration Tester · Senior QA | Security features & hardening on your own codebase |
+| `deep-infra` | Team Lead · Principal Cloud & Infrastructure Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Cloud Engineer · Senior SRE · Senior QA | Cloud infra, IaC, delivery pipelines, reliability |
 
-Every preset: the **Principal Architect leads**, the **Sceptical Architect is an
-independent design and release-evidence gate**, the **Senior QA Engineer is the
-final gate**, and a standard integrator owns serialized feature-branch commits
-and recoverable tracker finalization. Details in
+Every preset launches four distinct mandatory review-board agents: **Team
+Lead**, **Principal Architect**, **Sceptical Principal Architect**, and
+**Senior Security Engineer**. They independently review the same exact package;
+QA and reviewer roles are optional specialists, not substitutes. A standard
+integrator owns serialized feature-branch commits and recoverable tracker
+finalization only after all four approvals. Details in
 [`teams/README.md`](teams/README.md).
 
 ---
@@ -1192,16 +1219,22 @@ flowchart LR
     Route{"Opt-in and preset<br/>valid?"}
     Gates["Lead · Product · Two architects<br/>scope and independent design gates"]
     Work["Task-scoped agents<br/>isolated Git worktrees"]
-    Review["Triple independent review · QA<br/>exact bound evidence"]
+    Review["In Review<br/>Lead · Principal · Sceptical · Security"]
+    Rework["ToDo<br/>fresh numbered attempt"]
     Integrate["Integrator<br/>serialized feature branch"]
+    CI{"Exact-commit protected CI<br/>green?"}
     Policy{"Release policy and<br/>exact authority pass?"}
     Release["Credential-isolated<br/>release executor"]
-    Target["Verified production target"]
+    Target["Verified production target<br/>feature Live"]
 
     Board --> PM --> State
     State -->|queued| Route
     State -->|Blocked| Hold -->|human returns to queued| Board
-    Route -->|yes| Gates --> Work --> Review --> Integrate --> Policy
+    Route -->|yes| Gates --> Work --> Review
+    Review -->|blocking finding| Rework --> Work
+    Review -->|all four approve| Integrate --> CI
+    CI -->|green| Policy
+    CI -->|red · pending · missing| Board
     Route -->|pause / escalate| Board
     Policy -->|approved| Release --> Target --> Board
     Policy -->|wait / deny| Board
@@ -1272,8 +1305,8 @@ package metadata and CLI source, but not repository-only release automation.
 │   ├── Markdown.md · Linear.md · Jira.md · GitHubIssues.md
 │   └── _TEMPLATE.md                  scaffold for a new tracker
 ├── extensions/tracker-backends/      project-owned custom tracker modules
-├── roles/                            the 8 base protocol roles
-│   └── team-lead · principal-architect · sceptical-architect · integrator · backend · frontend · qa · reviewer
+├── roles/                            the 9 base protocol roles
+│   └── team-lead · principal-architect · sceptical-architect · senior-security-engineer · integrator · backend · frontend · qa · reviewer
 ├── teams/
 │   ├── README.md · _PLAYBOOK.md      how presets work + shared collaboration flow
 │   ├── full-stack.md · deep-backend.md · deep-frontend.md · deep-security.md · deep-infra.md
@@ -1308,7 +1341,10 @@ scriptable backend before deterministic dispatch/automation can use it.
   `PRODUCT_MANAGEMENT_TOOL=<YourTool>`. Do not edit the upstream-owned
   `bin/tracker-ops.sh`; see [`extensions/tracker-backends/README.md`](extensions/tracker-backends/README.md).
 - **New team:** copy any `teams/<preset>.md`, edit the charter, `ROSTER=` line, and
-  review order. Include `integrator` in the roster.
+  specialist roles. Include four distinct enabled mappings and roster entries
+  for `PROTOCOL_TEAM_LEAD`, `PROTOCOL_PRINCIPAL_ARCHITECT`,
+  `PROTOCOL_SCEPTICAL_ARCHITECT`, and `PROTOCOL_SECURITY_REVIEWER`, plus
+  `integrator`.
 - **New role:** add `teams/roles/<kebab-name>.md` with the standard sections
   (identity, **Protocol mapping**, responsibilities, decision authority,
   deliverables, handoffs, "you never"). The launcher resolves any role that has a
@@ -1325,7 +1361,7 @@ exact protocol markers — never invent new ones.
 |---|---|
 | Agent says the tracker is unavailable | Re-check the adapter's *Access mechanisms* (MCP block or exported API-key env vars); the agent stops rather than fabricating — that's by design |
 | `launch-team.sh` can't find a role | The role needs a brief in `roles/` or `teams/roles/`, and its `<ROLE>_CMD` (or `TEAM_DEFAULT_CMD`) must be set |
-| A role won't launch in a preset | An optional role may have `<ROLE>_CMD=null`; remove the line to fall back to `TEAM_DEFAULT_CMD`. The Sceptical Architect is mandatory, so its missing/duplicate mapping, absent roster entry, null command, or missing fallback rejects the whole team before launch. |
+| A role won't launch in a preset | An optional role may have `<ROLE>_CMD=null`; remove the line to fall back to `TEAM_DEFAULT_CMD`. Team Lead, Principal Architect, Sceptical Principal Architect, and Senior Security Engineer are mandatory, distinct reviewers; a missing/duplicate mapping, absent roster entry, null command, or missing fallback rejects the whole team before launch. |
 | No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
 | `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
 | Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead applies the recovery ladder, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md`. A `[Blocked]` task is intentionally human-held and never changed outbound by automation. |
@@ -1334,6 +1370,7 @@ exact protocol markers — never invent new ones.
 | `--print-cron` rejects the scan interval | Conventional cron output supports minute divisors of 60 and whole-hour divisors of 24. Use a service timer or hosted scheduler for cadences such as seven minutes |
 | `another live pass owns the monitor lease` | One healthy pass is already running on this host. Do not start a second scheduler; multi-host operation needs a distributed lock or adapter-native compare-and-set |
 | Release waits for product acceptance | Publish a current feature-scope `[product-approval]` bound to the exact final feature HEAD and integration-evidence digest; stale or ambiguous evidence cannot release |
+| Release says it is awaiting CI | Inspect the protected `verifyCi` result for the exact release commit. Failed, pending, skipped, missing, stale, mismatched, or unverifiable required checks block every apply; fix CI and rerun the release transaction—never bypass or replace this proof with a tracker comment. |
 | Release says it is awaiting authorization | In `approval-required` mode, have the protected `verifyApproval` system authorize the exact manifest before its expiry; a board comment is intentionally insufficient |
 | Release is fenced after an uncertain apply, detached-worker loss (exit 125), post-launch authority change, or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
 | Want to verify the plumbing | `bash tests/run-all.sh` → `ALL TESTS PASS` (stub agents + local files; no LLM, no cost) |

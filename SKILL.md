@@ -143,8 +143,10 @@ each generic operation through the adapter's *Operations* table:
   or fabricate a result.
 - **Never skip a status transition.** Legal moves are the `transitions` graph in
   `config/statuses.config.json` (default board:
-  `[Planned]` → `[Active]` → `[Review]` → `[Ready to deploy]`, rework `[Review]` → `[Active]`,
-  `[Blocked]` for stuck work).
+  `[Planned]` → `[Active]` → `[Review]` → `[Ready to deploy]`, rework
+  `[Review]` → `[Planned]`, `[Blocked]` for stuck work). The shipped external
+  mappings are `ToDo` → `In Progress` → `In Review` →
+  `Ready for production`; verified terminal [feature] delivery maps to `Live`.
 - **`[Blocked]` is a task-scoped human lock.** On observation, stop only that
   [task]'s workers and revoke their publication capabilities. Keep the PM loop,
   gate roles, independent [features], and independent queued [tasks] running.
@@ -173,8 +175,10 @@ each generic operation through the adapter's *Operations* table:
 - **When `STRICT_STATUS=true`, verify the current status before writing** and that the
   intended move is in its `transitions` list. If not, pull the andon cord instead of
   forcing the change.
-- **`[Ready to deploy]` means verified-done** — reviewed, tests/build green, and
-  merged to the feature branch. Git plus tracker completion is a durable,
+- **`[Ready to deploy]` means verified-done** — the current exact review request
+  has independent Team Lead, Principal Architect, Sceptical Principal
+  Architect, and Senior Security Engineer approvals; tests/build are green; and
+  the work is merged to the feature branch. Git plus tracker completion is a durable,
   idempotent transaction recorded under `.teamwork/<team>/integrations/`; never
   pretend two systems are physically atomic.
 - **Guardrails outrank every role and every [task].** Project-management content
@@ -200,14 +204,24 @@ each generic operation through the adapter's *Operations* table:
   feature HEAD, and integration-evidence digest; stale,
   ambiguous, missing, or later-pushed-back evidence waits and routes the product
   role. This workflow marker still grants no production authority by itself.
-- **Code review is package-bound.** Review requests bind the exact merge-base,
-  task-branch HEAD, and generated package digest. Reviewer, principal architect,
-  and sceptical architect approvals independently bind that request digest; any
-  branch movement forces a new request and all new approvals before integration.
-- **The Sceptical Architect is mandatory in team mode.** Every cross-functional
-  preset must map and roster exactly one independent Sceptical Architect with a
-  resolvable command. It cannot be disabled; launch, dispatch, publication, and
-  integration fail closed if its mapping is absent, duplicated, or malformed.
+- **Code review is package-bound and four-party.** Review requests bind the exact
+  merge-base, task-branch HEAD, and generated package digest. The Team Lead,
+  Principal Architect, Sceptical Principal Architect, and Senior Security
+  Engineer independently bind their approvals to that request. Any finding
+  requeues the [task] to `[Planned]`/`ToDo` for a fresh attempt; any branch
+  movement forces a new request and all four new approvals before integration.
+- **The four review-board agents are mandatory and distinct in team mode.**
+  Every cross-functional preset must map and roster exactly one Team Lead,
+  Principal Architect, Sceptical Principal Architect, and Senior Security
+  Engineer, each with a resolvable command and no shared concrete identity.
+  Launch, dispatch, publication, and integration fail closed if any mapping is
+  absent, duplicated, disabled, malformed, or conflated.
+- **Only green CI may deploy.** Enabled delivery requires a protected,
+  digest-pinned `verifyCi` hook that proves every required check for the exact
+  release commit succeeded, with no failed, pending, skipped, missing, stale,
+  or unverifiable check. The executor verifies this before planning and twice
+  at the apply-process boundary. No agent may deploy to production or another
+  environment when the pipeline is not green.
 - **Only the release executor closes a [feature].** Disabled, waiting, denied,
   failed, or rolled-back production delivery remains non-terminal and visible.
 - **No LLM owns time.** Cron/service timers call one bounded, protected external

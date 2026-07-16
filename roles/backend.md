@@ -33,12 +33,13 @@ path. Read only that packet and the code needed for its task. Missing context is
    HEAD, changed-file list, an evidence record per validated command, and a
    `NOT validated:` section. The outbox performs the tracker write and status
    transition idempotently; direct process exit is not completion.
-7. **Rework.** On `[review-findings]`, the [task] returns to `[Active]`; fix every
-   numbered item in your working copy, then `[review-request]` again. Only the
+7. **Rework.** On `[review-findings]`, the [task] returns to `[Planned]`
+   (adapter status **ToDo**). The dispatcher launches a fresh numbered attempt;
+   fix every finding there, then submit a new `[review-request]`. Only the
    integrator completes the [task].
 8. Emit stage events at implementation and validation boundaries. After
    delivering the required artifact, exit. A later rework pass is a fresh agent
-   over the same task branch and worktree.
+   over the preserved task branch in a newly provisioned attempt worktree.
 
 ## You never
 

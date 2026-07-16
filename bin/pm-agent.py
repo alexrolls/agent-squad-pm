@@ -934,6 +934,7 @@ def validate_release_deadline(config: dict) -> None:
         "status": 120,
         "verify": 600,
         "rollback": 900,
+        "verifyCi": 60,
         "verifyDelivery": 60,
         "verifyApproval": 60,
     }
@@ -947,10 +948,12 @@ def validate_release_deadline(config: dict) -> None:
             raise MonitorError(f"deployment timeoutsSeconds.{name} must be an integer from 1 to 86400")
         values[name] = value
     attestor = "verifyDelivery" if config.get("mode") == "automatic" else "verifyApproval"
-    # Worst recoverable pass: plan + authority attestor + pre/post status polls,
-    # apply, independent verify, safe rollback, and bounded supervisor overhead.
+    # Worst recoverable pass: plan + the initial and two apply-boundary CI
+    # verifications + authority attestor + pre/post status polls, apply,
+    # independent verify, safe rollback, and bounded supervisor overhead.
     required = (
         values["plan"]
+        + (3 * values["verifyCi"])
         + values[attestor]
         + (4 * values["status"])
         + values["apply"]
@@ -1325,7 +1328,7 @@ def read_release_job_result(job_dir: Path, identity: dict) -> dict:
         # The request is protected authority evidence in its own right. The
         # worker can finish between the supervisor's non-terminal read and its
         # cancel write, or between its last poll and terminal result write.
-        # Never let a later Todo transition erase that already-observed loss of
+        # Never let a later ToDo transition erase that already-observed loss of
         # authority for a terminal attempt.
         if result["state"] == "completed":
             result = dict(result)

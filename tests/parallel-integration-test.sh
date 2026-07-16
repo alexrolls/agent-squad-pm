@@ -29,22 +29,26 @@ bind_review() {
   snapshot=".teamwork/feature-integration/tasks.json"
   prefix="$TMP/review-$key-$(date +%s)-$$"
   printf '[review-request] exact package review\nFiles: %s\n\n- backend\n' "$files" > "$prefix.request"
-  printf '[review-approval] exact package approved\nFiles: %s\n\n- reviewer\n' "$files" > "$prefix.review"
+  printf '[team-lead-approval] exact package approved\nFiles: %s\n\n- team-lead\n' "$files" > "$prefix.lead"
   printf '[architecture-approval] exact package approved\nFiles: %s\n\n- principal-architect\n' "$files" > "$prefix.architecture"
   printf '[sceptical-architecture-approval] exact package approved\nFiles: %s\n\n- sceptical-architect\n' "$files" > "$prefix.sceptical"
+  printf '[security-approval] exact package approved\nFiles: %s\n\n- senior-security-engineer\n' "$files" > "$prefix.security"
   .agent-squad/bin/review_evidence.py bind-request \
     "$prefix.request" "$base" "$head" "$package_digest" "$prefix.request.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.request.bound"
   .agent-squad/bin/tracker-ops.sh export "$FID" "$snapshot"
   .agent-squad/bin/review_evidence.py bind-approval \
-    "$prefix.review" "$snapshot" "$task" "$prefix.review.bound"
+    "$prefix.lead" "$snapshot" "$task" "$prefix.lead.bound"
   .agent-squad/bin/review_evidence.py bind-approval \
     "$prefix.architecture" "$snapshot" "$task" "$prefix.architecture.bound"
   .agent-squad/bin/review_evidence.py bind-approval \
     "$prefix.sceptical" "$snapshot" "$task" "$prefix.sceptical.bound"
-  .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.review.bound"
+  .agent-squad/bin/review_evidence.py bind-approval \
+    "$prefix.security" "$snapshot" "$task" "$prefix.security.bound"
+  .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.lead.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.architecture.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.sceptical.bound"
+  .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.security.bound"
   .agent-squad/bin/tracker-ops.sh export "$FID" "$snapshot"
 }
 
@@ -111,15 +115,25 @@ files: app.txt
 >
 > - backend
 
-> [review-approval] round: 1
+> [team-lead-approval] round: 1
 > Files: app.txt
 >
-> - reviewer
+> - team-lead
 
 > [architecture-approval] round: 1
 > Files: app.txt
 >
 > - principal-architect
+
+> [sceptical-architecture-approval] round: 1
+> Files: app.txt
+>
+> - sceptical-architect
+
+> [security-approval] round: 1
+> Files: app.txt
+>
+> - senior-security-engineer
 
 ## 3 Concurrent brokered change [Review]
 
@@ -133,15 +147,25 @@ files: third.txt
 >
 > - backend
 
-> [review-approval] round: 1
+> [team-lead-approval] round: 1
 > Files: third.txt
 >
-> - reviewer
+> - team-lead
 
 > [architecture-approval] round: 1
 > Files: third.txt
 >
 > - principal-architect
+
+> [sceptical-architecture-approval] round: 1
+> Files: third.txt
+>
+> - sceptical-architect
+
+> [security-approval] round: 1
+> Files: third.txt
+>
+> - senior-security-engineer
 EOF
 
 FID=.workspace/task-manager/feature.md
@@ -212,15 +236,25 @@ files: second.txt
 >
 > - backend
 
-> [review-approval] round: 1
+> [team-lead-approval] round: 1
 > Files: second.txt
 >
-> - reviewer
+> - team-lead
 
 > [architecture-approval] round: 1
 > Files: second.txt
 >
 > - principal-architect
+
+> [sceptical-architecture-approval] round: 1
+> Files: second.txt
+>
+> - sceptical-architect
+
+> [security-approval] round: 1
+> Files: second.txt
+>
+> - senior-security-engineer
 EOF
 
 TID2="$FID#2"
@@ -320,11 +354,11 @@ refuse "fresh tracker fence blocks merge before the registry catches up" \
   .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
 check "authoritative Blocked fence leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
 perl -0pi -e 's/## 2 Brokered change \[Blocked\]/## 2 Brokered change [Review]/' "$FID"
-perl -0pi -e 's/## 2 Brokered change \[Review\]/## 2 Brokered change [Active]/' "$FID"
-refuse "manual Blocked-to-Active drift cannot bypass the semantic review fence" \
+perl -0pi -e 's/## 2 Brokered change \[Review\]/## 2 Brokered change [Planned]/' "$FID"
+refuse "manual Blocked-to-Planned drift cannot bypass the semantic review fence" \
   .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1
 check "non-review status drift leaves the feature branch untouched" test "$(git rev-parse HEAD)" = "$head_before_hold"
-perl -0pi -e 's/## 2 Brokered change \[Active\]/## 2 Brokered change [Review]/' "$FID"
+perl -0pi -e 's/## 2 Brokered change \[Planned\]/## 2 Brokered change [Review]/' "$FID"
 .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID2" backend 1 >/dev/null
 .agent-squad/bin/integrate-task.sh feature-integration "$FID" "$TID3" backend 1 >/dev/null
 key3="$(python3 .agent-squad/bin/runtime-state.py key "$TID3")"
@@ -412,14 +446,15 @@ check "late invalidation preserves original transaction in history" \
   bash -c 'test "$(find .teamwork/feature-integration/integrations/history -name "*integration-*.json" | wc -l | tr -d " ")" -ge 1'
 check "late invalidation creates an explicit revert commit" \
   git log -1 --format=%B --grep='Integration-Recovery:'
-check "late invalidation returns tracker task to active rework" grep -q '^## 2 Brokered change \[Active\]$' "$FID"
+check "late invalidation returns tracker task to queued rework" grep -q '^## 2 Brokered change \[Planned\]$' "$FID"
 check "superseded canonical transaction is retired" test ! -e "$tx2"
 
 # Rework proceeds from the preserved history: a new attempt adds a fix, receives
-# a new request/triple approval after the finding, and integrates normally.
+# a new request/four-party approval after the finding, and integrates normally.
 $LAUNCH worktree-remove feature-integration backend "$TID2" 1 >/dev/null
 wt2="$($LAUNCH worktree feature-integration backend "$TID2" 2)"
 .agent-squad/bin/task-packet.sh feature-integration "$FID" "$TID2" backend 2 "$wt2" "agent-task/feature-integration/$(python3 .agent-squad/bin/runtime-state.py key "$TID2")" >/dev/null
+.agent-squad/bin/tracker-ops.sh state "$TID2" Active >/dev/null
 echo fixed-after-late-finding >> "$wt2/second.txt"
 git -C "$wt2" add second.txt
 git -C "$wt2" commit -q -m 'late-finding rework checkpoint'
@@ -482,10 +517,13 @@ refuse "broker rejects a forged approval evidence binding" \
 mv "$tx2.backup" "$tx2"
 
 printf 'PROTOCOL_TEAM_LEAD=team-lead\n' > .teamwork/feature-integration/preset.env
-refuse "integration refuses a preset missing the mandatory Sceptical Architect" \
+refuse "integration refuses a preset missing mandatory review-board mappings" \
   .agent-squad/bin/finalize-integrations.sh --validate-only feature-integration "$FID" "$tx2"
-printf 'PROTOCOL_SCEPTICAL_ARCHITECT=other-sceptical-architect\n' \
-  >> .teamwork/feature-integration/preset.env
+cat >> .teamwork/feature-integration/preset.env <<'EOF'
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=other-sceptical-architect
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
+EOF
 refuse "integration binds approval to the mandatory Sceptical Architect identity" \
   .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx2"
 rm .teamwork/feature-integration/preset.env
@@ -579,8 +617,8 @@ printf '[review-findings] legitimate finding after tracker finalization, before 
   | .agent-squad/bin/tracker-ops.sh comment "$TID4" - >/dev/null
 check "completed integration can be durably superseded before release" \
   .agent-squad/bin/finalize-integrations.sh feature-integration "$FID" "$tx4"
-check "completed-task recovery uses the broker-only terminal reopen" \
-  grep -q '^## 4 Crash during merge \[Active\]$' "$FID"
+check "completed-task recovery uses the broker-only queued reopen" \
+  grep -q '^## 4 Crash during merge \[Planned\]$' "$FID"
 check "completed invalidation retires canonical transaction without erasing history" test ! -e "$tx4"
 check "completed invalidation remains available as preserved evidence" \
   bash -c 'find .teamwork/feature-integration/integrations/history -name "*integration-*.json" | grep -q .'

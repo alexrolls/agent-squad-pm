@@ -53,18 +53,20 @@ Three principles rule everything:
 
 ## Identity
 
-Exactly eight **protocol roles** exist: `team-lead`, `principal-architect`,
-`sceptical-architect`, `integrator`, `backend`, `frontend`, `qa`, `reviewer` — the protocol's rules,
+Exactly nine **protocol roles** exist: `team-lead`, `principal-architect`,
+`sceptical-architect`, `security-reviewer`, `integrator`, `backend`, `frontend`,
+`qa`, `reviewer` — the protocol's rules,
 gates, and status ownership are written against these. Preset teams (`teams/`)
 add **specialized role names** (`principal-software-architect`,
 `senior-qa-engineer`, …), each acting as one or more protocol roles per the
 *Protocol mapping* line in its brief.
 
-The `sceptical-architect` mapping is a mandatory cross-functional-team
-invariant, not an optional specialist. Every preset must map and roster exactly
-one launchable concrete role for it. The launcher validates that invariant
-before starting any process, and broker/runtime boundaries reject a missing,
-duplicate, disabled, or malformed mapping.
+The Team Lead, Principal Architect, Sceptical Principal Architect, and
+`security-reviewer` mappings are mandatory cross-functional-team invariants,
+not optional specialists. Every preset must map and roster one launchable,
+distinct concrete role for each. The launcher validates that invariant before
+starting any process, and broker/runtime boundaries reject a missing,
+duplicated, disabled, malformed, or conflated mapping.
 
 One signing rule: **use the role name at the top of your startup prompt,
 verbatim and only that name** — as your tracker assignee name, your mailbox
@@ -211,8 +213,8 @@ nothing else: markers, gates, reviews, and statuses are identical in both modes.
 
 Deliberately **not** mode-dependent: `TRACKER_WRITERS=broker` stays the
 recommended write path under parallelism (more concurrent writers means more
-races, not fewer), and QA's last-in-time `[review-approval]` remains a
-serialized final gate no matter how many implementers run.
+races, not fewer), and all four mandatory review-board approvals remain
+required no matter how many implementers or optional specialists run.
 
 **Before setting `EXECUTION=parallel` — at any `MAX_ACTIVE_IMPLEMENTERS`,
 pipelined `1` included — validate the machinery once** — docs are not
@@ -291,10 +293,12 @@ pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
 | `[api-ready]` | backend | Contract available for frontend: endpoints, request/response shapes. Also sent by mailbox. |
 | `[divergence]` | implementer | What was done differently from the [task]/design note and why. Additive — **never edit the original [task] description.** |
 | `[review-request]` | implementer | Ready for review: what changed, list of changed files, an **evidence record per validated command** (see *Evidence and re-execution*), an explicit `NOT validated:` section for anything not run (with reason), and any index-only staging operation performed. A claimed result without its evidence record **is** NOT validated. Written when moving to `[Review]`. |
-| `[review-findings]` | reviewer / qa / principal-architect / sceptical-architect | Numbered problems that must be fixed. Task goes back to `[Active]`. |
-| `[review-approval]` | reviewer / qa | Approval with the **explicit list of approved file paths**. |
+| `[review-findings]` | reviewer / qa / team-lead / principal-architect / sceptical-architect / security-reviewer | Numbered problems that must be fixed. Task goes back to `[Planned]`/`ToDo` for a fresh attempt. |
+| `[review-approval]` | reviewer / qa | Optional supporting approval with the **explicit list of approved file paths**. |
+| `[team-lead-approval]` | team-lead | Mandatory independent specification, quality, test, and operability sign-off with exact files. |
 | `[architecture-approval]` | principal-architect | Same, from the architecture review. |
 | `[sceptical-architecture-approval]` | sceptical-architect | Independent architecture challenge cleared, with the same exact file-list and review-package binding. |
+| `[security-approval]` | security-reviewer | Mandatory independent security sign-off with threat surfaces, focused verification, residual risk, and exact files. |
 | `[product-approval]` | product owner role (e.g. `senior-technical-product-manager`; the team-lead where no product role exists) | Scope/acceptance sign-off: scope ruling, acceptance-criteria verdict, any conditions. |
 | `[product-pushback]` | product owner role (same) | Scope gate closed: what must change in scope or acceptance criteria before work proceeds. |
 | `[handoff]` | team-lead | Reassignment: summary of state so a fresh agent can resume. |
@@ -424,11 +428,14 @@ approved design → dispatcher claim → fresh task packet + task worktree
         no new failures vs BASELINE.md)
       → clean task-branch checkpoint commit + task report
       → outbox [review-request] + move to [Review]
-      → reviewer three-phase review ∥ principal architecture review
+      → Team Lead quality review ∥ principal architecture review
         ∥ blind-first sceptical architecture review
-      → findings? → back to [Active], fix, [review-request] again
-      → [review-approval] + [architecture-approval]
-        + [sceptical-architecture-approval] (all with file lists)
+        ∥ Senior Security Engineer threat/abuse review
+        ∥ optional QA/specialist evidence
+      → findings? → back to [Planned]/ToDo, fresh attempt, [review-request] again
+      → [team-lead-approval] + [architecture-approval]
+        + [sceptical-architecture-approval] + [security-approval]
+        (all with exact file lists)
       → integrator: verify lists == review package, run integrate-task.sh
         (preserve + validate reviewed task head, merge --no-commit, validate
         feature branch, commit, idempotent tracker completion, cleanup)
@@ -444,27 +451,30 @@ re-enter this pipeline.
 
 Gates live in comments; statuses move only along the `transitions` graph in
 `config/statuses.config.json`. Default board: `[Planned] → [Active] → [Review] →
-[Ready to deploy]`, rework `[Review] → [Active]`, and `[Blocked]` as the parking
+[Ready to deploy]`, rework `[Review] → [Planned]`, and `[Blocked]` as the parking
 status for stuck work (owner: human; authorized automation may enter but never
 exit it — see lifecycle Scenario 7).
 
-## Independent triple review
+## Independent four-party review
 
-All three reviews start when the [task] enters `[Review]`, run independently, and
-all must approve before integration:
+All four mandatory reviews start from the same exact package when the [task]
+enters `[Review]`, run independently, and all must approve before integration:
 
-- **Reviewer — three phases.** (1) *Plan*: before reading any code, read the
-  [feature] and [task], extract every business rule / validation / edge case into an
-  independent checklist — seeded by the `[design-approved]` architecture
-  checklist (add items, never subtract) — with an expected file list. (2) *Review*: every changed file,
-  line by line; findings go out immediately as `[review-findings]`. (3) *Verify*:
-  re-read fixes; every checklist item needs a `file:line` citation and a test
-  citation; the approval file list must equal the actual diff.
+- **Team Lead.** Derives a specification/quality checklist before reading the
+  diff, verifies every acceptance criterion, maintainability, tests, operational
+  readiness, and exact-commit CI evidence.
 - **Principal Architect.** Checks conformance to the approved `[design-note]`,
   boundary violations, coupling, contract drift. Same file-list rule.
 - **Sceptical Architect.** Writes its provisional assessment before reading the
   principal verdict, then challenges assumptions, complexity, failure modes,
   reversibility, operational ownership, and evidence. Same file-list rule.
+- **Senior Security Engineer.** Writes a provisional threat assessment before
+  reading peer verdicts, traces data and authority, checks abuse paths and
+  security controls, runs focused adversarial verification, and records residual
+  risk. Same file-list rule.
+
+Optional reviewer, QA, SRE, penetration-test, accessibility, or domain passes
+may add findings or supporting evidence. They never replace one of the four.
 
 Anti-rationalization (all reviews): "it's just a warning", "pre-existing problem",
 "the tools passed so it must be fine" — none of these excuse a finding. Main is
@@ -494,7 +504,9 @@ Who executes suites (the two independent executions that catch real defects are
 | Implementer | runs; records evidence | always — in the provisioned working copy |
 | Principal architect | inspect + spot-check, no blind re-run | only while `Evidence.commit` == branch HEAD; else re-run |
 | Sceptical architect | inspect + targeted evidence checks | independently selected from its stated risks and assumptions |
-| QA final gate | **always re-runs** | unconditional — evidence is context, not gate |
+| Team Lead | inspect + re-run required quality evidence | exact acceptance/CI coverage |
+| Senior Security Engineer | targeted adversarial checks | independently selected from threat model |
+| Optional QA/reviewer | re-runs assigned suites | supporting evidence, not mandatory authority |
 | Integrator | **always re-runs** | unconditional |
 
 Any mismatch between an evidence record and a re-run (exit code or counts) is an
@@ -509,9 +521,9 @@ dispatcher performs that exact physical write only after validating the
 integrator's transaction. Implementer checkpoint commits exist only on task
 branches.
 
-1. Verify current `[review-approval]`, `[architecture-approval]`, and
-   `[sceptical-architecture-approval]`, authorized independent signers, and
-   identical approved file lists. The broker enriches
+1. Verify current `[team-lead-approval]`, `[architecture-approval]`,
+   `[sceptical-architecture-approval]`, and `[security-approval]`, authorized
+   distinct signers, and identical approved file lists. The broker enriches
    the request with exactly one `Review-Base-Commit`, `Task-Branch-Head`, and
    `Review-Package-SHA256`. Each approval must carry exactly one
    `Review-Request-SHA256`, `Task-Branch-Head`, and
@@ -531,7 +543,7 @@ branches.
    an `awaiting-tracker` schema-v2 transaction. The commit and transaction bind
    the execution identity, integration parent, reviewed merge-base, exact
    task-branch head, exact generated review-package SHA-256, and current
-   dual-approval evidence SHA-256; commit trailers also bind the prepared-intent
+   four-party approval evidence SHA-256; commit trailers also bind the prepared-intent
    id and fresh authorization-snapshot digest. Keeping the integration parent separate from
    the reviewed merge-base preserves the reviewed diff when parallel branches
    land in sequence. Conflicts and validation failures abort before commit.
@@ -551,8 +563,8 @@ branches.
    finding snapshot, and returns the task to rework. A completed task uses the
    narrow broker-only `task-reopen` operation with exact readback; ordinary
    callers cannot bypass terminal status. Rework merges the preserved revert into
-   its task branch, resolves normally, and must earn a new request and two new
-   approvals. History is never rewritten or represented as removed.
+   its task branch, resolves normally, and must earn a new request and all four
+   new approvals. History is never rewritten or represented as removed.
 5. Verify the transaction says `completed`. When every [task] is terminal, tell
    the team-lead and principal-architect; feature resolution still requires the
    Lead's completion checklist.
@@ -571,6 +583,10 @@ the release transaction described by `reference/deployment.md`.
   the exact final commit and integration-evidence digest. If missing/stale, it
   emits `product-acceptance-request.json`; the dispatcher routes the product
   role, or the lead only when no product role is configured.
+- Before planning and twice at the apply-process boundary, a protected
+  digest-pinned `verifyCi` hook must prove every required CI/CD check for the
+  exact commit succeeded. Red, pending, skipped, missing, stale, or unverifiable
+  CI blocks every deployment environment and cannot be waived by an agent.
 - The executor queries release state before applying, verifies health/version
   independently, and moves the [feature] terminal only on verified success. In
   broker mode, `tracker-ops.sh` refuses that terminal write unless the release

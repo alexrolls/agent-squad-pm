@@ -23,6 +23,12 @@ SIGNATURE_RE = re.compile(
 )
 REQUEST_FIELDS = ("Review-Base-Commit", "Task-Branch-Head", "Review-Package-SHA256")
 APPROVAL_FIELDS = ("Review-Request-SHA256", "Task-Branch-Head", "Review-Package-SHA256")
+REQUIRED_APPROVAL_MARKERS = (
+    "team-lead-approval",
+    "architecture-approval",
+    "sceptical-architecture-approval",
+    "security-approval",
+)
 
 
 class EvidenceError(RuntimeError):
@@ -125,8 +131,7 @@ def latest_review_request(snapshot: dict, task_id: str) -> str:
 def bind_approval(body: str, request_body: str) -> str:
     if marker(body) not in {
         "review-approval",
-        "architecture-approval",
-        "sceptical-architecture-approval",
+        *REQUIRED_APPROVAL_MARKERS,
     }:
         raise EvidenceError("only required review/architecture approvals can be bound as approvals")
     binding = request_binding(request_body)
@@ -139,7 +144,7 @@ def bind_approval(body: str, request_body: str) -> str:
 
 def review_records(
     snapshot: dict, task_id: str, review_statuses: set[str]
-) -> tuple[dict, int, int, int, int]:
+) -> tuple[dict, int, dict[str, int]]:
     task = next(
         (item for item in snapshot.get("tasks") or [] if str(item.get("taskId")) == task_id),
         None,
@@ -155,21 +160,20 @@ def review_records(
         if current:
             positions[current] = index
     request = positions.get("review-request", -1)
-    review = positions.get("review-approval", -1)
-    architecture = positions.get("architecture-approval", -1)
-    sceptical_architecture = positions.get("sceptical-architecture-approval", -1)
     findings = positions.get("review-findings", -1)
+    approvals = {
+        name: positions.get(name, -1)
+        for name in REQUIRED_APPROVAL_MARKERS
+    }
     if (
         request < 0
-        or review <= request
-        or architecture <= request
-        or sceptical_architecture <= request
+        or any(index <= request for index in approvals.values())
         or findings > request
     ):
         raise EvidenceError(
-            f"task {task_id} does not have a current independently triple-approved review request"
+            f"task {task_id} does not have a current independently four-party-approved review request"
         )
-    return task, request, review, architecture, sceptical_architecture
+    return task, request, approvals
 
 
 def validate(
@@ -181,7 +185,7 @@ def validate(
     package: str,
     review_statuses: set[str] | None = None,
 ) -> str:
-    task, request_index, review_index, architecture_index, sceptical_index = review_records(
+    task, request_index, approval_indexes = review_records(
         snapshot, task_id, review_statuses or set()
     )
     comments = task.get("comments") or []
@@ -189,11 +193,8 @@ def validate(
     binding = request_binding(request_body)
     if (binding["base"], binding["head"], binding["package"]) != (base, head, package):
         raise EvidenceError("review request is not bound to the exact current base/head/package")
-    for index, name in (
-        (review_index, "review-approval"),
-        (architecture_index, "architecture-approval"),
-        (sceptical_index, "sceptical-architecture-approval"),
-    ):
+    for name in REQUIRED_APPROVAL_MARKERS:
+        index = approval_indexes[name]
         approval_body = normalize(comments[index].get("body"))
         values = fields(approval_body, APPROVAL_FIELDS)
         expected = {
@@ -217,16 +218,24 @@ def validate(
         }
 
     evidence = {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "taskId": task_id,
         "reviewBaseCommit": base,
         "taskBranchHead": head,
         "reviewPackageSha256": package,
         "request": record("review-request", request_index),
-        "reviewApproval": record("review-approval", review_index),
-        "architectureApproval": record("architecture-approval", architecture_index),
+        "teamLeadApproval": record(
+            "team-lead-approval", approval_indexes["team-lead-approval"]
+        ),
+        "architectureApproval": record(
+            "architecture-approval", approval_indexes["architecture-approval"]
+        ),
         "scepticalArchitectureApproval": record(
-            "sceptical-architecture-approval", sceptical_index
+            "sceptical-architecture-approval",
+            approval_indexes["sceptical-architecture-approval"],
+        ),
+        "securityApproval": record(
+            "security-approval", approval_indexes["security-approval"]
         ),
     }
     canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()

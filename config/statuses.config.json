@@ -4,7 +4,7 @@
       { "name": "Planned", "kind": "queued", "initial": true,
         "owner": { "role": "team-lead" },
         "transitions": ["Active"],
-        "tool": { "Linear": "Planned", "Jira": "To Do", "GitHubIssues": "milestone open, no task started", "Markdown": "[Planned]" } },
+        "tool": { "Linear": "ToDo", "Jira": "ToDo", "GitHubIssues": "milestone open + label status:todo", "Markdown": "[Planned]" } },
       { "name": "Active", "kind": "working",
         "owner": { "role": "team-lead" },
         "transitions": ["Resolved"],
@@ -12,7 +12,7 @@
       { "name": "Resolved", "kind": "completed", "terminal": true,
         "owner": { "role": "release-executor" },
         "transitions": [],
-        "tool": { "Linear": "Completed", "Jira": "Done", "GitHubIssues": "milestone closed", "Markdown": "[Resolved]" } }
+        "tool": { "Linear": "Live", "Jira": "Live", "GitHubIssues": "milestone closed + label status:live", "Markdown": "[Resolved]" } }
     ]
   },
   "tasks": {
@@ -20,15 +20,15 @@
       { "name": "Planned", "kind": "queued", "initial": true,
         "owner": { "role": "team-lead" },
         "transitions": ["Active", "Blocked"],
-        "tool": { "Linear": "Todo", "Jira": "To Do", "GitHubIssues": "open + label status:planned", "Markdown": "[Planned]" } },
+        "tool": { "Linear": "ToDo", "Jira": "ToDo", "GitHubIssues": "open + label status:todo", "Markdown": "[Planned]" } },
       { "name": "Active", "kind": "working",
         "owner": { "role": "implementer" },
         "transitions": ["Review", "Blocked"],
-        "tool": { "Linear": "In Progress", "Jira": "In Progress", "GitHubIssues": "open + label status:active", "Markdown": "[Active]" } },
+        "tool": { "Linear": "In Progress", "Jira": "In Progress", "GitHubIssues": "open + label status:in-progress", "Markdown": "[Active]" } },
       { "name": "Review", "kind": "review",
         "owner": { "role": "reviewer" },
-        "transitions": ["Active", "Ready to deploy", "Blocked"],
-        "tool": { "Linear": "In Review", "Jira": "In Review", "GitHubIssues": "open + label status:review", "Markdown": "[Review]" } },
+        "transitions": ["Planned", "Ready to deploy", "Blocked"],
+        "tool": { "Linear": "In Review", "Jira": "In Review", "GitHubIssues": "open + label status:in-review", "Markdown": "[Review]" } },
       { "name": "Blocked", "kind": "blocked",
         "owner": { "role": "human" },
         "transitionAuthority": {
@@ -40,7 +40,7 @@
       { "name": "Ready to deploy", "kind": "integrated", "terminal": true, "requiresCommit": true,
         "owner": { "role": "integrator" },
         "transitions": [],
-        "tool": { "Linear": "Done", "Jira": "Done", "GitHubIssues": "closed", "Markdown": "[Ready to deploy]" } }
+        "tool": { "Linear": "Ready for production", "Jira": "Ready for production", "GitHubIssues": "closed + label status:ready-for-production", "Markdown": "[Ready to deploy]" } }
     ]
   },
   "markers": {
@@ -54,7 +54,9 @@
     "architecture-approval": { "authorizedRoles": ["principal-architect"] },
     "sceptical-architecture-approval": { "authorizedRoles": ["sceptical-architect"] },
     "review-approval":       { "authorizedRoles": ["reviewer", "qa"] },
-    "review-findings":       { "authorizedRoles": ["reviewer", "qa", "principal-architect", "sceptical-architect"] },
+    "security-approval":     { "authorizedRoles": ["security-reviewer", "senior-security-engineer"] },
+    "team-lead-approval":    { "authorizedRoles": ["team-lead"] },
+    "review-findings":       { "authorizedRoles": ["reviewer", "qa", "principal-architect", "sceptical-architect", "security-reviewer", "senior-security-engineer", "team-lead"] },
     "product-approval":      { "authorizedRoles": ["product-manager", "team-lead", "senior-technical-product-manager"] },
     "product-pushback":      { "authorizedRoles": ["product-manager", "team-lead", "senior-technical-product-manager"] },
     "production-approval":   { "authorizedRoles": ["human"] },

@@ -35,8 +35,10 @@ CURRENT_MARKERS = {
     "review-request",
     "review-findings",
     "review-approval",
+    "team-lead-approval",
     "architecture-approval",
     "sceptical-architecture-approval",
+    "security-approval",
     "handoff",
     "andon",
     "escalation",
@@ -114,17 +116,20 @@ def derive_stage(task: dict, terminal: set[str]) -> tuple[str, str]:
     design_pushback = markers.get("design-pushback", -1)
     sceptical_design_approved = markers.get("sceptical-design-approved", -1)
     sceptical_design_pushback = markers.get("sceptical-design-pushback", -1)
-    review_approved = markers.get("review-approval", -1)
+    team_lead_approved = markers.get("team-lead-approval", -1)
     architecture_approved = markers.get("architecture-approval", -1)
     sceptical_architecture_approved = markers.get(
         "sceptical-architecture-approval", -1
     )
+    security_approved = markers.get("security-approval", -1)
 
     if status in terminal:
         return "integrated", "committed and terminal"
     if status == "Blocked":
         return "blocked", "waiting for blocker resolution"
     if status == "Planned":
+        if request >= 0 and findings > request:
+            return "rework", "review findings queued a fresh implementation attempt"
         if design_note < 0:
             return "planned", "awaiting design note"
         if (
@@ -153,18 +158,21 @@ def derive_stage(task: dict, terminal: set[str]) -> tuple[str, str]:
         if request < 0:
             return "review-anomaly", "Review status has no review request"
         if (
-            review_approved > request
+            team_lead_approved > request
             and architecture_approved > request
             and sceptical_architecture_approved > request
+            and security_approved > request
         ):
-            return "integrating", "all approvals present"
+            return "integrating", "all four mandatory approvals present"
         waiting = []
-        if review_approved <= request:
-            waiting.append("QA/reviewer")
+        if team_lead_approved <= request:
+            waiting.append("Team Lead")
         if architecture_approved <= request:
-            waiting.append("architecture")
+            waiting.append("Principal Architect")
         if sceptical_architecture_approved <= request:
-            waiting.append("independent architecture challenge")
+            waiting.append("Sceptical Principal Architect")
+        if security_approved <= request:
+            waiting.append("Senior Security Engineer")
         return "review", "waiting for " + " and ".join(waiting)
     return status.lower().replace(" ", "-"), "tracker status: %s" % status
 

@@ -53,9 +53,9 @@ on problems; never invent new markers.
   architect's gate verdicts; the cloud engineer's `[review-request]` (triggers
   the operability pass after the architect approves).
 - **Hands to:** the architect (`[review-request]` opens the review chain on your
-  own [tasks]); QA (your operability-pass comment is a prerequisite for their
-  `[review-approval]` on cloud-engineer [tasks]); the `integrator` (only via
-  approvals — never directly).
+  own [tasks]); the four-party review board (your operability-pass comment is
+  supporting evidence on cloud-engineer [tasks]); the `integrator` (only after
+  all mandatory approvals — never directly).
 
 ## You never
 
@@ -64,4 +64,4 @@ on problems; never invent new markers.
 - Invent new structured markers — use only `[review-findings]` for problems; a
   plain comment for a clean pass.
 - Merge or commit to the feature branch, or move anything to `[Ready to deploy]` — that is the integrator's recoverable transaction.
-- Argue a QA finding away — fix it, or escalate through the architect.
+- Argue a review finding away—fix it, or escalate through the Team Lead.

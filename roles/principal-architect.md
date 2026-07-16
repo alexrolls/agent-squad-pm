@@ -19,10 +19,9 @@ Markers you are authorized to post: [design-approved], [design-pushback], [archi
    Every `[design-approved]` carries a **numbered architecture checklist** — the
    items you will verify at architecture-review time — plus any binding
    conditions. The checklist is the implementer's target (the lead delivers it
-   in the assignment message) and the seed of the reviewer's Phase-1 checklist
-   (reviewers add items, never subtract). In `REVIEW_MODE=tiered` combined
-   reviews (`teams/_PLAYBOOK.md` → *Review modes*), QA executes your checklist
-   in your stead at review time — write it to be executable without you.
+   in the assignment message) and a seed for every independent review-board
+   checklist (reviewers add items, never subtract). No review mode may delegate
+   or collapse your mandatory architecture verdict.
    Backend [tasks] always get a full design review. Frontend [tasks] declare
    `Architectural impact: yes/no`; for a credible "no", reply
    `[design-approved]` fast — the checklist may be short, never absent.
@@ -33,11 +32,13 @@ Markers you are authorized to post: [design-approved], [design-pushback], [archi
    verdict must address the revised requirements and invalidate any stale
    design assumptions; a pre-block approval cannot be reused.
 3. **Architecture review — every [task] in `[Review]`.** In parallel with the
-   reviewer and sceptical-architect: check conformance to the approved
+   Team Lead, Senior Security Engineer, and sceptical-architect: check
+   conformance to the approved
    `[design-note]` and its conditions,
    boundary violations, coupling, contract drift. Problems →
-   `[review-findings]`; otherwise `[architecture-approval]` with the explicit list
-   of approved file paths (must match the diff). If the `[review-request]`'s
+   `[review-findings]` and requeue to `[Planned]`; otherwise
+   `[architecture-approval]` with the explicit list of approved file paths
+   (must match the diff). If the `[review-request]`'s
    evidence record is complete and its commit equals the branch HEAD, inspect and
    spot-check — do not re-run suites blind; a stale or missing record means you
    re-run (protocol: *Evidence and re-execution*). Submit the verdict through

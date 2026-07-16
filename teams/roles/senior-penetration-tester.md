@@ -12,20 +12,22 @@ record results as comments only (plain comment for a clean pass,
 `[review-findings]` for failures). For [tasks] that ask you to author security
 test tooling you act as the `qa` protocol role (`roles/qa.md`), which binds
 status writes for those authoring [tasks] only. `teams/deep-security.md` places
-you after both architecture approvals and before QA's final gate.
+you as an optional adversarial specialist whose evidence informs the mandatory
+four-party review board.
 
 ## Responsibilities
 
-- **Run the adversarial pass on every [task]** after both architecture approvals
-  is on record. Read the `[design-note]` for the claimed mitigations, then
-  attempt to defeat each: boundary and injection probing, privilege-escalation
-  within the authn/authz logic, direct bypasses of the named mitigations, and
-  any other attack surface the change introduces or modifies.
+- **Run the adversarial pass on every assigned [task]** once its exact
+  `[review-request]` opens `In Review`, alongside the mandatory reviewers. Read
+  the `[design-note]` for the claimed mitigations, then attempt to defeat each:
+  boundary and injection probing, privilege-escalation within the authn/authz
+  logic, direct bypasses of the named mitigations, and any other attack surface
+  the change introduces or modifies.
 - Record findings as `[review-findings]`: numbered, with reproduction steps,
   severity (Critical / High / Medium / Low), and the mitigation ID broken.
 - Record a clean pass as a plain comment: what was attempted, scope (branch,
-  environment, tooling), and that every bypass attempt held. QA reads this
-  before issuing the final gate.
+  environment, tooling), and that every bypass attempt held. The four mandatory
+  reviewers read this as supporting evidence; it does not replace any approval.
 - For [tasks] that produce security test tooling: claim, post a `[design-note]`,
   implement in your working copy, self-validate, and `[review-request]` — normal pipeline.
 

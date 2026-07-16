@@ -655,12 +655,82 @@ validate_mandatory_sceptical_architect() { # preset [launch] — fail before any
   fi
 }
 
+validate_mandatory_security_reviewer() { # preset [launch] — fail before any team side effect
+  local preset="$1" mode="${2:-mapping}" file count role roster key command member occurrences=0
+  validate_preset_id "$preset"
+  file="$SKILL_DIR/teams/$preset.md"
+  [ -f "$file" ] || die "unknown preset: $preset (no teams/$preset.md)"
+  count="$(grep -c '^PROTOCOL_SECURITY_REVIEWER=' "$file" || true)"
+  [ "$count" -eq 1 ] \
+    || die "preset '$preset' must define exactly one mandatory PROTOCOL_SECURITY_REVIEWER mapping"
+  role="$(grep -m1 '^PROTOCOL_SECURITY_REVIEWER=' "$file" | cut -d= -f2-)"
+  [ "$role" != "null" ] && [ -n "$role" ] \
+    || die "preset '$preset' cannot disable its mandatory Senior Security Engineer"
+  validate_role_id "$role"
+  roster="$(roster_of "$preset")"
+  for member in $roster; do
+    [ "$member" != "$role" ] || occurrences=$((occurrences + 1))
+  done
+  [ "$occurrences" -eq 1 ] \
+    || die "preset '$preset' must contain mandatory security reviewer '$role' exactly once in its roster (found $occurrences)"
+  [ -n "$(role_brief "$role")" ] \
+    || die "mandatory security reviewer '$role' has no role brief"
+  if [ "$mode" = "launch" ]; then
+    key="$(role_cmd_key "$role")"
+    key_is_null "$key" \
+      && die "mandatory security reviewer '$role' cannot be disabled ($key=null)"
+    command="$(read_key "$key")"
+    [ -n "$command" ] || command="$(read_key TEAM_DEFAULT_CMD)"
+    [ -n "$command" ] \
+      || die "mandatory security reviewer '$role' has no command ($key and TEAM_DEFAULT_CMD are null)"
+  fi
+}
+
+validate_review_board_independence() { # preset [launch] — four present, enabled, distinct gate roles
+  local preset="$1" mode="${2:-mapping}" file key role roles="" count roster member
+  local occurrences command key_name
+  validate_preset_id "$preset"
+  file="$SKILL_DIR/teams/$preset.md"
+  roster="$(roster_of "$preset")"
+  for key in TEAM_LEAD PRINCIPAL_ARCHITECT SCEPTICAL_ARCHITECT SECURITY_REVIEWER; do
+    count="$(grep -c "^PROTOCOL_${key}=" "$file" || true)"
+    [ "$count" -eq 1 ] \
+      || die "preset '$preset' must define exactly one PROTOCOL_${key} mapping"
+    role="$(grep -m1 "^PROTOCOL_${key}=" "$file" | cut -d= -f2-)"
+    [ "$role" != "null" ] && [ -n "$role" ] \
+      || die "preset '$preset' cannot disable mandatory review-board role PROTOCOL_${key}"
+    validate_role_id "$role"
+    occurrences=0
+    for member in $roster; do
+      [ "$member" != "$role" ] || occurrences=$((occurrences + 1))
+    done
+    [ "$occurrences" -eq 1 ] \
+      || die "preset '$preset' must contain mandatory review-board role '$role' exactly once in its roster (found $occurrences)"
+    [ -n "$(role_brief "$role")" ] \
+      || die "mandatory review-board role '$role' has no role brief"
+    if [ "$mode" = "launch" ]; then
+      key_name="$(role_cmd_key "$role")"
+      key_is_null "$key_name" \
+        && die "mandatory review-board role '$role' cannot be disabled ($key_name=null)"
+      command="$(read_key "$key_name")"
+      [ -n "$command" ] || command="$(read_key TEAM_DEFAULT_CMD)"
+      [ -n "$command" ] \
+        || die "mandatory review-board role '$role' has no command ($key_name and TEAM_DEFAULT_CMD are null)"
+    fi
+    if printf '%s\n' "$roles" | grep -qxF "$role"; then
+      die "preset '$preset' must use distinct agents for Team Lead, Principal Architect, Sceptical Architect, and Senior Security Engineer (duplicate '$role')"
+    fi
+    roles="${roles}${roles:+
+}$role"
+  done
+}
+
 gate_roster_of() { # gate_roster_of <preset> -> explicit supervision/review/integration roles only
   local preset="$1" roster mapped role selected=""
   validate_preset_id "$preset"
   roster="$(roster_of "$preset")"
   mapped="$(
-    grep -E '^PROTOCOL_(TEAM_LEAD|PRINCIPAL_ARCHITECT|SCEPTICAL_ARCHITECT|REVIEWER|QA|INTEGRATOR|COORDINATOR|PRODUCT_MANAGER)=' \
+    grep -E '^PROTOCOL_(TEAM_LEAD|PRINCIPAL_ARCHITECT|SCEPTICAL_ARCHITECT|SECURITY_REVIEWER|REVIEWER|QA|INTEGRATOR|COORDINATOR|PRODUCT_MANAGER)=' \
       "$SKILL_DIR/teams/$preset.md" | cut -d= -f2 || true
   )"
   for role in $mapped; do
@@ -693,7 +763,7 @@ except ValueError as e:
 
 ABSTRACT_ROLES = {
     "implementer", "reviewer", "product-manager", "coordinator", "finalizer",
-    "human", "pm-agent", "release-executor",
+    "security-reviewer", "human", "pm-agent", "release-executor",
 }
 errors = []
 
@@ -828,7 +898,11 @@ team_path() { # team_path <absolute-workspace> <relative-path>
 compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] -> prompt file path
   local team="$1" fid="$2" role="$3" preset="${4:-}"
   validate_team_id "$team"; validate_role_id "$role"
-  [ -z "$preset" ] || validate_mandatory_sceptical_architect "$preset"
+  if [ -n "$preset" ]; then
+    validate_mandatory_sceptical_architect "$preset"
+    validate_mandatory_security_reviewer "$preset"
+    validate_review_board_independence "$preset"
+  fi
   local dir out prompts mailbox heartbeats pids utc_file tool_prefix
   dir="$(teamroot "$team")" || die "unsafe team workspace"
   prompts="$(team_path "$dir" prompts)" || die "unsafe prompts path"
@@ -1134,6 +1208,8 @@ case "${1:-}" in
     [ -n "$roster" ] || die "teams/$preset.md has an empty ROSTER"
     for role in $roster; do validate_role_id "$role"; done
     validate_mandatory_sceptical_architect "$preset" launch
+    validate_mandatory_security_reviewer "$preset" launch
+    validate_review_board_independence "$preset" launch
     validate_board >/dev/null
     [ "${SKIP_PREFLIGHT:-}" = "1" ] || preflight "$team" "$fid"
     dir="$(teamroot "$team")" || die "unsafe team workspace"
@@ -1153,6 +1229,8 @@ case "${1:-}" in
     validate_preset_id "$preset"; validate_team_id "$team"
     [ -f "$SKILL_DIR/teams/$preset.md" ] || die "unknown preset: $preset (no teams/$preset.md)"
     validate_mandatory_sceptical_architect "$preset" launch
+    validate_mandatory_security_reviewer "$preset" launch
+    validate_review_board_independence "$preset" launch
     roster="$(gate_roster_of "$preset")"                  # validate every role before any workspace path
     validate_board >/dev/null
     [ "${SKIP_PREFLIGHT:-}" = "1" ] || preflight "$team" "$fid"

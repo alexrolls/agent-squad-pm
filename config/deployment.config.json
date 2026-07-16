@@ -15,6 +15,7 @@
   "maxSourceFiles": 200000,
   "approvalTtlSeconds": 900,
   "deliveryAttestationTtlSeconds": 900,
+  "ciAttestationTtlSeconds": 900,
   "planningIsolation": {
     "enforced": false,
     "provider": "configure-a-protected-os-container-or-ci-sandbox",
@@ -38,6 +39,7 @@
     "status": null,
     "verify": null,
     "rollback": null,
+    "verifyCi": null,
     "verifyDelivery": null,
     "verifyApproval": null
   },
@@ -47,6 +49,7 @@
     "status": 120,
     "verify": 600,
     "rollback": 900,
+    "verifyCi": 60,
     "verifyDelivery": 60,
     "verifyApproval": 60
   }

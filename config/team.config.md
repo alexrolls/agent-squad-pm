@@ -15,14 +15,17 @@ The project-management tool itself is configured separately in
 `{prompt_file}` is replaced by the launcher with the path to the composed startup
 prompt. The examples inline the file's content with `$(cat '{prompt_file}')` because these CLIs take the prompt as a string argument; a CLI that reads a prompt from a file can use `{prompt_file}` directly. Any agentic CLI works if it can read files, run shell commands, and use git.
 Set an implementation or optional specialist role to `null` to exclude it from
-launches (e.g. no frontend [tasks] → no frontend agent). The Sceptical Architect
-is mandatory in every cross-functional team: its preset mapping, roster entry,
-role brief, and resolvable command must all remain present.
+launches (e.g. no frontend [tasks] → no frontend agent). Team Lead, Principal
+Architect, Sceptical Principal Architect, and Senior Security Engineer are
+mandatory and distinct in every cross-functional review board: their preset
+mappings, roster entries, role briefs, and resolvable commands must all remain
+present.
 
 ```
 TEAM_LEAD_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
 PRINCIPAL_ARCHITECT_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
 SCEPTICAL_ARCHITECT_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
+SENIOR_SECURITY_ENGINEER_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
 INTEGRATOR_CMD="claude -p \"$(cat '{prompt_file}')\" --permission-mode acceptEdits"
 BACKEND_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
 FRONTEND_CMD="codex exec --full-auto \"$(cat '{prompt_file}')\""
@@ -36,7 +39,8 @@ TASK_STRONG_CMD=null             # Optional override for security/schema/concurr
 ```
 
 > Mixing LLMs is the design intent — e.g. Claude for team-lead/principal-architect,
-> Codex for the sceptical-architect and implementers, Gemini for review diversity.
+> Codex for the sceptical-architect, Senior Security Engineer, and implementers,
+> Gemini for optional review diversity.
 > Use a different model family or provider for the two architect roles when
 > possible; role separation without model diversity reduces authority bias but
 > does less to reduce correlated reasoning errors. Same-LLM teams still work.
@@ -45,9 +49,11 @@ TASK_STRONG_CMD=null             # Optional override for security/schema/concurr
 > per role, an *absent* key falls back to `TEAM_DEFAULT_CMD`. Add a `<ROLE>_CMD`
 > line — e.g. `SENIOR_STAFF_ENGINEER_CMD` — only to pin a specific CLI to that
 > role, or set it explicitly to `null` to disable an optional role (a `team`
-> launch skips it; a direct `start`/`relaunch` of it is refused). The mandatory
-> Sceptical Architect is the exception: a preset/team launch fails before any
-> agent starts if its mapped command is `null` or unresolved. Resolution for
+> launch skips it; a direct `start`/`relaunch` of it is refused). The four
+> mandatory review-board roles are exceptions: a preset/team launch fails
+> before any agent starts if any mapped command is `null` or unresolved, if a
+> mapping or roster entry is missing/duplicated, or if one concrete agent fills
+> two seats. Resolution for
 > other roles: explicit `null` → disabled; a set value → used; absent →
 > `TEAM_DEFAULT_CMD`.
 

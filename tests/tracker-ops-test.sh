@@ -295,7 +295,7 @@ refuse "claim cannot release Blocked" "outbound \[Blocked\].*human-only" \
 refuse "integration cannot release Blocked" "outbound \[Blocked\].*human-only" \
   "$OPS" integrate held.md#4 abc1234
 refuse "integration broker cannot release Blocked" "outbound \[Blocked\].*human-only" \
-  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen held.md#4 Active
+  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen held.md#4 Planned
 check "all refused outbound transitions preserve Blocked" \
   test "$(grep -c '\[Blocked\]$' held.md)" -eq 4
 
@@ -385,12 +385,13 @@ refuse "feature reopen refuses a non-terminal source" "requires a terminal sourc
   env STARTUP_FACTORY_PM_SUPERVISOR=1 "$OPS" feature-reopen "$T" Active
 
 refuse "ordinary callers cannot reopen integrated tasks" "reserved for the deterministic integration broker" \
-  "$OPS" task-reopen "$T#1" Active
-STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen "$T#1" Active
-check "integration broker deliberately reopens terminal task to working" grep -q '^## 1 Add form \[Active\]$' "$T"
+  "$OPS" task-reopen "$T#1" Planned
+STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen "$T#1" Planned
+check "integration broker deliberately returns terminal task to queued rework" grep -q '^## 1 Add form \[Planned\]$' "$T"
+"$OPS" state "$T#1" Active >/dev/null
 "$OPS" state "$T#1" Review >/dev/null
 refuse "task reopen refuses a non-terminal source" "requires a commit-requiring terminal source" \
-  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen "$T#1" Active
+  env STARTUP_FACTORY_INTEGRATION_BROKER=1 "$OPS" task-reopen "$T#1" Planned
 
 # -- conditional claims reject stale snapshots and preserve the existing owner --
 refuse "stale conditional claim refused" "claim conflict" "$OPS" claim "$T#1" frontend --expected Planned --claim-id claim-stale-1234
