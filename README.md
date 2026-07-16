@@ -53,6 +53,7 @@ ToDo -> In Progress -> In Review -> Ready for production -> deploy -> Live
 
 - [Layered safety boundaries for AI builders](#layered-safety-boundaries-for-ai-builders)
 - [Why Startup Factory](#why-startup-factory)
+- [Superpowers + Startup Factory](#superpowers--startup-factory-split-the-sdlc-by-strength)
 - [Full transparency in your tracker](#full-transparency-in-your-tracker)
 - [Choose your operating mode](#choose-your-operating-mode)
 - [Requirements](#requirements)
@@ -141,6 +142,273 @@ authentication.
 | **Turn the board into a safe delivery queue** | A deterministic cron/service pass observes queued/blocked work, restores in-flight runs, chooses an explicit team preset, and launches LLMs only for eligible queued tasks. |
 | **Pause one task without stopping the factory** | On the next scan, `[Blocked]` immediately fences only the matching task. Independent ToDo work and other features continue; only a human can unlock it. |
 | **Keep dangerous authority out of agents** | One deny/approval/allow contract governs every role. The code gate blocks dangerous privileged release hooks and plans; your required OS sandbox and least-privilege identities enforce ordinary-agent filesystem, network, process, and IAM boundaries. |
+
+## Superpowers + Startup Factory: split the SDLC by strength
+
+[`obra/superpowers`](https://github.com/obra/superpowers) and Startup Factory
+operate at different, complementary levels.
+
+Superpowers is an engineering methodology packaged as agent skills. Its full
+upstream workflow can cover brainstorming, implementation planning, worktree
+creation, task execution, TDD, debugging, code review, verification, and branch
+completion. Startup Factory is a project delivery control plane: it coordinates
+product, architecture, implementation, security, quality, integration,
+portfolio automation, and production release across durable tracker state and
+multiple independent agents.
+
+The combined integration deliberately uses **the strongest part of each system
+without running two execution orchestrators**:
+
+- Superpowers shapes the idea into an approved specification and detailed
+  implementation plan.
+- Startup Factory reviews those documents as inputs, creates and governs the
+  tracked delivery, and owns execution through verified production.
+- Claude task workers may use focused Superpowers methods for TDD, debugging,
+  receiving review, and fresh verification inside their one assigned task.
+- Superpowers does not create a second worktree, dispatch a second team, execute
+  the plan, merge the branch, or declare the feature released.
+
+```mermaid
+flowchart LR
+    Idea["Product idea or ticket"]
+    Brainstorm["Superpowers brainstorming<br/>questions · alternatives · approved design"]
+    Plan["Superpowers writing-plans<br/>exact files · interfaces · tests · commands"]
+    Handoff["Digest-bound planning handoff<br/>committed spec + plan"]
+    Shape["Startup Factory planning review<br/>Product · Lead · Principal · Sceptical"]
+    Tracker["Tracked feature and tasks<br/>acceptance · dependencies · resources"]
+    Execute["Startup Factory execution<br/>packets · branches · worktrees · dispatch"]
+    Methods["Claude-local Superpowers methods<br/>TDD · debugging · review response · verification"]
+    Review["Exact-package review board<br/>Lead · Principal · Sceptical · Security"]
+    Integrate["Serialized integration<br/>validated feature branch"]
+    Release["Protected CI and release<br/>policy · approval · deploy · verify"]
+
+    Idea --> Brainstorm --> Plan --> Handoff --> Shape --> Tracker --> Execute
+    Execute --> Methods --> Review --> Integrate --> Release
+```
+
+### Why divide the lifecycle
+
+| Reason | Benefit |
+|---|---|
+| **One authority per stage** | The specification has one source, the tracker has one workflow owner, each task has one active attempt, the feature branch has one integrator, and production has one protected release executor. |
+| **Methodology stays separate from orchestration** | Superpowers can improve how Claude thinks, plans, tests, and debugs without competing with Startup Factory's scheduler, worktrees, review board, tracker writers, or release transaction. |
+| **Different scopes get different tools** | Superpowers is excellent at the local reasoning loop around one design or task. Startup Factory governs the wider system of roles, dependencies, concurrent work, artifacts, statuses, and environments. |
+| **Independent models remain independent** | Claude may shape the plan, while Codex, Gemini, or another model can challenge architecture, implement, review, or test without receiving Claude-only Superpowers instructions. |
+| **Planning remains challengeable** | A polished plan is evidence, not authority. Product and both architects still test its scope, acceptance criteria, interfaces, risks, dependencies, and delivery order before work is created or dispatched. |
+| **Recovery becomes durable** | Superpowers provides strong session-level discipline; Startup Factory adds tracker history, immutable packets, attempt identity, event journals, idempotent outboxes, resumable integration, and restart-safe production transactions. |
+| **The integration is reversible** | `USE_SUPERPOWERS=false` removes all Superpowers-specific wiring without changing the Startup Factory lifecycle, tracker model, team topology, or release controls. |
+
+### SDLC responsibility map
+
+| SDLC stage | Superpowers contribution | Startup Factory contribution | Primary owner in this integration |
+|---|---|---|---|
+| Idea discovery | Socratic clarification, one question at a time, alternative approaches, trade-offs, incremental user approval | Product context, repository constraints, explicit scope and NOT-in-scope | **Superpowers**, with human approval |
+| Specification | Writes and self-checks the design document; requires the user to review the written spec | Product Manager and architects challenge completeness, boundaries, risks, and acceptance criteria | **Superpowers produces; Startup Factory accepts or pushes back** |
+| Implementation planning | Produces detailed tasks with exact files, interfaces, code steps, test commands, expected results, and no placeholders | Converts the plan into independently reviewable vertical slices, dependencies, tracks, resources, and model profiles | **Shared handoff; Startup Factory owns executable project structure** |
+| Tracker and portfolio management | Not used as the project control plane | Creates `[features]` and `[tasks]`, owns legal statuses, routing, progress, digests, automation scope, and generations | **Startup Factory** |
+| Per-task design | May inform the proposed implementation | Requires implementer design notes, contract registration, and independent Principal + Sceptical approval before code | **Startup Factory** |
+| Implementation | TDD and disciplined small-step engineering methods inside a Claude task | Selects the worker/model, creates immutable packets and isolated attempts, enforces scope, and records evidence | **Startup Factory orchestrates; Superpowers improves the local method** |
+| Debugging | Root-cause investigation, pattern comparison, one hypothesis at a time, regression test, fresh verification | Task-scoped stop/retry/escalation, durable evidence, attempt recovery, and architectural re-review when needed | **Shared: Superpowers method inside Startup Factory boundaries** |
+| Code review | Helps a worker receive feedback technically and verify fixes | Four independent, commit-bound verdicts over one exact review package, plus optional QA and specialist evidence | **Startup Factory** |
+| Integration | Upstream Superpowers has branch-finishing workflows, but they are not invoked here | The integrator alone validates and writes the feature branch; brokered transactions make retries idempotent | **Startup Factory** |
+| CI, release, and production | No production authority in this integration | Exact-commit protected CI, policy checks, approval binding, isolated credentials, plan/apply/status/verify hooks, rollback, and `Live` transition | **Startup Factory** |
+| Operations and recovery | Session-level verification discipline | Portfolio reconciliation, human `[Blocked]` locks, stale-worker fencing, release recovery, and auditable tracker projections | **Startup Factory** |
+
+### Where Superpowers is strongest
+
+- **Design before code.** Its
+  [`brainstorming`](https://github.com/obra/superpowers/blob/main/skills/brainstorming/SKILL.md)
+  skill explores the repository, asks focused questions, compares approaches,
+  validates the design section by section, writes the specification, performs a
+  consistency/ambiguity review, and waits for user approval.
+- **Plans that another engineer can execute.**
+  [`writing-plans`](https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md)
+  insists on exact paths, explicit interfaces, complete steps, concrete test
+  commands, expected outcomes, small commits, TDD ordering, and no `TBD` or
+  “similar to the previous task” shortcuts.
+- **Strict engineering habits.**
+  [`test-driven-development`](https://github.com/obra/superpowers/blob/main/skills/test-driven-development/SKILL.md)
+  enforces a real red-green-refactor loop;
+  [`systematic-debugging`](https://github.com/obra/superpowers/blob/main/skills/systematic-debugging/SKILL.md)
+  requires root-cause evidence before fixes; and
+  [`verification-before-completion`](https://github.com/obra/superpowers/blob/main/skills/verification-before-completion/SKILL.md)
+  requires fresh command output before a success claim.
+- **Useful local review discipline.**
+  [`receiving-code-review`](https://github.com/obra/superpowers/blob/main/skills/receiving-code-review/SKILL.md)
+  helps a Claude worker evaluate feedback technically, clarify uncertainty, fix
+  one issue at a time, and verify the result instead of responding performatively.
+
+Those strengths are intentionally used as **planning inputs and task-local
+methods**. They do not grant tracker, scheduler, integration, or production
+authority.
+
+### Where Startup Factory is strongest
+
+- **Cross-functional governance.** Product, Team Lead, Principal Architect,
+  Sceptical Principal Architect, Security, implementation, QA, integration, and
+  release have explicit and non-interchangeable responsibilities.
+- **Multi-model independence.** Assign different model families to design,
+  challenge, implementation, and review so one model's blind spot does not
+  silently become the team's consensus.
+- **Deterministic execution.** The dispatcher—not an LLM—selects eligible work
+  from tracker state, dependencies, resource conflicts, design approvals, risk,
+  and capacity.
+- **Isolation and recoverability.** Every attempt gets an immutable task packet,
+  collision-safe branch, separate worktree, report path, event history, and
+  authenticated publication capability.
+- **Review and integration integrity.** Four distinct reviewers decide against
+  the same exact package. No approval survives changed code, and only the
+  integrator writes the feature branch.
+- **Human and production safety.** `[Blocked]` is a human-controlled task lock.
+  Production requires protected CI evidence, policy-clean plans, exact external
+  authority where configured, isolated credentials, target verification, and a
+  durable transaction.
+- **End-to-end visibility.** The project-management tool remains the durable
+  record from idea and acceptance criteria through findings, rework,
+  integration, deployment, and `Live`.
+
+### Execution workflows that must not overlap
+
+Upstream Superpowers includes excellent execution workflows for projects that
+use Superpowers alone. Startup Factory replaces these at the orchestration
+layer for a feature delivered by a Startup Factory team:
+
+| Superpowers workflow | Startup Factory owner used instead |
+|---|---|
+| `using-git-worktrees` | Per-attempt worktrees created and retired by `launch-team.sh` |
+| `subagent-driven-development` / `executing-plans` | Tracker-driven task packets and deterministic `dispatch.sh` scheduling |
+| `requesting-code-review` as the authoritative gate | Four-party exact-package Startup Factory review board |
+| `finishing-a-development-branch` | Serialized integrator plus protected release lifecycle |
+
+Do not run both execution systems on the same feature. Two schedulers cannot
+safely share task identity, branches, worktrees, review state, or completion
+authority.
+
+### When to use which mode
+
+| Mode | Best fit |
+|---|---|
+| **Superpowers + Startup Factory** | A meaningful Claude-planned feature that should become tracked, independently challenged, implemented by a team, reviewed, integrated, and potentially delivered to production. |
+| **Startup Factory alone** | Non-Claude runtimes, an already-approved specification, operational/release work, or any project that wants native planning without the Superpowers dependency. |
+| **Superpowers alone** | A local coding session where you explicitly want the upstream Superpowers execution workflow and do not launch a Startup Factory team for the same work. |
+
+### How to use the combined workflow
+
+The example below uses Claude Code for planning and a Startup Factory team for
+delivery. Upstream Superpowers supports other coding agents too, but this
+integration is intentionally enabled by default **only for Claude Code**.
+
+1. Install both systems and create the feature branch that will become the
+   Startup Factory team name:
+
+   ```bash
+   # In Claude Code:
+   /plugin install superpowers@claude-plugins-official
+
+   # In your project shell:
+   SF_HOME=.claude/skills/startup-factory
+   git switch -c payments-revamp
+   ```
+
+2. Keep the default planning configuration, or inspect it before starting:
+
+   ```text
+   USE_SUPERPOWERS=true
+   SUPERPOWERS_PLUGIN_ID=superpowers@claude-plugins-official
+   SUPERPOWERS_SPEC_ROOT=docs/superpowers/specs
+   SUPERPOWERS_PLAN_ROOT=docs/superpowers/plans
+   ```
+
+   `true` means “Claude is eligible,” not “enable Superpowers for every model.”
+   Codex, Gemini, and unmarked harnesses stay on the native workflow.
+
+3. Verify that Claude can use the configured plugin:
+
+   ```bash
+   python3 "$SF_HOME/bin/superpowers-planning.py" preflight --runtime claude
+   ```
+
+4. Ask Claude to shape the ticket, and make the ownership boundary explicit:
+
+   ```text
+   Use superpowers:brainstorming to shape this feature. Explore the repository,
+   clarify scope and success criteria, compare approaches, and write the approved
+   specification. After I approve the written spec, use
+   superpowers:writing-plans to create the detailed implementation plan.
+
+   Stop after the committed specification and plan. Do not use Superpowers
+   worktrees, subagent-driven-development, executing-plans, code-review
+   orchestration, or branch-finishing. Startup Factory will own execution.
+   ```
+
+5. Review the generated documents. They normally live under:
+
+   ```text
+   docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
+   docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md
+   ```
+
+   Both files must be committed. If either changes later, commit the change,
+   recreate the handoff, and repeat any affected planning approvals.
+
+6. Bind the exact documents to the Startup Factory team:
+
+   ```bash
+   TEAM=payments-revamp
+   FEATURE_ID=ENG-100
+   SPEC=docs/superpowers/specs/2026-07-16-payments-revamp-design.md
+   PLAN=docs/superpowers/plans/2026-07-16-payments-revamp.md
+
+   "$SF_HOME/bin/launch-team.sh" planning-handoff \
+     "$TEAM" "$SPEC" "$PLAN"
+   ```
+
+7. Let Startup Factory review and operationalize the handoff. The Product
+   Manager, Team Lead, Principal Architect, and Sceptical Architect still
+   approve scope, acceptance criteria, contracts, dependencies, risks, vertical
+   slices, and execution order before implementation.
+
+   A suitable instruction to the Startup Factory agent is:
+
+   ```text
+   Use the validated planning handoff for payments-revamp as planning evidence.
+   Review it with the Product Manager, Team Lead, Principal Architect, and
+   Sceptical Architect. Resolve pushback, then create or update ENG-100 and its
+   vertical-slice tasks with acceptance criteria, dependencies, tracks, files,
+   resources, and model profiles. Startup Factory owns all execution.
+   ```
+
+8. Launch the normal Startup Factory delivery:
+
+   ```bash
+   "$SF_HOME/bin/launch-team.sh" preflight "$TEAM" "$FEATURE_ID"
+   "$SF_HOME/bin/launch-team.sh" gate-team full-stack "$TEAM" "$FEATURE_ID"
+   "$SF_HOME/bin/dispatch.sh" "$TEAM" "$FEATURE_ID" --watch
+   ```
+
+   Direct `claude` commands in `config/team.config.md` are recognized
+   automatically. Mark a Claude wrapper explicitly:
+
+   ```text
+   FRONTEND_CMD="STARTUP_FACTORY_LLM_RUNTIME=claude /path/to/claude-wrapper {prompt_file}"
+   ```
+
+   In harness mode, declare Claude while composing:
+
+   ```bash
+   STARTUP_FACTORY_LLM_RUNTIME=claude \
+     "$SF_HOME/bin/launch-team.sh" compose "$TEAM" "$FEATURE_ID" team-lead full-stack
+   ```
+
+9. To return completely to native Startup Factory planning, edit
+   `config/planning.config.md`:
+
+   ```text
+   USE_SUPERPOWERS=false
+   ```
+
+For the exact machine-enforced boundary, see
+[`reference/superpowers-planning.md`](reference/superpowers-planning.md).
 
 ## Full transparency in your tracker
 
@@ -478,23 +746,6 @@ task-branch/worktree isolation: **`sequential`** runs one task worker at a time;
 `MAX_ACTIVE_IMPLEMENTERS` (default 2 when unset). Gate roles and integration
 remain serialized where required.
 
-### Optional Claude planning with obra/superpowers
-
-`config/planning.config.md` defaults `USE_SUPERPOWERS=true`. This means Claude
-Code is eligible to use Superpowers; it does not activate Superpowers for every
-model. When the current runtime is Claude Code, Startup Factory uses
-[`obra/superpowers`](https://github.com/obra/superpowers) for
-`brainstorming` and `writing-plans`, then binds the committed specification and
-plan into a digest-checked handoff. Startup Factory still owns its own planning
-review, team, task packets, worktrees, dispatch, implementation, four-party
-review, integration, and production release.
-
-Set `USE_SUPERPOWERS=false` for a complete opt-out. Non-Claude runtimes use the
-native workflow automatically and do not receive the Superpowers planning
-reference or Claude worker-method instructions. The integration deliberately
-does not call Superpowers' worktree, subagent execution, plan execution, or
-branch-finishing skills, avoiding two execution orchestrators on one [feature].
-
 ---
 
 ## Connect your LLM
@@ -651,7 +902,9 @@ Claude planning stages, then
 `bin/launch-team.sh planning-handoff <team> <spec-path> <plan-path>` before
 launching the Startup Factory team. Set `USE_SUPERPOWERS=false` to remove all
 Superpowers-specific prompt wiring. With the default `true`, only commands
-classified as Claude receive that wiring.
+classified as Claude receive that wiring. See
+[Superpowers + Startup Factory](#superpowers--startup-factory-split-the-sdlc-by-strength)
+for the end-to-end workflow and SDLC ownership map.
 
 ### Configure your board
 
@@ -865,20 +1118,30 @@ Just talk to your agent in the generic vocabulary:
    ```bash
    git checkout -b payments-revamp
    ```
-3. Launch the preset's persistent supervision and gate roles:
+3. If Claude/Superpowers produced an approved committed specification and plan,
+   bind them before launch:
+
+   ```bash
+   "$SF_HOME/bin/launch-team.sh" planning-handoff payments-revamp \
+     docs/superpowers/specs/2026-07-16-payments-revamp-design.md \
+     docs/superpowers/plans/2026-07-16-payments-revamp.md
+   ```
+
+   Skip this step when using native Startup Factory planning.
+4. Launch the preset's persistent supervision and gate roles:
 
    ```bash
    "$SF_HOME/bin/launch-team.sh" gate-team deep-backend payments-revamp ENG-100
    #                                        └ preset      └ branch/team    └ featureId
    ```
-4. Start the deterministic dispatcher in its own persistent shell. This process
+5. Start the deterministic dispatcher in its own persistent shell. This process
    owns task claims and launches fresh task-scoped workers:
 
    ```bash
    "$SF_HOME/bin/dispatch.sh" payments-revamp ENG-100 --watch
    ```
 
-5. Watch the team:
+6. Watch the team:
 
    ```bash
    tmux attach -t team-payments-revamp         # live agent windows, when tmux is used
@@ -887,7 +1150,7 @@ Just talk to your agent in the generic vocabulary:
 
    Progress lands in your tracker; anything needing you lands in
    `.teamwork/payments-revamp/ESCALATIONS.md`.
-6. Stop the dispatcher with `Ctrl-C`, then stop the managed team:
+7. Stop the dispatcher with `Ctrl-C`, then stop the managed team:
 
    ```bash
    "$SF_HOME/bin/launch-team.sh" stop payments-revamp
@@ -1307,6 +1570,7 @@ when `TRACKER_WRITERS=broker`; polling remains the distributed fallback.
 | [`SKILL.md`](SKILL.md) | What does an agent load, in what order, and which invariants must every workflow obey? |
 | [`reference/vocabulary.md`](reference/vocabulary.md) | What stable `[feature]`/`[task]` contract and status semantics do all adapters share? |
 | [`reference/lifecycle.md`](reference/lifecycle.md) | How does work move through planning, execution, review, blocking, automation, and production release? |
+| [`reference/superpowers-planning.md`](reference/superpowers-planning.md) | How does Claude/Superpowers produce planning inputs without taking over Startup Factory execution? |
 | [`reference/team-roles.md`](reference/team-roles.md) | Which role owns each status and transition in team mode? |
 | [`reference/orchestration.md`](reference/orchestration.md) | How do roles coordinate, authenticate handoffs, review, integrate, recover, and pull the andon cord? |
 | [`reference/dispatch.md`](reference/dispatch.md) | Which deterministic event launches each next role action? |
@@ -1436,6 +1700,12 @@ exact protocol markers — never invent new ones.
 Inspired by the
 [PlatformPlatform](https://github.com/platformplatform/PlatformPlatform/)
 product-management architecture, developed by Thomas Jespersen.
+
+Optional Claude planning builds on
+[`obra/superpowers`](https://github.com/obra/superpowers), created by Jesse
+Vincent and the Prime Radiant team. Startup Factory uses its planning and
+task-local engineering methods while retaining independent ownership of
+orchestration, review, integration, and production delivery.
 
 ---
 
