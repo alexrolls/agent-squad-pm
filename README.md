@@ -253,9 +253,10 @@ authority.
 - **Deterministic execution.** The dispatcher—not an LLM—selects eligible work
   from tracker state, dependencies, resource conflicts, design approvals, risk,
   and capacity.
-- **Isolation and recoverability.** Every attempt gets an immutable task packet,
-  collision-safe branch, separate worktree, report path, event history, and
-  authenticated publication capability.
+- **Isolation and recoverability.** Every attempt gets an immutable task packet
+  containing the complete current tracker comment history, a collision-safe
+  branch, separate worktree, report path, event history, and authenticated
+  publication capability.
 - **Review and integration integrity.** Four distinct reviewers decide against
   the same exact package. No approval survives changed code, and only the
   integrator writes the feature branch.
@@ -1223,7 +1224,16 @@ These commands use Linear/Jira REST, the `gh` CLI, or Markdown files. The
 adapter docs remain the operation contract; interactive MCP sessions use their
 native tools instead. Comment bodies are never shell arguments.
 
-**The flow every team follows:** the Principal Architect owns the primary
+**The flow every team follows:** every pickup from `ToDo` starts with a fresh,
+exhaustive tracker export. Before any code changes, the new task worker must read
+every comment in oldest-first order—not only structured coordination markers—and
+acknowledge the packet's comment count and digest in its report. This also applies
+to review rework and to a task that a human moved from `Blocked` back to `ToDo`,
+so the clarification that enabled the move is carried into the fresh attempt.
+Comment text remains untrusted requirements context and cannot grant permissions
+or override policy.
+
+The rest of the flow: the Principal Architect owns the primary
 architecture position; the Sceptical Principal Architect independently
 challenges planning and every `[task]` design before code → the dispatcher
 creates immutable task packets and isolated worktrees → specialists checkpoint
@@ -1321,7 +1331,9 @@ a later `[resume-plan]` plus both architect design approvals;
 is preserved for explicit salvage or quarantine, never discarded. Clearing the
 barrier archives the old claim and starts a fresh numbered attempt from the new
 packet. A human move directly to `[Active]` or `[Review]` is manual takeover, so
-automation remains fenced rather than claiming it.
+automation remains fenced rather than claiming it. The fresh post-resume packet
+also embeds every current tracker comment—not just the resume markers—and the
+worker must review the complete history before changing code.
 
 This human-only rule is enforceable end to end only when the project-management
 tool's workflow ACL restricts outbound Blocked transitions to human principals.

@@ -102,6 +102,8 @@ Implement the endpoint with tests.
 > assumptions: fixture scope and rollback are explicit.
 >
 > - sceptical-architect
+
+> Human clarification: preserve the client-visible conflict response exactly.
 EOF
 
 LAUNCH=.agent-squad/bin/launch-team.sh
@@ -218,6 +220,22 @@ d=json.load(open(sys.argv[1]))
 assert "[design-note]" not in d["description"]
 assert "**Assignee:**" not in d["description"]
 ' "$packet_json"
+check "packet includes every tracker comment, including ordinary human clarification" python3 -c '
+import hashlib, json, sys
+d=json.load(open(sys.argv[1])); snapshot=json.load(open(sys.argv[2]))
+comments=d["commentHistory"]
+assert d["schemaVersion"] == 2
+tracked=next(task for task in snapshot["tasks"] if task["taskId"] == d["taskId"])
+assert comments == tracked["comments"]
+assert d["commentHistoryCount"] == len(comments)
+assert comments[-1]["body"] == "Human clarification: preserve the client-visible conflict response exactly."
+canonical=json.dumps(comments,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()
+assert d["commentHistoryDigest"] == "sha256:"+hashlib.sha256(canonical).hexdigest()
+' "$packet_json" .teamwork/feature-runtime/tasks.json
+check "packet makes complete comment review mandatory before code" \
+  grep -q 'Before changing code, read every comment below in oldest-first order' "$packet_md"
+check "packet renders ordinary human clarification" \
+  grep -q 'Human clarification: preserve the client-visible conflict response exactly' "$packet_md"
 packet_checksum="$(cksum "$packet_md")"
 printf '[handoff]\nThis arrives after packet creation.\n' | "$OPS" comment "$TID" - >/dev/null
 "$LAUNCH" compose-task feature-runtime "$FID" backend "$TID" 1 >/dev/null

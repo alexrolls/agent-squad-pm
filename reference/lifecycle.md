@@ -47,8 +47,10 @@ runtime is not Claude Code, begin directly with the native workflow.
 
 ## Scenario 2 — Start a [task]
 
-1. **Read the [task]** in full via the adapter — description, `[subtasks]`, comments,
-   linked `[feature]`.
+1. **Read the [task]** in full via the adapter — description, `[subtasks]`, every
+   comment in oldest-first order (including ordinary comments, not only
+   structured markers), and the linked `[feature]`. Do this on every pickup from
+   `[Planned]`/ToDo before changing code; prior attempts do not satisfy the read.
 2. **Verify the status is the board's initial status** (`[Planned]` on the default
    board). If it isn't and `STRICT_STATUS=true`, pull the **andon cord** (Scenario 8).
    Don't start work on something already `[Active]` elsewhere.
@@ -61,8 +63,11 @@ runtime is not Claude Code, begin directly with the native workflow.
    arrive — see `reference/orchestration.md`. Single-agent mode
    skips this step.
 6. The dispatcher claims the task and launches a fresh task instance with an
-   immutable packet, task branch, attempt worktree, and report path. Implement
-   only from that packet, keeping `[subtasks]` as the checklist.
+   immutable packet, task branch, attempt worktree, and report path. Immediately
+   before worker boot, the packet's fresh exhaustive tracker export captures the
+   complete normalized comment history, count, and digest. The worker reads every
+   entry and acknowledges that count/digest in its report before changing code.
+   Implement only from that packet, keeping `[subtasks]` as the checklist.
 
 ---
 

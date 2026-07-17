@@ -680,8 +680,10 @@ An idle ping is never a completion signal; only the artifact is.
 ## Recovery
 
 Relaunched task workers need no session state: the dispatcher creates a fresh
-attempt packet from current binding artifacts and points it at the existing task
-branch. Gate roles re-read their queue from the tracker and exact review
+attempt packet from the complete current tracker comment history and the curated
+current binding artifacts, then points it at the existing task branch. The
+worker reads every snapshotted comment before changing code. Gate roles re-read
+their queue from the tracker and exact review
 packages. If either trail is ambiguous, emit `[andon]` rather than inferring
 missing state.
 
