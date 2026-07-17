@@ -159,8 +159,10 @@ Packet: <immutable task-packet.md path>
 Worktree: <attempt worktree path>
 Task branch: <agent-task/safe-task-key>
 Report: <attempt report path>
-Read: the packet and your role brief only; fetch other context by explicit
-      pointer when the packet says it is required.
+Read: the packet—including every entry in its mandatory complete tracker-comment
+      history—and your role brief only; acknowledge the comment count/digest in
+      the report before changing code. Fetch other context by explicit pointer
+      when the packet says it is required.
 Report back: checkpoint the task branch, then submit the report artifact before
       exiting. The outbox owns tracker delivery.
 ```

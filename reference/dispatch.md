@@ -44,10 +44,14 @@ heartbeat files, then acts top to bottom:
   mailbox (`mailbox/<role>/NNN-dispatcher.md`) *before* launching, so the
   role boots as a queue consumer (drain every item, post per-[task] markers,
   exit).
-- **Task packet before boot:** a worker launch creates its task branch,
-  provisioned worktree, immutable task packet, report path, execution record,
-  and task-scoped pid before starting the model. The task prompt does not inline
-  the full orchestration reference.
+- **Task packet before boot:** a worker launch creates its task branch and
+  provisioned worktree, performs a fresh exhaustive tracker export, then creates
+  the immutable task packet, report path, execution record, and task-scoped pid
+  before starting the model. The packet carries every normalized tracker comment
+  in oldest-first order plus its count and digest; the worker must read and
+  acknowledge them before changing code. This applies to every queued pickup,
+  including rework and human Blocked → queued resumes. The task prompt does not
+  inline the full orchestration reference.
 - **Adapter-neutral claim recovery:** before asking the tracker to claim a task,
   dispatch writes a digest-bound durable claim record containing the exact
   team/feature/task/attempt/role/status identity. On later passes the planner
