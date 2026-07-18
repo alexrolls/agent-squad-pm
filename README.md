@@ -515,12 +515,12 @@ the default.
    ```
 
    For Claude Code use `--agent claude-code`. Pin a release in controlled
-   environments, for example `startup-factory@0.1.0`. `uvx` creates an isolated
+   environments, for example `startup-factory@0.1.1`. `uvx` creates an isolated
    environment for the installer and leaves no Startup Factory package in your
    project environment.
 
-   > The `uvx` path requires the first `v0.1.0` package release. Before that tag
-   > is published, use the [auditable shell compatibility path](#shell-compatibility-path).
+   > The `uvx` path downloads the published PyPI package. For a Git checkout or
+   > offline use, use the [auditable shell compatibility path](#shell-compatibility-path).
 
    This quick start demonstrates the one-agent workflow. Set `TEAM_MODE=false`
    in the installed `config/project-management.config.md` before continuing;

@@ -55,7 +55,13 @@ jobs:
           echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
 
       - name: Run the full runtime suite
-        run: bash tests/run-all.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_tmp="$RUNNER_TEMP/startup-factory-runtime"
+          install -d -m 700 "$runtime_tmp"
+          /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 10)'
+          PATH="/usr/bin:/bin" TMPDIR="$runtime_tmp" /bin/bash tests/run-all.sh
 
       - name: Run packaging unit tests
         run: python -m unittest discover -s tests/packaging -p "test_*.py" -v
