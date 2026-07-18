@@ -25,6 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover - metadata tests run on 3.11+
 ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = ROOT / "pyproject.toml"
 PROJECT_MANAGEMENT_CONFIG = ROOT / "config" / "project-management.config.md"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 RESOURCE_ARCHIVE = "startup_factory_cli/resources/startup-factory.tar.gz"
 RESOURCE_CHECKSUM = f"{RESOURCE_ARCHIVE}.sha256"
 
@@ -122,7 +123,7 @@ class ProjectMetadataTests(unittest.TestCase):
     def test_public_package_metadata(self) -> None:
         project = self.config["project"]
         self.assertEqual(project["name"], "startup-factory")
-        self.assertEqual(project["version"], "0.1.0")
+        self.assertEqual(project["version"], "0.1.1")
         self.assertEqual(project["requires-python"], ">=3.10")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(project["license-files"], ["LICENSE"])
@@ -154,17 +155,29 @@ class BundledDefaultsTests(unittest.TestCase):
         self.assertNotRegex(config, r"(?m)^TEAM_MODE=false(?:\s|$)")
 
 
+class ReleaseWorkflowTests(unittest.TestCase):
+    def test_runtime_suite_uses_a_private_temporary_directory(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('runtime_tmp="$RUNNER_TEMP/startup-factory-runtime"', workflow)
+        self.assertIn('install -d -m 700 "$runtime_tmp"', workflow)
+        self.assertIn(
+            'PATH="/usr/bin:/bin" TMPDIR="$runtime_tmp" /bin/bash tests/run-all.sh',
+            workflow,
+        )
+        self.assertNotIn("        run: bash tests/run-all.sh", workflow)
+
+
 class SdistCanonicalizationTests(unittest.TestCase):
     def _write_sdist(self, path: Path, *, mtime: int, uid: int) -> None:
         with tarfile.open(path, "w:gz") as archive:
-            directory = tarfile.TarInfo("startup_factory-0.1.0")
+            directory = tarfile.TarInfo("startup_factory-0.1.1")
             directory.type = tarfile.DIRTYPE
             directory.mode = 0o755
             directory.mtime = mtime
             directory.uid = uid
             archive.addfile(directory)
             payload = b"metadata fixture\n"
-            member = tarfile.TarInfo("startup_factory-0.1.0/PKG-INFO")
+            member = tarfile.TarInfo("startup_factory-0.1.1/PKG-INFO")
             member.mode = 0o644
             member.mtime = mtime
             member.uid = uid
@@ -223,7 +236,7 @@ class BuiltDistributionIdentityTests(unittest.TestCase):
             license_bytes = archive.read(license_names[0])
 
         self.assertEqual(metadata["Name"], "startup-factory")
-        self.assertEqual(metadata["Version"], "0.1.0")
+        self.assertEqual(metadata["Version"], "0.1.1")
         self.assertEqual(metadata["Requires-Python"], ">=3.10")
         self.assertEqual(metadata["License-Expression"], "MIT")
         self.assertEqual(metadata.get_all("License-File", []), ["LICENSE"])
