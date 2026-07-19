@@ -595,6 +595,7 @@ payload=json.load(open(sys.argv[1])); task=payload['tasks'][0]
 comments=[str(c.get('body') or '') for c in task['comments']]
 request=next(body for body in reversed(comments) if body.startswith('[review-request]'))
 expected='sha256:'+hashlib.sha256(request.encode()).hexdigest()
+roles=set(); contexts=set()
 for marker in (
     '[team-lead-approval]',
     '[architecture-approval]',
@@ -605,6 +606,10 @@ for marker in (
     assert re.search(r'(?m)^Review-Request-SHA256: '+re.escape(expected)+r'$', body)
     assert re.search(r'(?m)^Task-Branch-Head: [0-9a-f]{40}$', body)
     assert re.search(r'(?m)^Review-Package-SHA256: sha256:[0-9a-f]{64}$', body)
+    roles.add(re.search(r'(?m)^Reviewer-Role: (\S+)$', body).group(1))
+    contexts.add(re.search(r'(?m)^Reviewer-Context: (\S+)$', body).group(1))
+assert len(roles) == 4
+assert len(contexts) == 4
 PY
 
 # Product verdict ownership is conditional: the configured product-manager owns

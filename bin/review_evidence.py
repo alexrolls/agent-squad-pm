@@ -22,7 +22,13 @@ SIGNATURE_RE = re.compile(
     re.IGNORECASE,
 )
 REQUEST_FIELDS = ("Review-Base-Commit", "Task-Branch-Head", "Review-Package-SHA256")
-APPROVAL_FIELDS = ("Review-Request-SHA256", "Task-Branch-Head", "Review-Package-SHA256")
+APPROVAL_BINDING_FIELDS = (
+    "Review-Request-SHA256",
+    "Task-Branch-Head",
+    "Review-Package-SHA256",
+)
+APPROVAL_PROVENANCE_FIELDS = ("Reviewer-Role", "Reviewer-Context")
+APPROVAL_FIELDS = APPROVAL_BINDING_FIELDS + APPROVAL_PROVENANCE_FIELDS
 REQUIRED_APPROVAL_MARKERS = (
     "team-lead-approval",
     "architecture-approval",
@@ -128,17 +134,32 @@ def latest_review_request(snapshot: dict, task_id: str) -> str:
     return requests[-1]
 
 
-def bind_approval(body: str, request_body: str) -> str:
+def bind_approval(
+    body: str,
+    request_body: str,
+    reviewer_role: str,
+    reviewer_context: str,
+) -> str:
     if marker(body) not in {
         "review-approval",
         *REQUIRED_APPROVAL_MARKERS,
     }:
         raise EvidenceError("only required review/architecture approvals can be bound as approvals")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", reviewer_role):
+        raise EvidenceError("reviewer role must be one concrete role identifier")
+    if (
+        not reviewer_context
+        or len(reviewer_context) > 256
+        or any(char.isspace() or ord(char) < 33 for char in reviewer_context)
+    ):
+        raise EvidenceError("reviewer context must be one bounded non-whitespace instance identifier")
     binding = request_binding(request_body)
     return insert_fields(body, [
         f"Review-Request-SHA256: {binding['requestDigest']}",
         f"Task-Branch-Head: {binding['head']}",
         f"Review-Package-SHA256: {binding['package']}",
+        f"Reviewer-Role: {reviewer_role}",
+        f"Reviewer-Context: {reviewer_context}",
     ])
 
 
@@ -193,6 +214,8 @@ def validate(
     binding = request_binding(request_body)
     if (binding["base"], binding["head"], binding["package"]) != (base, head, package):
         raise EvidenceError("review request is not bound to the exact current base/head/package")
+    reviewer_roles: set[str] = set()
+    reviewer_contexts: set[str] = set()
     for name in REQUIRED_APPROVAL_MARKERS:
         index = approval_indexes[name]
         approval_body = normalize(comments[index].get("body"))
@@ -202,8 +225,24 @@ def validate(
             "Task-Branch-Head": head,
             "Review-Package-SHA256": package,
         }
-        if values != expected:
+        if {field: values[field] for field in APPROVAL_BINDING_FIELDS} != expected:
             raise EvidenceError(f"[{name}] is not bound to the exact review request/head/package")
+        reviewer_role = values["Reviewer-Role"]
+        reviewer_context = values["Reviewer-Context"]
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", reviewer_role):
+            raise EvidenceError(f"[{name}] has an invalid concrete Reviewer-Role")
+        if (
+            not reviewer_context
+            or len(reviewer_context) > 256
+            or any(char.isspace() or ord(char) < 33 for char in reviewer_context)
+        ):
+            raise EvidenceError(f"[{name}] has an invalid Reviewer-Context")
+        if reviewer_role in reviewer_roles:
+            raise EvidenceError("mandatory approvals do not name four distinct reviewer roles")
+        if reviewer_context in reviewer_contexts:
+            raise EvidenceError("mandatory approvals do not prove four distinct reviewer contexts")
+        reviewer_roles.add(reviewer_role)
+        reviewer_contexts.add(reviewer_context)
 
     def record(name: str, index: int) -> dict:
         raw = comments[index]
@@ -218,7 +257,7 @@ def validate(
         }
 
     evidence = {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "taskId": task_id,
         "reviewBaseCommit": base,
         "taskBranchHead": head,
@@ -295,6 +334,8 @@ def main() -> int:
     approval.add_argument("snapshot", type=Path)
     approval.add_argument("task")
     approval.add_argument("output", type=Path)
+    approval.add_argument("reviewer_role")
+    approval.add_argument("reviewer_context")
     check = commands.add_parser("validate")
     check.add_argument("snapshot", type=Path)
     check.add_argument("task")
@@ -309,7 +350,15 @@ def main() -> int:
         elif args.command == "bind-approval":
             snapshot = json.loads(safe_read(args.snapshot))
             request_body = latest_review_request(snapshot, args.task)
-            atomic_write(args.output, bind_approval(safe_read(args.body, 65536), request_body))
+            atomic_write(
+                args.output,
+                bind_approval(
+                    safe_read(args.body, 65536),
+                    request_body,
+                    args.reviewer_role,
+                    args.reviewer_context,
+                ),
+            )
         else:
             snapshot = json.loads(safe_read(args.snapshot))
             board = json.loads(safe_read(args.board))

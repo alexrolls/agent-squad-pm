@@ -660,7 +660,7 @@ PY
 
 prepare_publish_body() {
   local entry="$1" marker="$2" task="$3" delivery="$4" staged_body="$5"
-  local candidate package binding base head package_digest
+  local candidate package binding base head package_digest reviewer_context
   candidate="$staged/$delivery.candidate.$$.md"
   rm -f -- "$candidate"
   case "$marker" in
@@ -687,7 +687,26 @@ PY
 )"; then return 1; fi
       ;;
     review-approval|team-lead-approval|architecture-approval|sceptical-architecture-approval|security-approval)
-      "$SKILL_DIR/bin/review_evidence.py" bind-approval "$staged_body" "$current_snapshot" "$task" "$candidate" || return 1
+      reviewer_context="$(python3 - "$entry" <<'PY'
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+capability = data.get("producerCapability") or {}
+capability_id = str(capability.get("id") or "")
+instance = str(capability.get("instance") or "")
+value = capability_id + ":" + instance
+if (
+    not re.fullmatch(r"cap-[0-9a-f]{32}", capability_id)
+    or not instance
+    or len(value) > 256
+    or re.search(r"\s", value)
+):
+    raise SystemExit("process-outbox: approval lacks a bounded verified reviewer context")
+print(value)
+PY
+)" || return 1
+      "$SKILL_DIR/bin/review_evidence.py" bind-approval \
+        "$staged_body" "$current_snapshot" "$task" "$candidate" \
+        "$actor" "$reviewer_context" || return 1
       if ! binding="$(python3 - "$marker" <<'PY'
 import json,sys
 print(json.dumps({'kind':sys.argv[1]}, separators=(',',':')))

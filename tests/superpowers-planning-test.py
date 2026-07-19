@@ -177,10 +177,14 @@ def main() -> None:
                 plan.relative_to(repo).as_posix(),
                 "--output",
                 os.fspath(handoff),
+                "--intake",
+                "spec-provided",
             ).stdout
         )
         assert Path(created["handoff"]) == handoff.resolve()
         manifest = json.loads(handoff.read_text(encoding="utf-8"))
+        assert manifest["schemaVersion"] == 2
+        assert manifest["intake"] == "spec-provided"
         assert manifest["executionOwner"] == "startup-factory"
         assert (
             "superpowers:subagent-driven-development"
@@ -202,6 +206,7 @@ def main() -> None:
             ).stdout
         )
         assert validated["valid"] is True
+        assert validated["intake"] == "spec-provided"
 
         (repo / "README.md").write_text("# Descendant commit\n", encoding="utf-8")
         git(repo, "add", "README.md")

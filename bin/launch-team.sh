@@ -11,7 +11,7 @@
 #   launch-team.sh relaunch      <team> <featureId> <role> [preset]
 #   launch-team.sh compose       <team> <featureId> <role> [preset]  # write the composed startup prompt, print its path — no spawn (harness mode)
 #   launch-team.sh compose-task  <team> <featureId> <role> <taskId> [attempt] [preset]
-#   launch-team.sh planning-handoff <team> <spec-path> <plan-path>  # bind Claude/Superpowers planning inputs
+#   launch-team.sh planning-handoff <team> <spec-path> <plan-path> [brainstormed|spec-provided]  # bind planning inputs
 #   launch-team.sh worktree      <team> <role> <taskId> [attempt]
 #   launch-team.sh worktree-remove <team> <role> <taskId> [attempt]
 #   launch-team.sh validate-board [config-path]                  # validate board config JSON
@@ -1365,8 +1365,11 @@ esac
 
 case "${1:-}" in
   planning-handoff)
-    [ $# -eq 4 ] || die "usage: planning-handoff <team> <spec-path> <plan-path>"
+    [ $# -ge 4 ] && [ $# -le 5 ] \
+      || die "usage: planning-handoff <team> <spec-path> <plan-path> [brainstormed|spec-provided]"
     validate_team_id "$2"
+    intake="${5:-brainstormed}"
+    case "$intake" in brainstormed|spec-provided) ;; *) die "invalid planning intake: $intake" ;; esac
     [ "$SUPERPOWERS_ENABLED" = true ] \
       || die "Superpowers planning is disabled by USE_SUPERPOWERS=false"
     dir="$(teamroot "$2")" || die "unsafe team workspace"
@@ -1374,7 +1377,8 @@ case "${1:-}" in
     mkdir -p "$(dirname "$handoff")"
     python3 "$SKILL_DIR/bin/superpowers-planning.py" \
       --config "$PLANNING_CONFIG" create-handoff \
-      --repo "$REPO_ROOT" --team "$2" --spec "$3" --plan "$4" --output "$handoff" >/dev/null \
+      --repo "$REPO_ROOT" --team "$2" --spec "$3" --plan "$4" --output "$handoff" \
+      --intake "$intake" >/dev/null \
       || die "could not create the Claude/Superpowers planning handoff"
     python3 "$SKILL_DIR/bin/superpowers-planning.py" \
       --config "$PLANNING_CONFIG" validate-handoff \

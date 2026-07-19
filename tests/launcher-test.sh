@@ -269,6 +269,8 @@ handoff="$("$LAUNCH" planning-handoff planning-team docs/superpowers/specs/launc
 check "planning-handoff creates a manifest" test -f "$handoff"
 check "planning-handoff assigns execution to Startup Factory" \
   python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["executionOwner"] == "startup-factory"' "$handoff"
+check "planning-handoff records the default intake" \
+  python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["intake"] == "brainstormed"' "$handoff"
 planning_prompt="$("$LAUNCH" compose planning-team FEAT-PLAN team-lead)"
 check "team prompt carries validated planning handoff" grep -q "Planning handoff:" "$planning_prompt"
 check "team prompt carries exact approved specification" grep -q "docs/superpowers/specs/launcher.md" "$planning_prompt"

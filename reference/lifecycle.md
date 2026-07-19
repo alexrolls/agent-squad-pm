@@ -68,7 +68,8 @@ runtime is not Claude Code, begin directly with the native workflow.
    before worker boot, the packet's fresh exhaustive tracker export captures the
    complete normalized comment history, count, and digest. The worker reads every
    entry and acknowledges that count/digest in its report before changing code.
-   Implement only from that packet, keeping `[subtasks]` as the checklist.
+   `WORKTREE_SETUP` must finish before any code failure is classified. Implement
+   only from that packet, keeping `[subtasks]` as the checklist.
 
 ---
 

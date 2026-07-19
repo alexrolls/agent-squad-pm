@@ -2,7 +2,8 @@
 
 **Only relevant when `TEAM_MODE=true`.** In single-agent mode, one agent performs
 ordinary transitions and this file is unused—except that `[Blocked]` remains a
-human-only outbound state in every mode.
+human-only outbound state in every mode. A single agent may report a self-review,
+but it cannot emit or claim any independent review-board approval.
 
 When several agents collaborate on one [feature], the danger is two agents driving the same
 [task] at once, or a status moving without the responsible role knowing. The fix is

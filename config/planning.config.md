@@ -14,10 +14,12 @@ SUPERPOWERS_PLAN_ROOT=docs/superpowers/plans
 ## Behavior
 
 - `USE_SUPERPOWERS=true` (default): make Claude Code runtimes eligible to invoke
-  `superpowers:brainstorming`, then `superpowers:writing-plans`. Bind the
-  resulting committed specification and plan into a Startup Factory planning
-  handoff before launching the team. This value does not enable Superpowers for
-  any non-Claude runtime.
+  `superpowers:brainstorming`, then `superpowers:writing-plans`. A complete,
+  explicitly approved user specification may take the documented
+  `spec-provided` fast path directly to writing the plan. Bind the intake mode and
+  resulting committed specification/plan into a Startup Factory planning handoff
+  before launching the team. This value does not enable Superpowers for any
+  non-Claude runtime.
 - `USE_SUPERPOWERS=false`: skip every Superpowers-specific planning and worker
   instruction. Use the native Startup Factory planning, design, implementation,
   review, integration, and release workflow.

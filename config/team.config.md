@@ -92,7 +92,7 @@ WORKTREE_SETUP=null              # Run once inside every freshly created task wo
                                  # (e.g. "pnpm install --frozen-lockfile && pnpm build").
                                  # null = bare worktree. Provisioning is what makes
                                  # implementer validation claims executable — an
-                                 # unprovisioned tree produced the false-green failure class.
+                                 # unprovisioned tree produces misleading dependency/type failures.
 AGENT_SANDBOX_RUNNER=null        # Absolute executable outside the agent repository. In enforced mode
                                  # the launcher invokes: runner --workdir <absolute> -- /usr/bin/env -i ...
                                  # It rejects symlinks, non-regular/non-executable files, foreign
@@ -131,6 +131,12 @@ VALIDATE_SCRIPT=null             # alternative to the four above: a repo-relativ
                                  # runs whatever applies (per-area suites, tools that only
                                  # exist mid-feature). When set, it replaces VALIDATE_*.
 ```
+
+Put stable, non-secret validation environment assignments directly in the
+command (for example `TEST_DATABASE_PORT=5544 pytest`). If a value is secret,
+inject it through the protected executor instead; never store it in this file or
+`BASELINE.md`. The baseline records required environment variable names and tool
+versions so a green command is reproducible rather than machine-specific.
 
 Validation **evolves during a feature**: the [task] that introduces a tool (a
 linter, a new suite) updates `VALIDATE_SCRIPT` (or these keys) *and* the team's

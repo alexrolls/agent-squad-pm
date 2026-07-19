@@ -104,13 +104,31 @@ preparation:
    `reference/deployment.md` before enabling anything.
 4. **Select the planning intake.** For Scenario 1 or 10, when
    `USE_SUPERPOWERS=true` and the current runtime is Claude Code, read
-   `reference/superpowers-planning.md`, run its plugin preflight, and use
-   `superpowers:brainstorming` plus `superpowers:writing-plans` to produce the
-   approved specification and plan. Then create the digest-bound handoff and
-   continue with Startup Factory's own team. When disabled or running in another
-   runtime, use the native lifecycle. Never hand execution, worktrees, dispatch,
-   review, integration, or release to Superpowers.
-5. **Initialize the tool** — steps depend on your execution mode:
+   `reference/superpowers-planning.md` and run its plugin preflight. Use
+   `superpowers:brainstorming` plus `superpowers:writing-plans` when requirements
+   need discovery. If the user already supplied a complete, internally
+   consistent specification and explicitly asked to proceed, record
+   `spec-provided`, write that specification artifact, and go directly to
+   `superpowers:writing-plans`. Then create the digest-bound handoff with the
+   selected intake and continue with Startup Factory's own team. When disabled
+   or running in another runtime, use the native lifecycle. Never hand execution,
+   worktrees, dispatch, review, integration, or release to Superpowers.
+5. **Select review authority before launching anyone.** Use exactly one profile:
+   - **Single-agent:** one agent may implement and self-review, but must label the
+     result as self-review. Never emit a mandatory board-approval marker or claim
+     independent approval.
+   - **Authenticated team:** every mandatory gate role is launched with the
+     protected per-instance capability from `launch-team.sh`, or through a
+     harness integration providing an equivalent capability channel. Only this
+     profile may publish mandatory approvals and reach `[Ready to deploy]`.
+   - **Native harness without protected capabilities:** fresh subagents may
+     implement or return advisory review reports through the harness, but their
+     identities are not workflow authority. Do not post
+     `[team-lead-approval]`, `[architecture-approval]`,
+     `[sceptical-architecture-approval]`, or `[security-approval]`; do not call
+     the result a review-board approval; and do not move the [task] to
+     `[Ready to deploy]`. Launch authenticated gate roles or escalate.
+6. **Initialize the tool** — steps depend on your execution mode:
    - **Single-agent** (`TEAM_MODE` unset or false): run the adapter's *Initialization*
      section probe (a cheap read proving access works). If it fails, stop and tell the
      user to fix the *MCP / CLI Setup* — do not proceed.
@@ -218,7 +236,11 @@ each generic operation through the adapter's *Operations* table:
 - **Code review is package-bound and four-party.** Review requests bind the exact
   merge-base, task-branch HEAD, and generated package digest. The Team Lead,
   Principal Architect, Sceptical Principal Architect, and Senior Security
-  Engineer independently bind their approvals to that request. Any finding
+  Engineer independently bind their approvals to that request. Every approval
+  records its concrete `Reviewer-Role` and protected `Reviewer-Context`; the
+  integrator rejects missing or repeated roles/contexts. A role label, model
+  name, signature, or direct project-management comment is not a substitute for
+  a protected per-instance context. Any finding
   requeues the [task] to `[Planned]`/`ToDo` for a fresh attempt; any branch
   movement forces a new request and all four new approvals before integration.
 - **The four review-board agents are mandatory and distinct in team mode.**

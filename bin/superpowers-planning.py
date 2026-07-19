@@ -29,6 +29,7 @@ BLOCKED_EXECUTION_SKILLS = (
     "superpowers:executing-plans",
     "superpowers:finishing-a-development-branch",
 )
+PLANNING_INTAKES = ("brainstormed", "spec-provided")
 TEAM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z")
 PLUGIN_RE = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\Z")
 HEX_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -288,9 +289,10 @@ def command_create_handoff(args: argparse.Namespace) -> dict[str, Any]:
     if not COMMIT_RE.fullmatch(source_commit):
         raise PlanningError("Git returned an invalid source commit")
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "backend": "claude-superpowers",
         "pluginId": config["SUPERPOWERS_PLUGIN_ID"],
+        "intake": args.intake,
         "executionOwner": "startup-factory",
         "blockedExecutionSkills": list(BLOCKED_EXECUTION_SKILLS),
         "sourceCommit": source_commit,
@@ -370,6 +372,7 @@ def command_validate_handoff(args: argparse.Namespace) -> dict[str, Any]:
             "schemaVersion",
             "backend",
             "pluginId",
+            "intake",
             "executionOwner",
             "blockedExecutionSkills",
             "sourceCommit",
@@ -379,12 +382,14 @@ def command_validate_handoff(args: argparse.Namespace) -> dict[str, Any]:
         },
         "planning handoff",
     )
-    if manifest["schemaVersion"] != 1 or isinstance(manifest["schemaVersion"], bool):
+    if manifest["schemaVersion"] != 2 or isinstance(manifest["schemaVersion"], bool):
         raise PlanningError("unsupported planning handoff schema")
     if manifest["backend"] != "claude-superpowers":
         raise PlanningError("planning handoff has the wrong backend")
     if manifest["pluginId"] != config["SUPERPOWERS_PLUGIN_ID"]:
         raise PlanningError("planning handoff plugin id does not match configuration")
+    if manifest["intake"] not in PLANNING_INTAKES:
+        raise PlanningError("planning handoff has an invalid intake mode")
     if manifest["executionOwner"] != "startup-factory":
         raise PlanningError(
             "planning handoff does not assign execution to Startup Factory"
@@ -428,6 +433,7 @@ def command_validate_handoff(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "valid": True,
         "team": team,
+        "intake": manifest["intake"],
         "sourceCommit": source_commit,
         "spec": spec,
         "plan": plan,
@@ -454,6 +460,7 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--spec", required=True)
     create.add_argument("--plan", required=True)
     create.add_argument("--output", required=True)
+    create.add_argument("--intake", choices=PLANNING_INTAKES, default="brainstormed")
     create.set_defaults(handler=command_create_handoff)
 
     validate = commands.add_parser("validate-handoff")

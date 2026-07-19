@@ -161,6 +161,20 @@ through the trusted launcher (or by a harness integration that provides an
 equivalent protected per-instance capability channel). Never put an outbox
 capability in a prompt or agent-to-agent message.
 
+Treat this as an authority boundary, not a transport inconvenience:
+
+- A protected launcher/harness capability makes a reviewer a **gating reviewer**.
+  The broker adds the concrete `Reviewer-Role` and immutable
+  `Reviewer-Context` to its approval, and all four contexts must be distinct.
+- A native harness subagent without that channel is an **advisory reviewer**.
+  Give it a fresh, read-only context and adversarial mandate, but route its
+  report back through harness messaging. Never translate that report into a
+  mandatory approval marker, never sign it on the subagent's behalf, and never
+  describe it as board approval.
+- If four authenticated contexts are unavailable, record a plainly labeled
+  self/advisory review and escalate. The [task] remains in `[Review]`; there is
+  no degraded path to `[Ready to deploy]`.
+
 ## Execution modes — sequential by default, parallel by declaration
 
 `EXECUTION` in `config/team.config.md` names how much implementation concurrency
@@ -274,8 +288,9 @@ When a marker's only allowed role is the [task]'s own implementer, an
 work; none available → `[andon]`.
 
 **Budgets and supersession.** An agent-authored gate-marker comment is ≤ **25
-lines**; the broker may add the three exact review-binding fields plus two
-separator lines, keeping the final posted comment ≤ **30 lines**. Its content is: marker,
+lines**; the broker may add three exact review-binding fields, two reviewer
+provenance fields, and two separator lines, keeping the final posted comment ≤
+**32 lines**. Its content is: marker,
 `round: N`, `supersedes: <comment-id>` (round ≥ 2; Markdown adapter:
 `<marker>-<round>` stands in for the id), verdict, delta since the last round,
 file list, evidence/artifact paths, signature. Full checklists, logs, and long
@@ -345,6 +360,19 @@ for red that predates the branch. When a [task] changes the validation landscape
 (adds a linter, a suite, a build step), updating `BASELINE.md` is part of that
 [task]'s diff. The integrator cites `BASELINE.md` when recording skips or judging
 a validation run.
+
+Establish the baseline only from a provisioned clean tree:
+
+1. Run the configured `WORKTREE_SETUP` (dependency sync plus any required
+   workspace build) before interpreting a compiler, type, lint, or test failure.
+   An unprovisioned failure is environment evidence, not a code baseline.
+2. Record the exact setup and validation commands, tool/runtime versions,
+   non-secret environment variable **names** required by those commands, and
+   exit/count summaries. Never record secret values.
+3. Re-run after setup. Classify a failure as pre-existing only when the clean
+   feature branch reproduces it with the same command and environment names.
+4. If setup itself fails, pull the andon cord. Do not repair unrelated code to
+   compensate for stale dependencies or a misaddressed local service.
 
 ## Tracker write modes
 
@@ -494,6 +522,7 @@ Every validated command in a `[review-request]` carries an evidence record:
 Evidence:
   commit:   <sha of the working copy HEAD when the command ran>
   command:  <exact command>
+  env:      <non-secret variable names required by the command; values omitted>
   exit:     <code>
   counts:   <e.g. 47 passed, 0 failed, 2 skipped>
   duration: <seconds>
@@ -533,7 +562,9 @@ branches.
    the request with exactly one `Review-Base-Commit`, `Task-Branch-Head`, and
    `Review-Package-SHA256`. Each approval must carry exactly one
    `Review-Request-SHA256`, `Task-Branch-Head`, and
-   `Review-Package-SHA256`, all matching that request. `Review-Request-SHA256`
+   `Review-Package-SHA256`, all matching that request, plus one concrete
+   `Reviewer-Role` and one protected `Reviewer-Context`. The four roles and four
+   contexts must each be distinct. `Review-Request-SHA256`
    is SHA-256 over the complete bound request body after normalizing CRLF and
    bare CR to LF; it is not a digest of selected fields. A later commit—even one
    touching only an already approved filename—invalidates the approvals.

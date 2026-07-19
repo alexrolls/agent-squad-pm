@@ -24,8 +24,10 @@ default-on project flag remains Claude-only.
 
 Superpowers owns two inputs:
 
-1. `superpowers:brainstorming` — clarify intent, compare approaches, obtain human
-   design approval, and write the specification under the configured spec root.
+1. Specification intake — normally `superpowers:brainstorming` to clarify intent,
+   compare approaches, obtain human design approval, and write the specification
+   under the configured spec root. A complete user-provided specification may be
+   written directly and recorded as `spec-provided`.
 2. `superpowers:writing-plans` — turn the approved specification into a detailed
    implementation plan under the configured plan root.
 
@@ -58,15 +60,25 @@ finishers from operating on the same [feature].
    python3 bin/superpowers-planning.py preflight --runtime claude
    ```
 
-2. Invoke `superpowers:brainstorming`. Follow its human approval gates. Do not
-   create tracker work or launch implementation agents during brainstorming.
+2. Select and record one intake:
+   - `brainstormed`: invoke `superpowers:brainstorming` and follow its human
+     approval gates.
+   - `spec-provided`: use only when the user's supplied specification already
+     defines scope, acceptance criteria, constraints, interfaces/data effects,
+     and material failure cases, and the user explicitly asked to proceed.
+     Write it under the configured spec root without re-running an interactive
+     requirements ritual. Missing or contradictory content falls back to
+     `brainstormed`; never silently invent material requirements.
+
+   Do not create project-management work or launch implementation agents during
+   either intake.
 3. Invoke `superpowers:writing-plans` after the written specification is
    approved. Let it write and self-review the implementation plan.
 4. Do not offer or start a Superpowers execution mode. Instead create the
    digest-bound handoff:
 
    ```bash
-   bin/launch-team.sh planning-handoff <team> <spec-path> <plan-path>
+   bin/launch-team.sh planning-handoff <team> <spec-path> <plan-path> <brainstormed|spec-provided>
    ```
 
 5. Use the specification and plan as planning inputs, not unquestioned

@@ -38,13 +38,17 @@ bind_review() {
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.request.bound"
   .agent-squad/bin/tracker-ops.sh export "$FID" "$snapshot"
   .agent-squad/bin/review_evidence.py bind-approval \
-    "$prefix.lead" "$snapshot" "$task" "$prefix.lead.bound"
+    "$prefix.lead" "$snapshot" "$task" "$prefix.lead.bound" \
+    team-lead "gate:team-lead:$key"
   .agent-squad/bin/review_evidence.py bind-approval \
-    "$prefix.architecture" "$snapshot" "$task" "$prefix.architecture.bound"
+    "$prefix.architecture" "$snapshot" "$task" "$prefix.architecture.bound" \
+    principal-architect "gate:principal-architect:$key"
   .agent-squad/bin/review_evidence.py bind-approval \
-    "$prefix.sceptical" "$snapshot" "$task" "$prefix.sceptical.bound"
+    "$prefix.sceptical" "$snapshot" "$task" "$prefix.sceptical.bound" \
+    sceptical-architect "gate:sceptical-architect:$key"
   .agent-squad/bin/review_evidence.py bind-approval \
-    "$prefix.security" "$snapshot" "$task" "$prefix.security.bound"
+    "$prefix.security" "$snapshot" "$task" "$prefix.security.bound" \
+    senior-security-engineer "gate:senior-security-engineer:$key"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.lead.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.architecture.bound"
   .agent-squad/bin/tracker-ops.sh comment "$task" "$prefix.sceptical.bound"

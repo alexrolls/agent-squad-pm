@@ -32,18 +32,26 @@ def approved_snapshot() -> dict:
     team_lead = bind_approval(
         "[team-lead-approval]\nFiles: app.py\n\n- team-lead\n",
         request,
+        "team-lead",
+        "gate:team-lead:1",
     )
     architecture = bind_approval(
         "[architecture-approval]\nFiles: app.py\n\n- principal-architect\n",
         request,
+        "principal-architect",
+        "gate:principal-architect:1",
     )
     sceptical = bind_approval(
         "[sceptical-architecture-approval]\nFiles: app.py\n\n- sceptical-architect\n",
         request,
+        "sceptical-architect",
+        "gate:sceptical-architect:1",
     )
     security = bind_approval(
         "[security-approval]\nFiles: app.py\n\n- senior-security-engineer\n",
         request,
+        "senior-security-engineer",
+        "gate:senior-security-engineer:1",
     )
     return {
         "featureId": "FEATURE-1",
@@ -135,6 +143,22 @@ class ReviewEvidenceTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(EvidenceError, "independently four-party-approved"):
+            validate(data, "TASK-1", base=BASE, head=HEAD, package=PACKAGE)
+
+    def test_duplicate_reviewer_context_is_not_independent(self):
+        data = approved_snapshot()
+        data["tasks"][0]["comments"][2]["body"] = data["tasks"][0]["comments"][2][
+            "body"
+        ].replace("gate:principal-architect:1", "gate:team-lead:1")
+        with self.assertRaisesRegex(EvidenceError, "four distinct reviewer contexts"):
+            validate(data, "TASK-1", base=BASE, head=HEAD, package=PACKAGE)
+
+    def test_duplicate_reviewer_role_is_not_independent(self):
+        data = approved_snapshot()
+        data["tasks"][0]["comments"][2]["body"] = data["tasks"][0]["comments"][2][
+            "body"
+        ].replace("Reviewer-Role: principal-architect", "Reviewer-Role: team-lead")
+        with self.assertRaisesRegex(EvidenceError, "four distinct reviewer roles"):
             validate(data, "TASK-1", base=BASE, head=HEAD, package=PACKAGE)
 
 

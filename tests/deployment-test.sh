@@ -321,13 +321,17 @@ PY
   printf '[sceptical-architecture-approval] round: 2\nFiles: app.txt\n\n— sceptical-architect\n' > "$sceptical_template"
   printf '[security-approval] round: 2\nFiles: app.txt\n\n— senior-security-engineer\n' > "$security_template"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$team_lead_template" "$snapshot" "$tid" "$team_lead_body"
+    "$team_lead_template" "$snapshot" "$tid" "$team_lead_body" \
+    team-lead "gate:team-lead:$key"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$architecture_template" "$snapshot" "$tid" "$architecture_body"
+    "$architecture_template" "$snapshot" "$tid" "$architecture_body" \
+    principal-architect "gate:principal-architect:$key"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$sceptical_template" "$snapshot" "$tid" "$sceptical_body"
+    "$sceptical_template" "$snapshot" "$tid" "$sceptical_body" \
+    sceptical-architect "gate:sceptical-architect:$key"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$security_template" "$snapshot" "$tid" "$security_body"
+    "$security_template" "$snapshot" "$tid" "$security_body" \
+    senior-security-engineer "gate:senior-security-engineer:$key"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
@@ -425,13 +429,17 @@ PY
   printf '[sceptical-architecture-approval] round: 2\nFiles: generation-2.txt\n\n— sceptical-architect\n' > "$sceptical_template"
   printf '[security-approval] round: 2\nFiles: generation-2.txt\n\n— senior-security-engineer\n' > "$security_template"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$team_lead_template" "$snapshot" "$tid" "$team_lead_body"
+    "$team_lead_template" "$snapshot" "$tid" "$team_lead_body" \
+    team-lead "gate:team-lead:$key"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$architecture_template" "$snapshot" "$tid" "$architecture_body"
+    "$architecture_template" "$snapshot" "$tid" "$architecture_body" \
+    principal-architect "gate:principal-architect:$key"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$sceptical_template" "$snapshot" "$tid" "$sceptical_body"
+    "$sceptical_template" "$snapshot" "$tid" "$sceptical_body" \
+    sceptical-architect "gate:sceptical-architect:$key"
   python3 "$ROOT/bin/review_evidence.py" bind-approval \
-    "$security_template" "$snapshot" "$tid" "$security_body"
+    "$security_template" "$snapshot" "$tid" "$security_body" \
+    senior-security-engineer "gate:senior-security-engineer:$key"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
     "$ROOT/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
