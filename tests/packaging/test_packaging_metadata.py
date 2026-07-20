@@ -123,7 +123,7 @@ class ProjectMetadataTests(unittest.TestCase):
     def test_public_package_metadata(self) -> None:
         project = self.config["project"]
         self.assertEqual(project["name"], "startup-factory")
-        self.assertEqual(project["version"], "0.1.1")
+        self.assertEqual(project["version"], "0.1.2")
         self.assertEqual(project["requires-python"], ">=3.10")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(project["license-files"], ["LICENSE"])
@@ -156,6 +156,22 @@ class BundledDefaultsTests(unittest.TestCase):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_release_runs_for_merged_main_commits(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("    branches:\n      - main", workflow)
+        self.assertNotIn("    tags:\n", workflow)
+        self.assertIn('test "$GITHUB_REF" = "refs/heads/main"', workflow)
+        self.assertIn('test "$commit" = "$GITHUB_SHA"', workflow)
+        self.assertIn("bump project.version", workflow)
+
+    def test_github_release_tag_comes_from_the_package_version(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "          RELEASE_TAG: v${{ needs.build.outputs.version }}",
+            workflow,
+        )
+        self.assertNotIn("$GITHUB_REF_NAME", workflow)
+
     def test_runtime_suite_uses_a_private_temporary_directory(self) -> None:
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('runtime_tmp="$RUNNER_TEMP/startup-factory-runtime"', workflow)
@@ -240,7 +256,7 @@ class BuiltDistributionIdentityTests(unittest.TestCase):
             license_bytes = archive.read(license_names[0])
 
         self.assertEqual(metadata["Name"], "startup-factory")
-        self.assertEqual(metadata["Version"], "0.1.1")
+        self.assertEqual(metadata["Version"], "0.1.2")
         self.assertEqual(metadata["Requires-Python"], ">=3.10")
         self.assertEqual(metadata["License-Expression"], "MIT")
         self.assertEqual(metadata.get_all("License-File", []), ["LICENSE"])

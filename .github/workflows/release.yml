@@ -1,25 +1,25 @@
 name: Release
 
 # Required repository settings:
-# - protect v* tags against force-update/deletion and restrict tag creation;
-# - require a human reviewer on the pypi environment;
+# - protect main and require Package CI before changes can be merged;
+# - restrict the pypi environment to main without required reviewers;
 # - enable immutable GitHub Releases.
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Validate and build exact release artifacts
+    name: Validate main and build exact release artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -27,9 +27,10 @@ jobs:
       version: ${{ steps.release.outputs.version }}
 
     steps:
-      - name: Check out the tagged commit
+      - name: Check out the merged main commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -38,17 +39,24 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Validate tag, version, exact commit, and main ancestry
+      - name: Validate version and exact main commit
         id: release
         shell: bash
         run: |
           set -euo pipefail
           version="$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
-          test "$GITHUB_REF_NAME" = "v$version"
-          commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
-          test "$commit" = "$(git rev-parse HEAD)"
+          test -n "$version"
+          test "$GITHUB_REF" = "refs/heads/main"
+          commit="$(git rev-parse HEAD)"
+          test "$commit" = "$GITHUB_SHA"
           git show-ref --verify --quiet refs/remotes/origin/main
-          git merge-base --is-ancestor "$commit" origin/main
+          test "$commit" = "$(git rev-parse origin/main)"
+          if previous_commit="$(git rev-parse -q --verify "refs/tags/v$version^{commit}")"; then
+            test "$previous_commit" = "$commit" || {
+              echo "v$version already belongs to a different commit; bump project.version" >&2
+              exit 1
+            }
+          fi
           source_date_epoch="$(git show -s --format=%ct "$commit")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
@@ -66,7 +74,7 @@ jobs:
       - name: Run packaging unit tests
         run: python -m unittest discover -s tests/packaging -p "test_*.py" -v
 
-      - name: Build the tagged source bundle twice
+      - name: Build the merged source bundle twice
         env:
           COMMIT: ${{ steps.release.outputs.commit }}
           VERSION: ${{ steps.release.outputs.version }}
@@ -319,6 +327,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: v${{ needs.build.outputs.version }}
           SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
           VERSION: ${{ needs.build.outputs.version }}
         shell: bash
@@ -326,29 +335,45 @@ jobs:
           set -euo pipefail
 
           resolve_tag_commit() {
-            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha
+            gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha
           }
 
-          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
+          tag_exists=false
+          if tag_commit="$(resolve_tag_commit 2>/dev/null)"; then
+            tag_exists=true
+            test "$tag_commit" = "$SOURCE_COMMIT" || {
+              echo "$RELEASE_TAG already points to a different commit" >&2
+              exit 1
+            }
+          fi
 
-          if release_is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+          if release_is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
             test "$release_is_draft" = true || {
               echo "refusing to alter an already-published release" >&2
               exit 1
             }
           else
-            gh release create "$GITHUB_REF_NAME" \
-              --draft \
-              --verify-tag \
-              --title "Startup Factory v$VERSION" \
+            create_args=(
+              "$RELEASE_TAG"
+              --draft
+              --title "Startup Factory v$VERSION"
               --generate-notes
+            )
+            if [[ "$tag_exists" = true ]]; then
+              create_args+=(--verify-tag)
+            else
+              create_args+=(--target "$SOURCE_COMMIT")
+            fi
+            gh release create "${create_args[@]}"
           fi
+
+          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
 
           expected="$RUNNER_TEMP/expected-assets"
           existing="$RUNNER_TEMP/existing-assets"
           unexpected="$RUNNER_TEMP/unexpected-assets"
           find release-assets -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort > "$expected"
-          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$existing"
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$existing"
           comm -13 "$expected" "$existing" > "$unexpected"
           test ! -s "$unexpected" || {
             echo "draft release contains unexpected assets:" >&2
@@ -356,11 +381,11 @@ jobs:
             exit 1
           }
 
-          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
           downloaded="$RUNNER_TEMP/downloaded-release-assets"
           mkdir -p "$downloaded"
-          gh release download "$GITHUB_REF_NAME" --dir "$downloaded"
+          gh release download "$RELEASE_TAG" --dir "$downloaded"
           find "$downloaded" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort > "$RUNNER_TEMP/downloaded-assets"
           cmp "$expected" "$RUNNER_TEMP/downloaded-assets"
           while IFS= read -r name; do
@@ -368,4 +393,4 @@ jobs:
           done < "$expected"
 
           test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          gh release edit "$RELEASE_TAG" --draft=false

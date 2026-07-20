@@ -515,7 +515,7 @@ the default.
    ```
 
    For Claude Code use `--agent claude-code`. Pin a release in controlled
-   environments, for example `startup-factory@0.1.1`. `uvx` creates an isolated
+   environments, for example `startup-factory@0.1.2`. `uvx` creates an isolated
    environment for the installer and leaves no Startup Factory package in your
    project environment.
 
@@ -730,11 +730,15 @@ is created from the same already-tested artifacts; nothing is rebuilt during
 publication.
 
 Before the first release, a maintainer must register the `startup-factory` PyPI
-Trusted Publisher for `.github/workflows/release.yml`, create a protected
-`pypi` GitHub Environment with required human approval, protect `v*` tags from
-unauthorized creation, force-update, and deletion, and enable immutable GitHub
-Releases. A `vX.Y.Z` tag is accepted only when it exactly matches the version
-in `pyproject.toml` and its commit belongs to `main`.
+Trusted Publisher for `.github/workflows/release.yml` on the `pypi` GitHub
+Environment, restrict that environment's deployment branches to `main` without
+required reviewers for unattended publication, protect `main` with Package CI
+as a required check, and enable immutable GitHub Releases. Every successful
+push produced by a merge to `main` runs the release workflow. The merge must
+advance the version in `pyproject.toml` because PyPI package versions are
+immutable. After the exact merged commit is tested, attested, and published to
+PyPI, the workflow creates the matching `vX.Y.Z` tag and GitHub Release from the
+same artifacts.
 
 Multi-agent teams require the **target project** to be a git repository because
 every implementation attempt receives a task branch and git worktree. The skill
