@@ -9,7 +9,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 sys.path.insert(0, str(root / "bin"))
-from task_metadata import parse_task_metadata
+from task_metadata import effective_review_gates, parse_task_metadata, required_review_gates
 
 spec = importlib.util.spec_from_file_location("runtime_state", root / "bin" / "runtime-state.py")
 runtime = importlib.util.module_from_spec(spec)
@@ -53,7 +53,8 @@ assert profile("Implement auth", "model-profile: fast") == "fast"
 
 parsed = parse_task_metadata(
     "track: frontend\nparallel-safe: yes\nfiles: a.ts, b.ts\n"
-    "resources: api:widget\nmodel-profile: strong"
+    "resources: api:widget\nmodel-profile: strong\nwork-kind: defect"
+    "\nreview-gates: security, qa"
 )
 assert parsed == {
     "parallelSafe": True,
@@ -61,18 +62,45 @@ assert parsed == {
     "resources": ["api:widget"],
     "track": "frontend",
     "modelProfile": "strong",
+    "workKind": "defect",
+    "reviewGates": ["qa", "security"],
 }
 assert planner.metadata(
     {
         "title": "Any",
         "description": (
             "track: frontend\nparallel-safe: yes\nfiles: a.ts, b.ts\n"
-            "resources: api:widget\nmodel-profile: strong"
+            "resources: api:widget\nmodel-profile: strong\nwork-kind: defect"
+            "\nreview-gates: security, qa"
         ),
     }
 ) == parsed
 assert parse_task_metadata("", "Browser component")["track"] == "frontend"
 assert parse_task_metadata("", "Database worker")["track"] == "backend"
 assert parse_task_metadata("track: llm", "Evaluate retrieval quality")["track"] == "llm"
+try:
+    parse_task_metadata("work-kind: maybe", "Ambiguous work")
+except ValueError as exc:
+    assert "work-kind" in str(exc)
+else:
+    raise AssertionError("invalid work-kind must fail closed")
+try:
+    parse_task_metadata("review-gates: qa, operability", "Unsupported gate")
+except ValueError as exc:
+    assert "review-gates" in str(exc)
+else:
+    raise AssertionError("unsupported review gate must fail closed")
+try:
+    parse_task_metadata("review-gates: qa, qa", "Duplicate gate")
+except ValueError as exc:
+    assert "duplicates" in str(exc)
+else:
+    raise AssertionError("duplicate review gate must fail closed")
+assert required_review_gates("REQUIRED_REVIEW_GATES=null\n") == []
+assert required_review_gates("REQUIRED_REVIEW_GATES=security\n") == ["security"]
+assert effective_review_gates(
+    parse_task_metadata("review-gates: qa"),
+    "REQUIRED_REVIEW_GATES=security\n",
+) == ["qa", "security"]
 print("ALL PASS")
 PY

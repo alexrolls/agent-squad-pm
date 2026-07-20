@@ -41,7 +41,7 @@ demands; those briefs and `reference/orchestration.md` bind every status write
 
 - **Receives:** scope-approved [tasks] with acceptance criteria; the architect's
   gate verdicts; findings from any mandatory reviewer or optional QA specialist.
-- **Hands to:** the four-party review board (`[review-request]` opens the review
+- **Hands to:** the three-agent core review board and declared supporting gates (`[review-request]` opens the review
   chain); optional QA specialists (your validation results seed their checks);
   the `integrator` only after all mandatory approvals—never directly.
 

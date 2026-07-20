@@ -37,7 +37,7 @@ Startup Factory owns everything after that:
 - project-management creation and status transitions;
 - design gates and contract registration;
 - task packets, branches, worktrees, and dispatch;
-- implementation, four-party review, and integration;
+- implementation, core-and-declared-gate review, and integration;
 - product acceptance, protected CI proof, and production release.
 
 The Superpowers plan may contain its standard instruction to use

@@ -15,11 +15,12 @@ unchanged — a specialized role always states which protocol role(s) it acts as
 | Deep Infra | `deep-infra.md` | Cloud infrastructure, delivery pipelines, reliability and operability |
 | Deep LLM | `deep-llm.md` | LLM systems, data science, RAG, evaluation, serving, and LLM product work |
 
-Every team carries four distinct mandatory review-board agents: **Team Lead**,
-**Principal Architect**, **Sceptical Principal Architect**, and **Senior
-Security Engineer**. All four independently approve the exact review package
-before the standard `integrator` may merge. QA and other specialists are
-optional evidence/finding roles.
+Every team carries three distinct core review-board agents: **Team Lead**,
+**Principal Architect**, and **Sceptical Principal Architect**. All three
+independently approve the exact review package before the standard `integrator`
+may merge. Security and QA are declared supporting gates. Every preset maps an
+independent Security Engineer for on-demand work. Deep Infra and Deep Security
+include that role in their startup rosters and require security on every task.
 
 ## Use a team
 
@@ -29,8 +30,9 @@ optional evidence/finding roles.
    it, so you don't need a key per role. Add `<ROLE>_CMD` (e.g.
    `SENIOR_STAFF_ENGINEER_CMD`) only to pin a specific CLI to a specific role; set
    it explicitly to `null` to disable an optional role (a `team` launch skips
-   it). The Sceptical Architect and Senior Security Engineer are mandatory and
-   cannot be disabled. Pick
+   it). The three core reviewers cannot be disabled. Security must remain
+   launchable on demand; it is started automatically only for a declared
+   security gate (and always in Deep Infra and Deep Security). Pick
    `EXECUTION` too: `sequential` (default — one [task] worker in flight at a
    time) or `parallel` (dependency/resource-safe waves bounded by
    `MAX_ACTIVE_IMPLEMENTERS`). Both modes isolate every attempt on a task branch
@@ -41,7 +43,15 @@ optional evidence/finding roles.
    are still safe under `sequential` **because** claims come only from the
    lead's single dispatch point — but they work one at a time; choose
    `parallel` to actually use them concurrently.
-2. Launch the whole roster:
+2. For dispatcher/automation-driven work, launch the supervision and gate roster;
+   implementers will be created as fresh task-scoped instances:
+
+   ```bash
+   bin/launch-team.sh gate-team <preset> <feature-branch> <featureId>
+   ```
+
+   Launch the whole roster only when long-lived implementation roles are
+   intentional:
 
    ```bash
    bin/launch-team.sh team <preset> <feature-branch> <featureId>
@@ -70,10 +80,12 @@ optional evidence/finding roles.
   table with protocol mappings, team-specific review stages, launch line.
   Include exactly one distinct mapping and roster member for
   `PROTOCOL_TEAM_LEAD`, `PROTOCOL_PRINCIPAL_ARCHITECT`,
-  `PROTOCOL_SCEPTICAL_ARCHITECT`, and `PROTOCOL_SECURITY_REVIEWER`, plus
-  `integrator`; the launcher rejects the preset before any team process starts
-  if a mandatory reviewer is missing, duplicated, disabled, unlaunchable, or
-  mapped to the same concrete agent. Optionally declare a review mode
+  `PROTOCOL_SCEPTICAL_ARCHITECT`, plus `integrator`. Also include one distinct,
+  launchable `PROTOCOL_SECURITY_REVIEWER` mapping outside the ordinary startup
+  roster. A security- or infrastructure-focused preset may set
+  `REQUIRED_REVIEW_GATES=security` and put it in the roster when every task
+  requires security review. The launcher rejects
+  malformed or conflated mappings before any process starts. Optionally declare a review mode
   (`REVIEW_MODE=sequential|parallel|tiered` — see `_PLAYBOOK.md` → *Review
   modes*; absent = `sequential`).
 - **Identity:** specialized roles sign with their specialized name everywhere;

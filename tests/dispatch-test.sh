@@ -80,6 +80,8 @@ cat > feat/feature.md <<'EOF'
 
 **Assignee:** backend
 
+review-gates: security
+
 > [review-request] please review — backend
 
 ## 4 Needs design verdict [Active]
@@ -116,6 +118,9 @@ echo "$plan" | grep -q "keep $FID#2 \[Blocked\].*human-held" \
   && echo "ok: plans human-held block" \
   || { echo "FAIL: blocked task was not held: $plan"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch senior-security-engineer" && echo "ok: plans security-review queue" || { echo "FAIL: security-review queue"; FAILURES=$((FAILURES+1)); }
+echo "$plan" | grep "launch senior-security-engineer" | grep -q "$FID#6" \
+  && { echo "FAIL: ordinary task entered security queue without a declared gate"; FAILURES=$((FAILURES+1)); } \
+  || echo "ok: ordinary task does not require Security by default"
 echo "$plan" | grep -q "launch principal-architect" && echo "ok: plans PA queue" || { echo "FAIL: PA queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch sceptical-architect" && echo "ok: plans independent architecture queue" || { echo "FAIL: sceptical queue"; FAILURES=$((FAILURES+1)); }
 echo "$plan" | grep -q "launch team-lead" && echo "ok: plans team-lead review and Planned-task supervision" || { echo "FAIL: lead launch"; FAILURES=$((FAILURES+1)); }
@@ -148,8 +153,8 @@ PROTOCOL_SECURITY_REVIEWER=team-lead
 EOF
 if duplicate_review_out="$(TEAM_RUNNER=background "$DISPATCH" feat-duplicate-review-board "$FID" --once --dry-run 2>&1)"; then
   echo "FAIL: dispatch accepted duplicate concrete agents on the mandatory review board"; FAILURES=$((FAILURES+1))
-elif printf '%s' "$duplicate_review_out" | grep -q 'review board must use four distinct concrete agents'; then
-  echo "ok: dispatch refuses duplicate concrete agents on the mandatory review board"
+elif printf '%s' "$duplicate_review_out" | grep -q 'security reviewer must be distinct from the core review board'; then
+  echo "ok: dispatch refuses a security reviewer duplicated on the core review board"
 else
   echo "FAIL: duplicate review board produced wrong error: $duplicate_review_out"; FAILURES=$((FAILURES+1))
 fi
@@ -536,9 +541,9 @@ Done.
 
 **Assignee:** senior-full-stack-engineer
 
-> [review-request] ready — senior-full-stack-engineer
+review-gates: security
 
-> [team-lead-approval] LGTM — team-lead
+> [review-request] ready — senior-full-stack-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
 
@@ -546,19 +551,23 @@ Done.
 
 > [security-approval] LGTM — reviewer
 
+> [team-lead-approval] LGTM — team-lead
+
 ## 3 Security reviewer approved [Review]
 
 **Assignee:** senior-full-stack-engineer
 
-> [review-request] ready — senior-full-stack-engineer
+review-gates: security
 
-> [team-lead-approval] LGTM — team-lead
+> [review-request] ready — senior-full-stack-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
 
 > [sceptical-architecture-approval] LGTM — sceptical-architect
 
 > [security-approval] LGTM — senior-security-engineer
+
+> [team-lead-approval] LGTM — team-lead
 EOF
 SIG_FID="feat/signer-test.md"
 mkdir -p .teamwork/feat-signer-team
@@ -574,14 +583,14 @@ PROTOCOL_BACKEND=senior-full-stack-engineer
 PROTOCOL_FRONTEND=senior-full-stack-engineer
 EOF
 signer_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-signer-team "$SIG_FID" --once --dry-run 2>&1)"
-echo "$signer_plan" | grep -q "\\[security-approval\\] signed by 'reviewer', expected mandatory gate 'senior-security-engineer'" \
+echo "$signer_plan" | grep -q "\\[security-approval\\] signed by 'reviewer', expected required gate 'senior-security-engineer'" \
   && echo "ok: wrong security signer: warning printed" \
   || { echo "FAIL: no signer warning in: $signer_plan"; FAILURES=$((FAILURES+1)); }
 echo "$signer_plan" | grep "launch integrator" | grep -qv "signer-test.*#2" \
   && echo "ok: wrong security signer: task 2 not in merge queue" \
   || { echo "FAIL: task 2 incorrectly in merge queue"; FAILURES=$((FAILURES+1)); }
 echo "$signer_plan" | grep -q "launch integrator.*signer-test.*#3" \
-  && echo "ok: correct four-party signers unlock integrator" \
+  && echo "ok: declared security gate plus core signers unlock integrator" \
   || { echo "FAIL: integrator not in plan or missing task 3; plan: $signer_plan"; FAILURES=$((FAILURES+1)); }
 echo "$signer_plan" | grep -q "launch team-lead" \
   && echo "ok: signer anomaly notifies team-lead" \
@@ -595,9 +604,9 @@ cat > feat/ml-signer-test.md <<'EOF'
 
 **Assignee:** senior-full-stack-engineer
 
-> [review-request] ready — senior-full-stack-engineer
+review-gates: security
 
-> [team-lead-approval] LGTM — team-lead
+> [review-request] ready — senior-full-stack-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
 
@@ -607,13 +616,15 @@ cat > feat/ml-signer-test.md <<'EOF'
 > verdict: approved
 > — senior-security-engineer
 
+> [team-lead-approval] LGTM — team-lead
+
 ## 2 Multiline wrong security signer [Review]
 
 **Assignee:** senior-full-stack-engineer
 
-> [review-request] ready — senior-full-stack-engineer
+review-gates: security
 
-> [team-lead-approval] LGTM — team-lead
+> [review-request] ready — senior-full-stack-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
 
@@ -623,13 +634,15 @@ cat > feat/ml-signer-test.md <<'EOF'
 > verdict: approved
 > — reviewer
 
+> [team-lead-approval] LGTM — team-lead
+
 ## 3 As-role suffix [Review]
 
 **Assignee:** senior-full-stack-engineer
 
-> [review-request] ready — senior-full-stack-engineer
+review-gates: security
 
-> [team-lead-approval] LGTM — team-lead
+> [review-request] ready — senior-full-stack-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
 
@@ -639,13 +652,15 @@ cat > feat/ml-signer-test.md <<'EOF'
 > verdict: approved
 > — senior-security-engineer (as security-reviewer)
 
+> [team-lead-approval] LGTM — team-lead
+
 ## 4 Posted-by suffix [Review]
 
 **Assignee:** senior-full-stack-engineer
 
-> [review-request] ready — senior-full-stack-engineer
+review-gates: security
 
-> [team-lead-approval] LGTM — team-lead
+> [review-request] ready — senior-full-stack-engineer
 
 > [architecture-approval] LGTM — principal-software-architect
 
@@ -654,6 +669,8 @@ cat > feat/ml-signer-test.md <<'EOF'
 > [security-approval] round 1
 > verdict: approved
 > — senior-security-engineer (posted by team-lead)
+
+> [team-lead-approval] LGTM — team-lead
 EOF
 ML_FID="feat/ml-signer-test.md"
 mkdir -p .teamwork/feat-ml-team
@@ -675,7 +692,7 @@ echo "$ml_plan" | grep -q "launch integrator.*ml-signer.*#1" \
 echo "$ml_plan" | grep "launch integrator" | grep -q "ml-signer.*#2" \
   && { echo "FAIL: multiline wrong security signer: task 2 incorrectly in merge queue"; FAILURES=$((FAILURES+1)); } \
   || echo "ok: multiline wrong security signer: task 2 not in merge queue"
-echo "$ml_plan" | grep -q "\\[security-approval\\] signed by 'reviewer'.*expected mandatory gate 'senior-security-engineer'" \
+echo "$ml_plan" | grep -q "\\[security-approval\\] signed by 'reviewer'.*expected required gate 'senior-security-engineer'" \
   && echo "ok: multiline wrong security signer: warning printed" \
   || { echo "FAIL: no warning for multiline wrong security signer; plan: $ml_plan"; FAILURES=$((FAILURES+1)); }
 echo "$ml_plan" | grep -q "launch integrator.*ml-signer.*#3" \
@@ -922,6 +939,132 @@ else
   echo "FAIL: forged durable claim produced wrong error: $forged_claim_out"; FAILURES=$((FAILURES+1))
 fi
 
+# -- declared QA review gate: QA first, then team lead, then integration --------
+cat > feat/qa-gate-test.md <<'EOF'
+# QA Gate Test [Active]
+
+## 1 Awaiting QA [Review]
+
+**Assignee:** backend
+
+review-gates: qa
+
+> [review-request] ready — backend
+>
+> [architecture-approval] approved — principal-architect
+>
+> [sceptical-architecture-approval] approved — sceptical-architect
+>
+> [security-approval] approved — senior-security-engineer
+
+## 2 Awaiting team lead after QA [Review]
+
+**Assignee:** backend
+
+review-gates: qa
+
+> [review-request] ready — backend
+>
+> [review-approval] verified — senior-qa-engineer
+>
+> [architecture-approval] approved — principal-architect
+>
+> [sceptical-architecture-approval] approved — sceptical-architect
+>
+> [security-approval] approved — senior-security-engineer
+
+## 3 Fully approved [Review]
+
+**Assignee:** backend
+
+review-gates: qa
+
+> [review-request] ready — backend
+>
+> [review-approval] verified — senior-qa-engineer
+>
+> [team-lead-approval] approved — team-lead
+>
+> [architecture-approval] approved — principal-architect
+>
+> [sceptical-architecture-approval] approved — sceptical-architect
+>
+> [security-approval] approved — senior-security-engineer
+
+## 4 Early team-lead verdict [Review]
+
+**Assignee:** backend
+
+review-gates: qa
+
+> [review-request] ready — backend
+>
+> [team-lead-approval] approved too early — team-lead
+>
+> [review-approval] verified — senior-qa-engineer
+>
+> [architecture-approval] approved — principal-architect
+>
+> [sceptical-architecture-approval] approved — sceptical-architect
+>
+> [security-approval] approved — senior-security-engineer
+EOF
+QA_GATE_FID="feat/qa-gate-test.md"
+mkdir -p .teamwork/feat-qa-gate-team
+cat > .teamwork/feat-qa-gate-team/preset.env <<'EOF'
+PRESET=deep-llm
+PROTOCOL_TEAM_LEAD=team-lead
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
+PROTOCOL_QA=senior-qa-engineer
+PROTOCOL_INTEGRATOR=integrator
+EOF
+qa_gate_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-qa-gate-team "$QA_GATE_FID" --once --dry-run 2>&1)"
+echo "$qa_gate_plan" | grep -q "launch senior-qa-engineer.*qa-gate-test.md#1" \
+  && echo "ok: declared QA gate routes the task to the configured QA role" \
+  || { echo "FAIL: missing QA gate launch: $qa_gate_plan"; FAILURES=$((FAILURES+1)); }
+echo "$qa_gate_plan" | grep -q "launch team-lead.*qa-gate-test.md#2.*qa-gate-test.md#4" \
+  && echo "ok: team-lead review waits for a current QA approval and re-runs after an early verdict" \
+  || { echo "FAIL: team-lead QA ordering wrong: $qa_gate_plan"; FAILURES=$((FAILURES+1)); }
+echo "$qa_gate_plan" | grep -q "launch integrator.*qa-gate-test.md#3" \
+  && echo "ok: current QA then team-lead approval unlocks integration" \
+  || { echo "FAIL: fully approved QA-gated task did not integrate: $qa_gate_plan"; FAILURES=$((FAILURES+1)); }
+echo "$qa_gate_plan" | grep "launch integrator" | grep -q "qa-gate-test.md#4" \
+  && { echo "FAIL: early team-lead approval bypassed QA ordering"; FAILURES=$((FAILURES+1)); } \
+  || echo "ok: early team-lead approval cannot unlock integration"
+
+# -- preset-required security: Deep Infra activates the gate without task metadata
+cat > feat/infra-security-gate-test.md <<'EOF'
+# Infra Security Gate Test [Active]
+
+## 1 Awaiting required security [Review]
+
+**Assignee:** backend
+
+> [review-request] ready — backend
+>
+> [architecture-approval] approved — principal-cloud-infrastructure-architect
+>
+> [sceptical-architecture-approval] approved — sceptical-architect
+EOF
+INFRA_GATE_FID="feat/infra-security-gate-test.md"
+mkdir -p .teamwork/feat-infra-gate-team
+cat > .teamwork/feat-infra-gate-team/preset.env <<'EOF'
+PRESET=deep-infra
+REQUIRED_REVIEW_GATES=security
+PROTOCOL_TEAM_LEAD=team-lead
+PROTOCOL_PRINCIPAL_ARCHITECT=principal-cloud-infrastructure-architect
+PROTOCOL_SCEPTICAL_ARCHITECT=sceptical-architect
+PROTOCOL_SECURITY_REVIEWER=senior-security-engineer
+PROTOCOL_QA=senior-qa-engineer
+PROTOCOL_INTEGRATOR=integrator
+EOF
+infra_gate_plan="$(TEAM_RUNNER=background "$DISPATCH" feat-infra-gate-team "$INFRA_GATE_FID" --once --dry-run 2>&1)"
+echo "$infra_gate_plan" | grep -q "launch senior-security-engineer.*infra-security-gate-test.md#1" \
+  && echo "ok: Deep Infra activates Security through its preset-required gate" \
+  || { echo "FAIL: Deep Infra did not route its required Security review: $infra_gate_plan"; FAILURES=$((FAILURES+1)); }
+
 # -- read_key: inline comments stripped; quoted values with inner # untouched -----
 cat > feat/rk-test.md <<'EOF'
 # ReadKey Test [Active]
@@ -947,11 +1090,11 @@ sed_i 's/^STUCK_AFTER_MINUTES=.*/STUCK_AFTER_MINUTES=15/' .claude/skills/pm/conf
 sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"   # outer-comment|' .claude/skills/pm/config/team.config.md
 TEAM_RUNNER=background "$DISPATCH" feat-rk-team "$RK_FID" --once >/dev/null 2>&1 || true
 sleep 0.2
-if [ -f .teamwork/feat-rk-team/pids/senior-security-engineer.log ] && \
-   ! grep -q "command not found\|unexpected EOF\|not found" .teamwork/feat-rk-team/pids/senior-security-engineer.log 2>/dev/null; then
+if [ -f .teamwork/feat-rk-team/pids/principal-architect.log ] && \
+   ! grep -q "command not found\|unexpected EOF\|not found" .teamwork/feat-rk-team/pids/principal-architect.log 2>/dev/null; then
   echo "ok: read_key: quoted CMD with outer inline comment ran cleanly (inner preserved)"
 else
-  echo "FAIL: read_key: quoted CMD broken by outer-comment stripping (or security reviewer not launched)"; FAILURES=$((FAILURES+1))
+  echo "FAIL: read_key: quoted CMD broken by outer-comment stripping (or core reviewer not launched)"; FAILURES=$((FAILURES+1))
 fi
 sed_i 's|^TEAM_DEFAULT_CMD=.*|TEAM_DEFAULT_CMD="true"|' .claude/skills/pm/config/team.config.md
 

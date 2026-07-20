@@ -67,12 +67,14 @@ status-owning protocol role. Deep LLM uses `track: llm` plus
 `PROTOCOL_LLM=<concrete-role>` to route model/data-science implementation tasks;
 that concrete role still follows the standard backend implementer mechanics.
 
-The Team Lead, Principal Architect, Sceptical Principal Architect, and
-`security-reviewer` mappings are mandatory cross-functional-team invariants,
-not optional specialists. Every preset must map and roster one launchable,
-distinct concrete role for each. The launcher validates that invariant before
-starting any process, and broker/runtime boundaries reject a missing,
-duplicated, disabled, malformed, or conflated mapping.
+The Team Lead, Principal Architect, and Sceptical Principal Architect mappings
+are mandatory core-team invariants. Every preset must map and roster one
+launchable, distinct concrete role for each. Every preset also maps an
+independent, launchable `security-reviewer`, but ordinary presets keep it out of
+the startup roster and launch it only for `review-gates: security`. Deep Infra
+and Deep Security set `REQUIRED_REVIEW_GATES=security` and therefore roster it.
+The launcher and broker/runtime boundaries validate these distinctions before
+work proceeds.
 
 One signing rule: **use the role name at the top of your startup prompt,
 verbatim and only that name** — as your tracker assignee name, your mailbox
@@ -137,6 +139,7 @@ it — same protocol, different transport:
 | CLI-process mechanism | Harness-mode equivalent |
 |---|---|
 | `launch-team.sh start/team` (spawn) | `launch-team.sh compose <team> <featureId> <role> [preset]` writes the identical startup prompt without spawning; the lead spawns the role natively with it |
+| One exact-package review | `launch-team.sh compose-review <team> <featureId> <role> <taskId> [preset]` writes a compact single-deliverable prompt plus binding-manifest pointer; it never grants reviewer authority |
 | Mailbox files | The harness's agent-to-agent messages. Same rule as mailboxes: transport, never truth — a decision is binding only once it lands as a tracker comment |
 | Heartbeats | The harness's lifecycle/idle notifications |
 | pid files, tmux, `status`/`stop` | Not applicable — the harness owns process supervision |
@@ -152,7 +155,24 @@ implementers, a CLI process for a long-lived reviewer.
 Task workers use `compose-task`, not the full role prompt. The resulting prompt
 points to one task packet and one report path; a fresh subagent reads only that
 packet, its role brief, and code needed by the task. Gate roles remain batched
-queue consumers and retain the full protocol context.
+queue consumers and retain the full protocol context. For a harness reviewer
+assigned exactly one immutable package, prefer `compose-review`: it carries the
+role-specific checklist and exact artifact pointers without the full orchestration
+document. A queue consumer handling multiple [tasks] still uses `compose`.
+Immediately before `compose-review`, refresh
+`<TEAMWORK_ROOT>/<team>/tasks.json` with the adapter's exhaustive normalized
+feature export. Scriptable adapters use `tracker-ops.sh export`; an MCP-only
+harness performs the adapter's documented reads and writes that same normalized
+`{adapter, featureId, exportedAt, tasks}` shape to the exact path. The command
+rejects a missing/stale snapshot or a latest review request that does not bind
+the generated package.
+
+Every composed prompt ends by restating the delivery contract after all inlined
+context. The final message is the artifact (or submission receipt) that closes
+the assignment; a process summary without it is a protocol violation. On the
+first artifact-less idle, demand the artifact by name. On the second, relaunch a
+fresh instance with the leanest applicable prompt, not the identical oversized
+prompt.
 
 One security boundary does differ: `compose` produces context but cannot
 authenticate a harness-native process. Task artifacts still use their canonical
@@ -165,13 +185,14 @@ Treat this as an authority boundary, not a transport inconvenience:
 
 - A protected launcher/harness capability makes a reviewer a **gating reviewer**.
   The broker adds the concrete `Reviewer-Role` and immutable
-  `Reviewer-Context` to its approval, and all four contexts must be distinct.
+  `Reviewer-Context` to its approval. The three core contexts and every declared
+  supporting-gate context must be distinct.
 - A native harness subagent without that channel is an **advisory reviewer**.
   Give it a fresh, read-only context and adversarial mandate, but route its
   report back through harness messaging. Never translate that report into a
   mandatory approval marker, never sign it on the subagent's behalf, and never
   describe it as board approval.
-- If four authenticated contexts are unavailable, record a plainly labeled
+- If all required authenticated contexts are unavailable, record a plainly labeled
   self/advisory review and escalate. The [task] remains in `[Review]`; there is
   no degraded path to `[Ready to deploy]`.
 
@@ -233,8 +254,8 @@ nothing else: markers, gates, reviews, and statuses are identical in both modes.
 
 Deliberately **not** mode-dependent: `TRACKER_WRITERS=broker` stays the
 recommended write path under parallelism (more concurrent writers means more
-races, not fewer), and all four mandatory review-board approvals remain
-required no matter how many implementers or optional specialists run.
+races, not fewer), and all three core approvals plus declared supporting gates
+remain required no matter how many implementers run.
 
 **Before setting `EXECUTION=parallel` — at any `MAX_ACTIVE_IMPLEMENTERS`,
 pipelined `1` included — validate the machinery once** — docs are not
@@ -303,7 +324,7 @@ pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
 
 | Marker | Written by | Meaning / required content |
 |---|---|---|
-| `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |
+| `[design-note]` | implementer | Proposed approach before any code: approach, API/contract changes, data-model changes, affected components. Cite code as `path::symbol (approx line)`, resolving by stable symbol/heading first rather than a bare line number. A `work-kind: defect` note also includes `Root cause:` with reproduction evidence and the failing regression test to write before the fix. Frontend must include `Architectural impact: yes/no — <why>`. Registers every name it exports in `CONTRACTS.md` and cites the registry line for every sibling export it consumes (see *Contract registry*). |
 | `[design-approved]` | principal-architect | Gate open. Carries a **numbered architecture checklist** — the items the architecture review will verify — plus any binding conditions. The lead delivers the checklist in the assignment; reviewer/QA Phase-1 checklists start from it (add items, never subtract). |
 | `[design-pushback]` | principal-architect | Gate closed. Lists required changes; implementer revises the `[design-note]` and re-pings. |
 | `[sceptical-design-approved]` | sceptical-architect | Independent design challenge cleared. Lists tested assumptions, evidence, and any binding risk controls. Both design approvals are required before code. |
@@ -313,13 +334,13 @@ pre-v2 comments count as round 0). WIP narration, setup chatter, and restated
 | `[resume-plan]` | team-lead | Revised implementation plan after a `requirements-changed` resume verdict. It must be later than that verdict and followed by both later design approvals before a clean-worktree hold can clear. |
 | `[api-ready]` | backend | Contract available for frontend: endpoints, request/response shapes. Also sent by mailbox. |
 | `[divergence]` | implementer | What was done differently from the [task]/design note and why. Additive — **never edit the original [task] description.** |
-| `[review-request]` | implementer | Ready for review: what changed, list of changed files, an **evidence record per validated command** (see *Evidence and re-execution*), an explicit `NOT validated:` section for anything not run (with reason), and any index-only staging operation performed. A claimed result without its evidence record **is** NOT validated. Written when moving to `[Review]`. |
+| `[review-request]` | implementer | Ready for review: what changed, list of changed files, an **evidence record per validated command** (see *Evidence and re-execution*), an explicit `NOT validated:` section for anything not run (with reason), and any index-only staging operation performed. A claimed result without its evidence record **is** NOT validated. Written when moving to `[Review]`. `review-package.sh` emits a sibling binding manifest; reviewers read that file and let the broker add bindings instead of retyping hashes. |
 | `[review-findings]` | reviewer / qa / team-lead / principal-architect / sceptical-architect / security-reviewer | Numbered problems that must be fixed. Task goes back to `[Planned]`/`ToDo` for a fresh attempt. |
 | `[review-approval]` | reviewer / qa | Optional supporting approval with the **explicit list of approved file paths**. |
 | `[team-lead-approval]` | team-lead | Mandatory independent specification, quality, test, and operability sign-off with exact files. |
 | `[architecture-approval]` | principal-architect | Same, from the architecture review. |
 | `[sceptical-architecture-approval]` | sceptical-architect | Independent architecture challenge cleared, with the same exact file-list and review-package binding. |
-| `[security-approval]` | security-reviewer | Mandatory independent security sign-off with threat surfaces, focused verification, residual risk, and exact files. |
+| `[security-approval]` | security-reviewer | Independent security sign-off required when the effective review gates include `security`; includes threat surfaces, focused verification, residual risk, and exact files. |
 | `[product-approval]` | product owner role (e.g. `senior-technical-product-manager`; the team-lead where no product role exists) | Scope/acceptance sign-off: scope ruling, acceptance-criteria verdict, any conditions. |
 | `[product-pushback]` | product owner role (same) | Scope gate closed: what must change in scope or acceptance criteria before work proceeds. |
 | `[handoff]` | team-lead | Reassignment: summary of state so a fresh agent can resume. |
@@ -371,7 +392,11 @@ Establish the baseline only from a provisioned clean tree:
    exit/count summaries. Never record secret values.
 3. Re-run after setup. Classify a failure as pre-existing only when the clean
    feature branch reproduces it with the same command and environment names.
-4. If setup itself fails, pull the andon cord. Do not repair unrelated code to
+4. Check the default branch's required CI/CD state. Every known failure gets an
+   immediate Scenario-6 `[Planned]` [task] with owner and evidence; a red default
+   branch is urgent work and an andon signal for release, never a condition the
+   baseline silently normalizes.
+5. If setup itself fails, pull the andon cord. Do not repair unrelated code to
    compensate for stale dependencies or a misaddressed local service.
 
 ## Tracker write modes
@@ -464,11 +489,11 @@ approved design → dispatcher claim → fresh task packet + task worktree
       → outbox [review-request] + move to [Review]
       → Team Lead quality review ∥ principal architecture review
         ∥ blind-first sceptical architecture review
-        ∥ Senior Security Engineer threat/abuse review
-        ∥ optional QA/specialist evidence
+        ∥ declared Security/QA supporting review
+        ∥ optional non-gating specialist evidence
       → findings? → back to [Planned]/ToDo, fresh attempt, [review-request] again
       → [team-lead-approval] + [architecture-approval]
-        + [sceptical-architecture-approval] + [security-approval]
+        + [sceptical-architecture-approval] + every declared supporting approval
         (all with exact file lists)
       → integrator: verify lists == review package, run integrate-task.sh
         (preserve + validate reviewed task head, merge --no-commit, validate
@@ -489,9 +514,9 @@ Gates live in comments; statuses move only along the `transitions` graph in
 status for stuck work (owner: human; authorized automation may enter but never
 exit it — see lifecycle Scenario 7).
 
-## Independent four-party review
+## Independent core review with declared supporting gates
 
-All four mandatory reviews start from the same exact package when the [task]
+Three mandatory core reviews start from the same exact package when the [task]
 enters `[Review]`, run independently, and all must approve before integration:
 
 - **Team Lead.** Derives a specification/quality checklist before reading the
@@ -502,13 +527,13 @@ enters `[Review]`, run independently, and all must approve before integration:
 - **Sceptical Architect.** Writes its provisional assessment before reading the
   principal verdict, then challenges assumptions, complexity, failure modes,
   reversibility, operational ownership, and evidence. Same file-list rule.
-- **Senior Security Engineer.** Writes a provisional threat assessment before
-  reading peer verdicts, traces data and authority, checks abuse paths and
-  security controls, runs focused adversarial verification, and records residual
-  risk. Same file-list rule.
-
-Optional reviewer, QA, SRE, penetration-test, accessibility, or domain passes
-may add findings or supporting evidence. They never replace one of the four.
+When `security` is an effective gate, the mapped **Senior Security Engineer**
+writes a provisional threat assessment before reading peer verdicts, traces
+data and authority, checks abuse paths and controls, runs focused adversarial
+verification, and records residual risk. QA works the same way for `qa`.
+Supporting approvals must precede the Team Lead's final verdict. SRE,
+penetration-test, accessibility, or other domain passes may add findings or
+supporting evidence; none replaces a core reviewer.
 
 Anti-rationalization (all reviews): "it's just a warning", "pre-existing problem",
 "the tools passed so it must be fine" — none of these excuse a finding. Main is
@@ -556,14 +581,15 @@ dispatcher performs that exact physical write only after validating the
 integrator's transaction. Implementer checkpoint commits exist only on task
 branches.
 
-1. Verify current `[team-lead-approval]`, `[architecture-approval]`,
-   `[sceptical-architecture-approval]`, and `[security-approval]`, authorized
-   distinct signers, and identical approved file lists. The broker enriches
+1. Verify current `[team-lead-approval]`, `[architecture-approval]`, and
+   `[sceptical-architecture-approval]`, plus every approval named by the bound
+   effective `Review-Gates`; verify authorized distinct signers and identical
+   approved file lists. The broker enriches
    the request with exactly one `Review-Base-Commit`, `Task-Branch-Head`, and
    `Review-Package-SHA256`. Each approval must carry exactly one
    `Review-Request-SHA256`, `Task-Branch-Head`, and
    `Review-Package-SHA256`, all matching that request, plus one concrete
-   `Reviewer-Role` and one protected `Reviewer-Context`. The four roles and four
+   `Reviewer-Role` and one protected `Reviewer-Context`. All required roles and
    contexts must each be distinct. `Review-Request-SHA256`
    is SHA-256 over the complete bound request body after normalizing CRLF and
    bare CR to LF; it is not a digest of selected fields. A later commit—even one
@@ -580,7 +606,7 @@ branches.
    an `awaiting-tracker` schema-v2 transaction. The commit and transaction bind
    the execution identity, integration parent, reviewed merge-base, exact
    task-branch head, exact generated review-package SHA-256, and current
-   four-party approval evidence SHA-256; commit trailers also bind the prepared-intent
+   core-and-declared-gate approval evidence SHA-256; commit trailers also bind the prepared-intent
    id and fresh authorization-snapshot digest. Keeping the integration parent separate from
    the reviewed merge-base preserves the reviewed diff when parallel branches
    land in sequence. Conflicts and validation failures abort before commit.
@@ -600,8 +626,9 @@ branches.
    finding snapshot, and returns the task to rework. A completed task uses the
    narrow broker-only `task-reopen` operation with exact readback; ordinary
    callers cannot bypass terminal status. Rework merges the preserved revert into
-   its task branch, resolves normally, and must earn a new request and all four
-   new approvals. History is never rewritten or represented as removed.
+   its task branch, resolves normally, and must earn a new request plus fresh
+   core and declared-gate approvals. History is never rewritten or represented
+   as removed.
 5. Verify the transaction says `completed`. When every [task] is terminal, tell
    the team-lead and principal-architect; feature resolution still requires the
    Lead's completion checklist.

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from task_metadata import is_fast_task, parse_task_metadata
+from task_metadata import effective_review_gates, is_fast_task, parse_task_metadata
 
 
 MARKER_RE = re.compile(r"^\s*\[([\w-]+)\]")
@@ -106,7 +106,7 @@ def marker_positions(task: dict) -> dict[str, int]:
     return positions
 
 
-def derive_stage(task: dict, terminal: set[str]) -> tuple[str, str]:
+def derive_stage(task: dict, terminal: set[str], preset_text: str = "") -> tuple[str, str]:
     status = task.get("status") or "Unknown"
     markers = marker_positions(task)
     request = markers.get("review-request", -1)
@@ -122,6 +122,15 @@ def derive_stage(task: dict, terminal: set[str]) -> tuple[str, str]:
         "sceptical-architecture-approval", -1
     )
     security_approved = markers.get("security-approval", -1)
+    qa_approved = markers.get("review-approval", -1)
+    gates = effective_review_gates(
+        parse_task_metadata(task.get("description"), task.get("title")),
+        preset_text,
+    )
+    supporting_approvals = {
+        "qa": (qa_approved, "QA"),
+        "security": (security_approved, "Senior Security Engineer"),
+    }
 
     if status in terminal:
         return "integrated", "committed and terminal"
@@ -157,22 +166,29 @@ def derive_stage(task: dict, terminal: set[str]) -> tuple[str, str]:
     if status == "Review":
         if request < 0:
             return "review-anomaly", "Review status has no review request"
-        if (
+        required_support = [supporting_approvals[gate] for gate in gates]
+        support_current = all(index > request for index, _ in required_support)
+        team_lead_current = (
             team_lead_approved > request
+            and support_current
+            and all(team_lead_approved > index for index, _ in required_support)
+        )
+        if (
+            team_lead_current
             and architecture_approved > request
             and sceptical_architecture_approved > request
-            and security_approved > request
         ):
-            return "integrating", "all four mandatory approvals present"
+            return "integrating", "core and declared supporting approvals present"
         waiting = []
-        if team_lead_approved <= request:
-            waiting.append("Team Lead")
         if architecture_approved <= request:
             waiting.append("Principal Architect")
         if sceptical_architecture_approved <= request:
             waiting.append("Sceptical Principal Architect")
-        if security_approved <= request:
-            waiting.append("Senior Security Engineer")
+        for index, label in required_support:
+            if index <= request:
+                waiting.append(label)
+        if not team_lead_current:
+            waiting.append("Team Lead")
         return "review", "waiting for " + " and ".join(waiting)
     return status.lower().replace(" ", "-"), "tracker status: %s" % status
 
@@ -251,6 +267,12 @@ def cmd_wait(args) -> None:
 
 def cmd_sync(args) -> None:
     workspace = Path(args.workspace)
+    preset_path = workspace / "preset.env"
+    preset_text = ""
+    if os.path.lexists(preset_path):
+        if preset_path.is_symlink() or not preset_path.is_file():
+            raise SystemExit("runtime-state: team preset must be a non-symlink regular file")
+        preset_text = preset_path.read_text()
     payload = read_json(Path(args.tasks), {})
     tasks = payload.get("tasks") or []
     try:
@@ -290,7 +312,7 @@ def cmd_sync(args) -> None:
 
     for task in automated_tasks:
         task_id = str(task["taskId"])
-        stage, summary = derive_stage(task, terminal)
+        stage, summary = derive_stage(task, terminal, preset_text)
         execution = execution_for(workspace, task_id)
         actor = task.get("assignee") or execution.get("role") or "unassigned"
         attempt = int(execution.get("attempt") or 1)
@@ -327,7 +349,7 @@ def cmd_sync(args) -> None:
                 % (task_id, task.get("title") or "", task.get("status"))
             )
             continue
-        stage, summary = derive_stage(task, terminal)
+        stage, summary = derive_stage(task, terminal, preset_text)
         suffix = " (%s)" % summary if stage in {"blocked", "design-rework", "review-anomaly"} else ""
         digest_lines.append("%s %s - [%s] / %s%s" % (task_id, task.get("title") or "", task.get("status"), stage, suffix))
     digest = "\n".join(digest_lines)

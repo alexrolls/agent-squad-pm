@@ -187,6 +187,8 @@ check "task branch is generation/team namespaced" test "$(git -C "$wt" branch --
 prompt="$($LAUNCH compose-task feature-runtime "$FID" backend "$TID" 1)"
 check "lean task prompt exists" test -f "$prompt"
 check "lean prompt points to task packet" grep -q 'Task packet:' "$prompt"
+check "lean task prompt ends with artifact delivery contract" \
+  test "$(tail -n 1 "$prompt")" = "A summary of your process without the closing artifact is a protocol violation."
 check "non-Claude task command is classified as other" grep -q 'LLM runtime family: other' "$prompt"
 if grep -q 'Claude Superpowers task method' "$prompt"; then
   echo "FAIL: non-Claude task prompt received Superpowers worker methods"; FAILURES=$((FAILURES+1))
@@ -357,6 +359,37 @@ mv .agent-squad/bin/tracker-ops.sh.real .agent-squad/bin/tracker-ops.sh
 wait "$outbox_pid_1" "$outbox_pid_2"
 check "outbox publishes review request" grep -q '\[review-request\]' "$FID"
 check "outbox performs requested transition" grep -q '^## 1 Implement endpoint \[Review\]$' "$FID"
+"$OPS" export "$FID" .teamwork/feature-runtime/tasks.json >/dev/null
+python3 -c '
+import json,sys
+path=sys.argv[1]; data=json.load(open(path)); data["tasks"][0]["status"]="Active"
+json.dump(data,open(path,"w"))
+' .teamwork/feature-runtime/tasks.json
+refuse "lean review prompt rejects a stale non-review snapshot" "not bound" \
+  "$LAUNCH" compose-review feature-runtime "$FID" reviewer "$TID"
+"$OPS" export "$FID" .teamwork/feature-runtime/tasks.json >/dev/null
+package="$(.agent-squad/bin/review-package.sh feature-runtime "$TID")"
+bindings="${package%.diff}.bindings.json"
+check "review package emits machine-readable bindings" python3 -c '
+import hashlib,json,pathlib,sys
+package=pathlib.Path(sys.argv[1]); binding=json.load(open(sys.argv[2]))
+assert binding["schemaVersion"] == 1
+assert binding["reviewPackagePath"] == str(package)
+assert binding["reviewPackageSha256"] == "sha256:"+hashlib.sha256(package.read_bytes()).hexdigest()
+assert len(binding["reviewBaseCommit"]) == 40
+assert len(binding["taskBranchHead"]) == 40
+' "$package" "$bindings"
+review_prompt="$($LAUNCH compose-review feature-runtime "$FID" reviewer "$TID")"
+check "lean review prompt exists" test -f "$review_prompt"
+check "lean review prompt points to binding manifest" grep -q "Binding manifest (read; never retype digests): $bindings" "$review_prompt"
+check "lean review prompt names exact verdict marker" grep -Fq '[review-approval] or [review-findings]' "$review_prompt"
+if grep -q 'Orchestration — The Multi-Agent Protocol' "$review_prompt"; then
+  echo "FAIL: lean review prompt inlined full protocol"; FAILURES=$((FAILURES+1))
+else
+  echo "ok: lean review prompt excludes full protocol"
+fi
+check "lean review prompt ends with exact verdict contract" \
+  test "$(tail -n 1 "$review_prompt")" = "A summary of your process without the closing artifact is a protocol violation."
 done_entry=".teamwork/feature-runtime/outbox/done/$(basename "$entry")"
 check "outbox entry moves to done" test -f "$done_entry"
 check "concurrent outbox drains keep one tracker comment" test "$(grep -c 'delivery-id:' "$FID")" -eq "$((pre_review_delivery_count + 1))"

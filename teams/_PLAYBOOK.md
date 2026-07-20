@@ -10,7 +10,7 @@ The protocol in `reference/orchestration.md` always governs mechanics — claimi
 markers, statuses, mailboxes, worktrees, integration. A preset team *narrows* the
 protocol; it never contradicts it.
 
-## The four fixed review-board rules
+## The three fixed review-board rules
 
 1. **The Team Lead owns process and quality review.** It plans, launches,
    supervises, reassigns, escalates, and independently supplies
@@ -21,13 +21,19 @@ protocol; it never contradicts it.
 3. **The Sceptical Principal Architect is independent.** It forms a blind-first
    position, challenges every design and implementation, and independently
    supplies `[sceptical-architecture-approval]`.
-4. **The Senior Security Engineer is independent and mandatory.** It threat-models
-   the exact change, tests abuse paths, and independently supplies
-   `[security-approval]`.
+No [task] reaches the integrator until all three commit-bound core approvals
+exist on the current review request. QA, Security, and other specialists join
+through declared supporting gates; they add evidence or `[review-findings]`
+without replacing a core board member.
 
-No [task] reaches the integrator until all four commit-bound approvals exist on
-the current review request. QA and other specialists may add evidence or
-`[review-findings]`, but they never replace a mandatory board member.
+The Senior Security Engineer is mapped and launchable in every preset but is
+disabled at startup except in Deep Infra and Deep Security. Planning adds
+`review-gates: security` when the task touches authentication, authorization,
+secrets, cryptography, tenancy or sensitive data, untrusted input, supply
+chain, privileged/destructive operations, network/deployment boundaries, or a
+credible domain-specific threat. Both architects must challenge an omitted
+security gate. Deep Infra and Deep Security declare security as a
+preset-required gate, so it is always effective even if task metadata omits it.
 
 Every member is bound by the delivery contract (`reference/orchestration.md` →
 *Report before idle*): no one goes idle with an undelivered artifact, and the
@@ -49,7 +55,9 @@ is context, not a trigger.
    sign-off is a `[product-approval]` comment (or `[product-pushback]` with the
    required changes) once the [tasks] exist to carry it. Before creation, the
    sceptical-architect independently challenges the plan and both architects
-   must approve it. Startup Factory launches and owns the team after this point;
+   must approve it. Every task also declares applicable supporting gates with
+   `review-gates: qa`, `review-gates: security`, or both; absence means neither
+   specialist gate is required. Startup Factory launches and owns the team after this point;
    no Superpowers execution/worktree/subagent workflow runs alongside it.
 3. **Design gate — every [task].** The implementer posts a `[design-note]` that
    registers its exports in the contract registry
@@ -57,6 +65,11 @@ is context, not a trigger.
    answers `[design-approved]` or `[design-pushback]`, while the sceptical-
    architect independently answers `[sceptical-design-approved]` or
    `[sceptical-design-pushback]`. No code before both approvals.
+   Cite affected code by stable `path::symbol (approx line)`, not bare line
+   numbers. A `work-kind: defect` [task] first reproduces the failure; its note
+   must include `Root cause:` with evidence and the failing regression test that
+   will be written before the fix. Either architect pushes back if these are
+   missing.
 
    *Pre-flight pass (lifecycle Scenario 10) — the **default opener**:* unless
    the plan is genuinely emergent, run all design gates as one batch — notes
@@ -76,17 +89,22 @@ is context, not a trigger.
    self-validation with the `VALIDATE_*` commands before requesting review.
 5. **Review board.** When implementation matches the specification and is nearly
    releasable, move the [task] to `[Review]` (mapped to `In Review`) and generate
-   one exact review package. The Team Lead, Principal Architect, Sceptical
-   Principal Architect, and Senior Security Engineer independently review that
-   same package and post their own bound approval or `[review-findings]`.
+   one exact review package. The Team Lead, Principal Architect, and Sceptical
+   Principal Architect independently review that same package and post their
+   own bound approval or `[review-findings]`.
    Team-specific QA, SRE, penetration-test, accessibility, or other specialist
-   passes may run too.
+   passes may run too. Required specialist passes must be declared as task
+   metadata (`review-gates: qa,security`); prose alone does not create an
+   enforceable gate. Every declared supporting approval must bind the current
+   package and precede the Team Lead verdict. A security declaration launches
+   the preset's mapped Security Engineer only for that work.
 
    Any blocking quality, architecture, security, test, operability, or
    specification finding moves the [task] `[Review] → [Planned]` (mapped to
    `ToDo`). The dispatcher creates a fresh attempt; after rework the [task]
    proceeds through `[Active]`/`In Progress`, requests a new review package, and
-   all four reviewers decide again. No prior approval survives a new request or
+   all three core reviewers and every declared supporting reviewer decide again.
+   No prior approval survives a new request or
    branch movement.
 6. **Integration.** The standard `integrator` (`roles/integrator.md`) verifies
    the exact review package, validates the task branch, merges and validates the
@@ -123,13 +141,16 @@ default is `sequential`:
 
 - `sequential` — launch board members one after another; highest wall time and
   easiest operational debugging.
-- `parallel` — launch all four board members against the same immutable package;
+- `parallel` — launch the core board and declared supporting reviewers against the same immutable package;
   preferred once the team machinery is stable.
-- `tiered` — vary checklist depth and optional specialist passes by risk, but
-  never collapse, delegate, or skip any of the four mandatory verdicts.
+- `tiered` — vary checklist depth and specialist gates by risk, but never
+  collapse, delegate, or skip any core verdict or declared gate.
 
-Whatever the mode, all four approvals must exist before integration, each file
-list must equal the diff, and any finding invalidates the round.
+Whatever the mode, all three core approvals and every declared supporting gate must
+exist before integration, each file list must equal the diff, and any finding
+invalidates the round. `parallel` may run the other board members concurrently,
+but Team Lead review is final and is routed only after all declared supporting
+gates are current.
 
 ## Escalation
 
@@ -180,9 +201,9 @@ Check: [design-approved] numbered architecture checklist (your Phase-1 seed —
         apply; CONTRACTS.md exports this [task] registered or consumes
 Evidence: the [review-request]'s evidence records (commit, command, exit,
         counts, log path) — spot-check or re-run according to your role.
-Report back: [team-lead-approval] / [architecture-approval] /
-        [sceptical-architecture-approval] / [security-approval] with the exact
-        file list, or [review-findings] — deliver before idling.
+Report back: your assigned core marker, or the declared supporting marker
+        ([review-approval] for qa; [security-approval] for security), with the
+        exact file list; otherwise [review-findings] — deliver before idling.
 ```
 
 Report-block shapes (`[review-request]`, `[divergence]`, `[andon]`, approvals)

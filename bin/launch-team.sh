@@ -10,6 +10,7 @@
 #   launch-team.sh start-task    <team> <featureId> <role> <taskId> [attempt] [preset]
 #   launch-team.sh relaunch      <team> <featureId> <role> [preset]
 #   launch-team.sh compose       <team> <featureId> <role> [preset]  # write the composed startup prompt, print its path — no spawn (harness mode)
+#   launch-team.sh compose-review <team> <featureId> <role> <taskId> [preset]  # lean one-package review prompt — no spawn
 #   launch-team.sh compose-task  <team> <featureId> <role> <taskId> [attempt] [preset]
 #   launch-team.sh planning-handoff <team> <spec-path> <plan-path> [brainstormed|spec-provided]  # bind planning inputs
 #   launch-team.sh worktree      <team> <role> <taskId> [attempt]
@@ -723,6 +724,58 @@ role_brief() { # role_brief <role> -> path to its brief, in roles/ or teams/role
   fi
 }
 
+emit_delivery_footer() { # kind [approval-marker] — must be the final prompt block
+  local kind="$1" marker="${2:-}"
+  echo
+  echo "# Final response contract"
+  echo
+  case "$kind" in
+    role)
+      echo "Your final message IS the structured artifact (or submission receipt) that closes every assigned queue item."
+      echo "Deliver each artifact before exiting; if work cannot continue, deliver [andon] or the required context request instead."
+      ;;
+    task)
+      echo "Your final message IS the task's closing artifact or its submission receipt: [review-request], [andon], or a context request."
+      echo "Write the complete task report and deliver that artifact before exiting."
+      ;;
+    review)
+      echo "Your final message IS exactly one closing artifact for this package."
+      echo "With protected reviewer authority, use [$marker] or [review-findings]; otherwise use ADVISORY REVIEW and make no gate claim."
+      ;;
+    *) die "internal launch error: unknown delivery-footer kind '$kind'" ;;
+  esac
+  echo "A summary of your process without the closing artifact is a protocol violation."
+}
+
+review_marker_for() { # concrete role [preset] -> clean-pass marker
+  local role="$1" preset="${2:-}" file="" key marker mapped
+  if [ -n "$preset" ]; then
+    validate_preset_id "$preset"
+    file="$SKILL_DIR/teams/$preset.md"
+    [ -f "$file" ] || die "unknown preset: $preset (no teams/$preset.md)"
+  fi
+  for key in TEAM_LEAD PRINCIPAL_ARCHITECT SCEPTICAL_ARCHITECT SECURITY_REVIEWER QA; do
+    case "$key" in
+      TEAM_LEAD) marker=team-lead-approval; mapped=team-lead ;;
+      PRINCIPAL_ARCHITECT) marker=architecture-approval; mapped=principal-architect ;;
+      SCEPTICAL_ARCHITECT) marker=sceptical-architecture-approval; mapped=sceptical-architect ;;
+      SECURITY_REVIEWER) marker=security-approval; mapped=senior-security-engineer ;;
+      QA) marker=review-approval; mapped=qa ;;
+    esac
+    if [ -n "$file" ]; then
+      mapped="$(grep -m1 "^PROTOCOL_${key}=" "$file" | cut -d= -f2- || true)"
+    fi
+    if [ -n "$mapped" ] && [ "$role" = "$mapped" ]; then
+      printf '%s' "$marker"
+      return 0
+    fi
+  done
+  case "$role" in
+    reviewer|qa|senior-qa-engineer) printf '%s' review-approval ;;
+    *) die "compose-review requires a review role mapped by the selected preset: $role" ;;
+  esac
+}
+
 roster_of() { # roster_of <preset> -> space-separated role names from teams/<preset>.md ROSTER= line
   validate_preset_id "$1"
   local f="$SKILL_DIR/teams/$1.md"
@@ -763,44 +816,70 @@ validate_mandatory_sceptical_architect() { # preset [launch] — fail before any
   fi
 }
 
-validate_mandatory_security_reviewer() { # preset [launch] — fail before any team side effect
-  local preset="$1" mode="${2:-mapping}" file count role roster key command member occurrences=0
+required_review_gates_of() { # preset -> canonical comma-separated gates
+  local preset="$1" file
+  validate_preset_id "$preset"
+  file="$SKILL_DIR/teams/$preset.md"
+  python3 - "$file" "$SKILL_DIR/bin" <<'PY'
+import pathlib, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[2])
+from task_metadata import required_review_gates
+print(",".join(required_review_gates(pathlib.Path(sys.argv[1]).read_text())))
+PY
+}
+
+preset_requires_review_gate() { # preset gate
+  case ",$(required_review_gates_of "$1")," in
+    *",$2,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_security_reviewer_mapping() { # preset [launch] — available everywhere, auto-started only when required
+  local preset="$1" mode="${2:-mapping}" file count role roster key command member occurrences=0 required=no
   validate_preset_id "$preset"
   file="$SKILL_DIR/teams/$preset.md"
   [ -f "$file" ] || die "unknown preset: $preset (no teams/$preset.md)"
   count="$(grep -c '^PROTOCOL_SECURITY_REVIEWER=' "$file" || true)"
   [ "$count" -eq 1 ] \
-    || die "preset '$preset' must define exactly one mandatory PROTOCOL_SECURITY_REVIEWER mapping"
+    || die "preset '$preset' must define exactly one PROTOCOL_SECURITY_REVIEWER mapping for on-demand security review"
   role="$(grep -m1 '^PROTOCOL_SECURITY_REVIEWER=' "$file" | cut -d= -f2-)"
   [ "$role" != "null" ] && [ -n "$role" ] \
-    || die "preset '$preset' cannot disable its mandatory Senior Security Engineer"
+    || die "preset '$preset' cannot remove its on-demand Senior Security Engineer mapping"
   validate_role_id "$role"
   roster="$(roster_of "$preset")"
   for member in $roster; do
     [ "$member" != "$role" ] || occurrences=$((occurrences + 1))
   done
-  [ "$occurrences" -eq 1 ] \
-    || die "preset '$preset' must contain mandatory security reviewer '$role' exactly once in its roster (found $occurrences)"
+  preset_requires_review_gate "$preset" security && required=yes
+  if [ "$required" = yes ]; then
+    [ "$occurrences" -eq 1 ] \
+      || die "preset '$preset' requires security and must contain '$role' exactly once in its roster (found $occurrences)"
+  else
+    [ "$occurrences" -eq 0 ] \
+      || die "preset '$preset' must leave optional security reviewer '$role' out of its startup roster"
+  fi
   [ -n "$(role_brief "$role")" ] \
-    || die "mandatory security reviewer '$role' has no role brief"
+    || die "security reviewer '$role' has no role brief"
   if [ "$mode" = "launch" ]; then
     key="$(role_cmd_key "$role")"
     key_is_null "$key" \
-      && die "mandatory security reviewer '$role' cannot be disabled ($key=null)"
+      && die "on-demand security reviewer '$role' cannot be unavailable ($key=null)"
     command="$(read_key "$key")"
     [ -n "$command" ] || command="$(read_key TEAM_DEFAULT_CMD)"
     [ -n "$command" ] \
-      || die "mandatory security reviewer '$role' has no command ($key and TEAM_DEFAULT_CMD are null)"
+      || die "on-demand security reviewer '$role' has no command ($key and TEAM_DEFAULT_CMD are null)"
   fi
 }
 
-validate_review_board_independence() { # preset [launch] — four present, enabled, distinct gate roles
+validate_review_board_independence() { # preset [launch] — three core roles plus an independent security specialist mapping
   local preset="$1" mode="${2:-mapping}" file key role roles="" count roster member
   local occurrences command key_name
   validate_preset_id "$preset"
   file="$SKILL_DIR/teams/$preset.md"
   roster="$(roster_of "$preset")"
-  for key in TEAM_LEAD PRINCIPAL_ARCHITECT SCEPTICAL_ARCHITECT SECURITY_REVIEWER; do
+  for key in TEAM_LEAD PRINCIPAL_ARCHITECT SCEPTICAL_ARCHITECT; do
     count="$(grep -c "^PROTOCOL_${key}=" "$file" || true)"
     [ "$count" -eq 1 ] \
       || die "preset '$preset' must define exactly one PROTOCOL_${key} mapping"
@@ -826,23 +905,32 @@ validate_review_board_independence() { # preset [launch] — four present, enabl
         || die "mandatory review-board role '$role' has no command ($key_name and TEAM_DEFAULT_CMD are null)"
     fi
     if printf '%s\n' "$roles" | grep -qxF "$role"; then
-      die "preset '$preset' must use distinct agents for Team Lead, Principal Architect, Sceptical Architect, and Senior Security Engineer (duplicate '$role')"
+      die "preset '$preset' must use distinct agents for Team Lead, Principal Architect, and Sceptical Architect (duplicate '$role')"
     fi
     roles="${roles}${roles:+
 }$role"
   done
+  role="$(grep -m1 '^PROTOCOL_SECURITY_REVIEWER=' "$file" | cut -d= -f2-)"
+  if printf '%s\n' "$roles" | grep -qxF "$role"; then
+    die "preset '$preset' must map its on-demand security reviewer to an agent distinct from the three core reviewers"
+  fi
 }
 
-gate_roster_of() { # gate_roster_of <preset> -> explicit supervision/review/integration roles only
-  local preset="$1" roster mapped role selected=""
+gate_roster_of() { # gate_roster_of <preset> -> startup supervision/review/integration roles only
+  local preset="$1" roster mapped role selected="" security_role required_security=no
   validate_preset_id "$preset"
   roster="$(roster_of "$preset")"
   mapped="$(
     grep -E '^PROTOCOL_(TEAM_LEAD|PRINCIPAL_ARCHITECT|SCEPTICAL_ARCHITECT|SECURITY_REVIEWER|REVIEWER|QA|INTEGRATOR|COORDINATOR|PRODUCT_MANAGER)=' \
       "$SKILL_DIR/teams/$preset.md" | cut -d= -f2 || true
   )"
+  security_role="$(grep -m1 '^PROTOCOL_SECURITY_REVIEWER=' "$SKILL_DIR/teams/$preset.md" | cut -d= -f2-)"
+  preset_requires_review_gate "$preset" security && required_security=yes
   for role in $mapped; do
     validate_role_id "$role"
+    if [ "$role" = "$security_role" ] && [ "$required_security" = no ]; then
+      continue
+    fi
     case " $roster " in *" $role "*) ;; *) die "gate mapping '$role' is not present in preset '$preset' roster" ;; esac
   done
   for role in $roster; do
@@ -1017,7 +1105,7 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] [runtime]
   case "$runtime" in claude|other) ;; *) die "internal launch error: invalid runtime '$runtime'" ;; esac
   if [ -n "$preset" ]; then
     validate_mandatory_sceptical_architect "$preset"
-    validate_mandatory_security_reviewer "$preset"
+    validate_security_reviewer_mapping "$preset"
     validate_review_board_independence "$preset"
   fi
   local dir out prompts mailbox heartbeats pids utc_file tool_prefix planning_handoff
@@ -1099,6 +1187,7 @@ compose_prompt() { # compose_prompt <team> <featureId> <role> [preset] [runtime]
       echo "# Board config (config/statuses.config.json)"
       cat "$SKILL_DIR/config/statuses.config.json"
     fi
+    emit_delivery_footer role
   } > "$out"
   printf '%s' "$out"
 }
@@ -1169,6 +1258,10 @@ compose_task_prompt() { # compose_task_prompt <team> <featureId> <role> <taskId>
     echo
     echo "Start by emitting task.started / implementing. End by submitting a [review-request], [andon],"
     echo "or context request artifact before exiting. The artifact, not process exit, closes the assignment."
+    echo
+    echo "If the packet declares work-kind: defect, reproduce first, identify and record the verified root cause"
+    echo "at stable path::symbol locations, add a failing regression test, then make the smallest fix that passes it."
+    echo "A defect [design-note] without reproduction evidence and a Root cause field must be pushed back."
     if [ "$SUPERPOWERS_ENABLED" = true ] && [ "$runtime" = claude ]; then
       echo
       echo "## Claude Superpowers task method"
@@ -1176,6 +1269,8 @@ compose_task_prompt() { # compose_task_prompt <team> <featureId> <role> <taskId>
       echo "If and only if this task is running in Claude Code, you may use the focused"
       echo "Superpowers skills for test-driven development, systematic debugging,"
       echo "receiving code review, and verification before completion."
+      echo "For work-kind: defect, invoke systematic-debugging before the design note and"
+      echo "test-driven-development before the product-code fix."
       echo "Never invoke Superpowers worktree, subagent execution, plan execution, or"
       echo "branch-finishing skills. Startup Factory owns those execution boundaries."
     fi
@@ -1185,6 +1280,140 @@ compose_task_prompt() { # compose_task_prompt <team> <featureId> <role> <taskId>
     echo
     echo "---"
     cat "$brief"
+    emit_delivery_footer task
+  } > "$out"
+  printf '%s' "$out"
+}
+
+compose_review_prompt() { # <team> <featureId> <role> <taskId> [preset]
+  local team="$1" fid="$2" role="$3" task="$4" preset="${5:-}"
+  validate_team_id "$team"; validate_role_id "$role"
+  if [ -n "$preset" ]; then
+    validate_mandatory_sceptical_architect "$preset"
+    validate_security_reviewer_mapping "$preset"
+    validate_review_board_independence "$preset"
+  fi
+  local dir key brief marker package bindings execution attempt packet tasks
+  local prompts out verdict tool_prefix runtime
+  dir="$(teamroot "$team")" || die "unsafe team workspace"
+  key="$(task_key "$task")"
+  brief="$(role_brief "$role")"
+  [ -n "$brief" ] || die "unknown role: $role (no brief in roles/ or teams/roles/)"
+  marker="$(review_marker_for "$role" "$preset")"
+  package="$("$SKILL_DIR/bin/review-package.sh" "$team" "$task")" \
+    || die "could not create the exact review package for $task"
+  bindings="${package%.diff}.bindings.json"
+  [ -f "$bindings" ] && [ ! -L "$bindings" ] \
+    || die "review package did not create a safe binding manifest"
+  execution="$(team_path "$dir" "executions/$key.json")" || die "unsafe execution path"
+  [ -f "$execution" ] && [ ! -L "$execution" ] || die "missing safe execution record for $task"
+  attempt="$(python3 - "$execution" "$fid" "$task" "$key" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1]))
+if (
+    data.get("schemaVersion") != 1
+    or data.get("featureId") != sys.argv[2]
+    or data.get("taskId") != sys.argv[3]
+    or data.get("taskKey") != sys.argv[4]
+):
+    raise SystemExit("review execution identity mismatch")
+value=data.get("attempt")
+if type(value) is not int or value < 1:
+    raise SystemExit("invalid review attempt")
+print(value)
+PY
+)" || die "execution record has no valid attempt"
+  packet="$(team_path "$dir" "artifacts/$key/attempt-$attempt/task-packet.md")" || die "unsafe packet path"
+  [ -f "$packet" ] && [ ! -L "$packet" ] || die "missing safe task packet for $task"
+  tasks="$(team_path "$dir" tasks.json)" || die "unsafe tracker snapshot path"
+  [ -f "$tasks" ] && [ ! -L "$tasks" ] || die "missing safe tracker snapshot; refresh the exact feature export first"
+  python3 - "$tasks" "$fid" "$task" "$bindings" "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/bin" <<'PY' \
+    || die "tracker snapshot is not bound to the exact current review package"
+import json
+import sys
+
+snapshot_path, feature_id, task_id, binding_path, board_path, module_path = sys.argv[1:]
+sys.path.insert(0, module_path)
+from review_evidence import latest_review_request, request_binding
+
+snapshot = json.load(open(snapshot_path))
+if str(snapshot.get("featureId") or "") != feature_id:
+    raise SystemExit("tracker snapshot feature identity mismatch")
+manifest = json.load(open(binding_path))
+board = json.load(open(board_path))
+review_statuses = {
+    str(item.get("name"))
+    for item in board.get("tasks", {}).get("statuses", [])
+    if item.get("kind") == "review"
+}
+task = next(
+    (item for item in snapshot.get("tasks") or [] if str(item.get("taskId")) == task_id),
+    None,
+)
+if task is None or task.get("status") not in review_statuses:
+    raise SystemExit("task is absent from the current review queue")
+binding = request_binding(latest_review_request(snapshot, task_id))
+expected = (
+    manifest.get("reviewBaseCommit"),
+    manifest.get("taskBranchHead"),
+    manifest.get("reviewPackageSha256"),
+)
+if (binding["base"], binding["head"], binding["package"]) != expected:
+    raise SystemExit("latest review request does not match the package binding manifest")
+PY
+  prompts="$(team_path "$dir" prompts/reviews)" || die "unsafe review prompt path"
+  out="$(team_path "$dir" "prompts/reviews/$role--$key.md")" || die "unsafe review prompt path"
+  verdict="$(team_path "$dir" "artifacts/$key/verdict-$attempt-$role.md")" || die "unsafe verdict path"
+  tool_prefix="$(team_path "$dir" preflight/tool-prefix.txt)" || die "unsafe preflight path"
+  runtime="$(harness_runtime)"
+  mkdir -p "$prompts" "$(dirname "$verdict")"
+  {
+    echo "# One-package review context"
+    echo
+    echo "- Role: $role"
+    echo "- Team / feature branch: $team"
+    echo "- featureId: $fid"
+    echo "- taskId: $task"
+    echo "- Attempt: $attempt"
+    echo "- LLM runtime family: $runtime"
+    echo "- Task packet: $packet"
+    echo "- Current tracker snapshot: $tasks"
+    echo "- Exact review package: $package"
+    echo "- Binding manifest (read; never retype digests): $bindings"
+    echo "- Verdict body file: $verdict"
+    if [ -s "$tool_prefix" ]; then
+      echo "- Verified tracker tool prefix: $(cat "$tool_prefix")"
+    fi
+    echo
+    echo "Review only this package. Do not edit, stage, merge, or commit product files."
+    echo "For this one-shot command, this task is your entire queue: apply only your role brief's"
+    echo "review checkpoint and checklist, not its planning, implementation, supervision, or batch loops."
+    echo "Before reading the diff, derive your checklist from the task packet, current tracker task,"
+    echo "approved design conditions, declared divergences, and your role brief. Then inspect the"
+    echo "exact package and independently verify the changed-file set and applicable evidence."
+    echo "Resolve code citations by stable symbol or heading first (path::symbol, approximate line),"
+    echo "because line numbers drift as sibling work integrates."
+    echo
+    echo "Before deciding, refresh the current task through the preflight-verified tracker access and"
+    echo "confirm that its latest [review-request] still names this package's Base, Head, and digest."
+    echo "If access is unavailable, the binding is stale, or required evidence is ambiguous, return"
+    echo "[review-findings] or [andon]; never reconstruct or hand-type a binding."
+    echo
+    echo "A clean authenticated verdict starts with [$marker]; problems start with [review-findings]."
+    echo "Keep the agent-authored body within 25 lines, include the exact changed-file list, evidence,"
+    echo "residual concerns, and your role signature. The broker adds binding/provenance fields."
+    echo "Write the body to $verdict and submit it through the standard outbox only when this harness"
+    echo "provides an equivalent protected reviewer capability. A plain composed prompt is context,"
+    echo "not authentication; without that channel, return an advisory report only."
+    echo
+    echo "---"
+    cat "$brief"
+    if [ -n "$preset" ]; then
+      echo
+      echo "---"
+      cat "$SKILL_DIR/teams/$preset.md"
+    fi
+    emit_delivery_footer review "$marker"
   } > "$out"
   printf '%s' "$out"
 }
@@ -1395,14 +1624,14 @@ case "${1:-}" in
     [ -n "$roster" ] || die "teams/$preset.md has an empty ROSTER"
     for role in $roster; do validate_role_id "$role"; done
     validate_mandatory_sceptical_architect "$preset" launch
-    validate_mandatory_security_reviewer "$preset" launch
+    validate_security_reviewer_mapping "$preset" launch
     validate_review_board_independence "$preset" launch
     validate_board >/dev/null
     [ "${SKIP_PREFLIGHT:-}" = "1" ] || preflight "$team" "$fid"
     dir="$(teamroot "$team")" || die "unsafe team workspace"
     mkdir -p "$dir"
     preset_file="$(team_path "$dir" preset.env)" || die "unsafe preset path"
-    { printf 'PRESET=%s\n' "$preset"; grep '^PROTOCOL_' "$SKILL_DIR/teams/$preset.md" || true; } > "$preset_file"
+    { printf 'PRESET=%s\n' "$preset"; grep -E '^(REQUIRED_REVIEW_GATES|PROTOCOL_)' "$SKILL_DIR/teams/$preset.md" || true; } > "$preset_file"
     for role in $roster; do
       if key_is_null "$(role_cmd_key "$role")"; then
         echo "skipping $role (disabled: $(role_cmd_key "$role")=null)"; continue
@@ -1416,7 +1645,7 @@ case "${1:-}" in
     validate_preset_id "$preset"; validate_team_id "$team"
     [ -f "$SKILL_DIR/teams/$preset.md" ] || die "unknown preset: $preset (no teams/$preset.md)"
     validate_mandatory_sceptical_architect "$preset" launch
-    validate_mandatory_security_reviewer "$preset" launch
+    validate_security_reviewer_mapping "$preset" launch
     validate_review_board_independence "$preset" launch
     roster="$(gate_roster_of "$preset")"                  # validate every role before any workspace path
     validate_board >/dev/null
@@ -1424,7 +1653,7 @@ case "${1:-}" in
     dir="$(teamroot "$team")" || die "unsafe team workspace"
     mkdir -p "$dir"
     preset_file="$(team_path "$dir" preset.env)" || die "unsafe preset path"
-    { printf 'PRESET=%s\n' "$preset"; grep '^PROTOCOL_' "$SKILL_DIR/teams/$preset.md" || true; } > "$preset_file"
+    { printf 'PRESET=%s\n' "$preset"; grep -E '^(REQUIRED_REVIEW_GATES|PROTOCOL_)' "$SKILL_DIR/teams/$preset.md" || true; } > "$preset_file"
     for role in $roster; do
       if key_is_null "$(role_cmd_key "$role")"; then
         echo "skipping $role (disabled: $(role_cmd_key "$role")=null)"; continue
@@ -1451,6 +1680,15 @@ case "${1:-}" in
     [ $# -eq 4 ] || [ $# -eq 5 ] || die "usage: compose <team> <featureId> <role> [preset]"
     runtime="$(harness_runtime)"
     prompt="$(compose_prompt "$2" "$3" "$4" "${5:-}" "$runtime")"
+    echo "$prompt"
+    ;;
+  compose-review)
+    # Harness mode: emit a compact, one-package reviewer prompt. This carries
+    # no capability; an authenticated harness must provide its own protected
+    # reviewer context before the verdict may enter the mandatory gate.
+    [ $# -ge 5 ] && [ $# -le 6 ] \
+      || die "usage: compose-review <team> <featureId> <role> <taskId> [preset]"
+    prompt="$(compose_review_prompt "$2" "$3" "$4" "$5" "${6:-}")"
     echo "$prompt"
     ;;
   compose-task)
@@ -1696,6 +1934,6 @@ PY
     validate_board "${2:-}"
     ;;
   *)
-    die "usage: launch-team.sh {planning-handoff|team|gate-team|preflight|start|start-task|relaunch|compose|compose-task|worktree|worktree-remove|validate-board|status|stop|stop-task} ..."
+    die "usage: launch-team.sh {planning-handoff|team|gate-team|preflight|start|start-task|relaunch|compose|compose-review|compose-task|worktree|worktree-remove|validate-board|status|stop|stop-task} ..."
     ;;
 esac

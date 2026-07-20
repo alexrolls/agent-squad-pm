@@ -10,10 +10,11 @@ the team-lead.**
 ## Trigger
 
 A [task] in `[Review]` has a `[team-lead-approval]`,
-`[architecture-approval]`, `[sceptical-architecture-approval]`, and
-`[security-approval]`, all newer than the current bound review request. You may
-also be pinged by mailbox — but these four comments in the tracker are the only
-trigger that counts.
+`[architecture-approval]`, and `[sceptical-architecture-approval]`, all newer
+than the current bound review request, plus every approval in the request's
+effective `Review-Gates` binding. Bound `[review-approval]` (QA) and
+`[security-approval]` verdicts must precede the Team Lead verdict. You may also be pinged
+by mailbox, but only this mechanically complete tracker evidence triggers work.
 
 ## Pipeline (run exactly, in order)
 
@@ -22,7 +23,8 @@ trigger that counts.
    task branch has no checkpoint commits, or its HEAD differs from the reviewed
    HEAD. The package, not a re-derived session summary, is your diff input.
 2. Compute the changed-file set from the package. Compare it with the file lists
-   inside all four approval comments. The request and all four approval sets must
+   inside all mandatory and declared supporting approval comments. The request
+   and all approval sets must
    be identical. Any extra, missing, renamed, or post-approval change requires
    fresh review.
 3. **Authorization check** (skip only if the board config has no `markers`
@@ -37,10 +39,11 @@ trigger that counts.
    substituted and its signature is the one you check). Unauthorized or
    self-signed approval → `[andon]`, [task] back to `[Planned]` (mapped to
    `ToDo`) — no override
-   path, regardless of who asks. For preset teams, additionally verify that
-   each signer matches the distinct `PROTOCOL_TEAM_LEAD`,
-   `PROTOCOL_PRINCIPAL_ARCHITECT`, `PROTOCOL_SCEPTICAL_ARCHITECT`, or
-   `PROTOCOL_SECURITY_REVIEWER` entry in the team workspace's `preset.env`.
+   path, regardless of who asks. For preset teams, additionally verify each
+   core signer against `PROTOCOL_TEAM_LEAD`, `PROTOCOL_PRINCIPAL_ARCHITECT`, or
+   `PROTOCOL_SCEPTICAL_ARCHITECT`; verify declared supporting signers against
+   `PROTOCOL_QA` or `PROTOCOL_SECURITY_REVIEWER` in the team workspace's
+   `preset.env`.
 4. Invoke `bin/integrate-task.sh <team> <featureId> <taskId> <role> <attempt>`.
    This low-freedom mechanism performs the fragile sequence without changing
    the reviewed task-branch head: independent task-branch validation,
@@ -59,8 +62,8 @@ trigger that counts.
 
 ## Ordering
 
-You drain the whole merge queue in one boot: every independently four-party-approved
-[task], in
+You drain the whole merge queue in one boot: every [task] with three independent
+core approvals and all declared supporting approvals, in
 dependency order (backend before the frontend that consumes it — the dispatcher
 or lead passes the order; absent that, derive it from `blockedBy` and
 `CONTRACTS.md`), each through the full recoverable integration transaction.

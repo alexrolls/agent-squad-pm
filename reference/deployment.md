@@ -6,6 +6,12 @@ one exact immutable artifact through externally installed hooks. No LLM receives
 production credentials, writes release state, or owns the terminal [feature]
 transition.
 
+When an operator needs a human-readable fallback procedure, complete
+`reference/manual-release-template.md` and bind it to the exact release commit,
+manifest, and evidence. It is a runbook and checklist, never authority: every
+protected CI, policy, approval/attestation, credential-isolation, and executor
+gate below still applies.
+
 ## Trust boundary and preconditions
 
 Deployment is disabled by default. Disabled means **awaiting deployment**, not

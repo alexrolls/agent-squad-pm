@@ -7,7 +7,8 @@ accessible, and performant frontend — the backend contract is stable or can
 be mocked until `[api-ready]` arrives.
 
 ```
-ROSTER=team-lead principal-frontend-architect sceptical-architect senior-security-engineer senior-technical-product-manager senior-frontend-engineer senior-qa-engineer integrator
+ROSTER=team-lead principal-frontend-architect sceptical-architect senior-technical-product-manager senior-frontend-engineer senior-qa-engineer integrator
+REQUIRED_REVIEW_GATES=null
 PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-frontend-architect
@@ -25,7 +26,7 @@ PROTOCOL_FRONTEND=senior-frontend-engineer
 | Team Lead — **process and final quality gate** | `roles/team-lead.md` | `team-lead` | Runs the team and authors `[team-lead-approval]` |
 | Principal Frontend Architect | `teams/roles/principal-frontend-architect.md` | `principal-architect` | Primary frontend architecture position |
 | Sceptical Architect — **independent gate** | `roles/sceptical-architect.md` | `sceptical-architect` | Blind-first design challenge and release-bound architecture review |
-| Senior Security Engineer — **security gate** | `roles/senior-security-engineer.md` | `security-reviewer` | Independent browser/client security review and `[security-approval]` |
+| Senior Security Engineer — **on-demand (not in startup roster)** | `roles/senior-security-engineer.md` | `security-reviewer` | Joins declared browser/client security work and grants `[security-approval]` |
 | Senior Technical Product Manager | `teams/roles/senior-technical-product-manager.md` | no status writes | Scope and acceptance criteria |
 | Senior Frontend Engineer | `teams/roles/senior-frontend-engineer.md` | `frontend` | Implements components, state wiring, and accessibility |
 | Senior QA Engineer | `teams/roles/senior-qa-engineer.md` | `qa` | Test implementation, accessibility verification, and optional findings |
@@ -37,20 +38,25 @@ The standard playbook (`teams/_PLAYBOOK.md`); one team-specific rule: every
 [task]'s acceptance criteria must include explicit accessibility expectations
 (WCAG level, interaction patterns, or assistive-technology behaviour), and QA
 verifies them the same way it verifies any other criterion — with a `file:line`
-citation and a test citation.
+citation and a test citation. Every task requiring that independent verification
+must declare `review-gates: qa`; both architects push back when the metadata is
+missing.
 
 ## Required review board
 
-These four agents review the same bound package independently and may run in
-parallel:
+Three core agents review every bound package:
 
 1. Principal Architect — `[architecture-approval]`
 2. Sceptical Principal Architect — `[sceptical-architecture-approval]`
-3. Senior Security Engineer — `[security-approval]`
-4. Team Lead — `[team-lead-approval]`
+3. Team Lead — `[team-lead-approval]`
 
-Only after all four approvals exist may the `integrator` merge, commit, and mark
-the [task] `[Ready to deploy]` (mapped to `Ready for production`).
+Security is disabled at startup. Planning adds `review-gates: security` for
+authentication/session changes, authorization-sensitive UI, HTML injection or
+untrusted rendering, browser storage, sensitive telemetry, cross-origin or CSP
+changes, and other credible client-side threats. The mapped Senior Security
+Engineer then joins; `[security-approval]` must precede the Team Lead's final
+approval. Either architect challenges an omitted gate. Integration requires
+the core three plus declared gates.
 
 ## Launch
 

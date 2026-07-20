@@ -339,11 +339,36 @@ check "broker mode strips tracker credentials from team lead" grep -q '^unset|un
 check "gate-team launches team lead" test -f .teamwork/broker-gates/prompts/team-lead.md
 check "gate-team launches Principal Architect" test -f .teamwork/broker-gates/prompts/principal-software-architect.md
 check "gate-team launches Sceptical Architect" test -f .teamwork/broker-gates/prompts/sceptical-architect.md
-check "gate-team launches Senior Security Engineer" test -f .teamwork/broker-gates/prompts/senior-security-engineer.md
+check "ordinary gate-team leaves Security disabled by default" test ! -f .teamwork/broker-gates/prompts/senior-security-engineer.md
 check "gate-team may launch optional QA specialist" test -f .teamwork/broker-gates/prompts/senior-qa-engineer.md
 check "gate-team launches integration gate" test -f .teamwork/broker-gates/prompts/integrator.md
 check "gate-team does not launch long-lived implementer" test ! -f .teamwork/broker-gates/prompts/senior-full-stack-engineer.md
 check "gate-team skips explicitly disabled product-manager gate" test ! -f .teamwork/broker-gates/prompts/senior-technical-product-manager.md
+
+SKIP_PREFLIGHT=1 TEAM_RUNNER=background \
+  "$LAUNCH" gate-team deep-infra broker-infra-gates FEAT-INFRA
+check "deep-infra gate-team always launches Senior Security Engineer" test -f .teamwork/broker-infra-gates/prompts/senior-security-engineer.md
+
+SKIP_PREFLIGHT=1 TEAM_RUNNER=background \
+  "$LAUNCH" gate-team deep-security broker-security-gates FEAT-SECURITY
+check "deep-security gate-team always launches Senior Security Engineer" test -f .teamwork/broker-security-gates/prompts/senior-security-engineer.md
+
+for preset in full-stack deep-backend deep-frontend deep-llm; do
+  preset_file=".claude/skills/pm/teams/$preset.md"
+  security_role="$(sed -n 's/^PROTOCOL_SECURITY_REVIEWER=//p' "$preset_file")"
+  roster="$(sed -n 's/^ROSTER=//p' "$preset_file")"
+  case " $roster " in
+    *" $security_role "*)
+      echo "FAIL: ordinary preset $preset starts its Security reviewer"; FAILURES=$((FAILURES+1)) ;;
+    *) echo "ok: ordinary preset $preset keeps Security out of its startup roster" ;;
+  esac
+  grep -q '^REQUIRED_REVIEW_GATES=null$' "$preset_file" \
+    || { echo "FAIL: ordinary preset $preset unexpectedly requires Security"; FAILURES=$((FAILURES+1)); }
+done
+check "Deep Infra is a preset-required Security gate" \
+  grep -q '^REQUIRED_REVIEW_GATES=security$' .claude/skills/pm/teams/deep-infra.md
+check "Deep Security is a preset-required Security gate" \
+  grep -q '^REQUIRED_REVIEW_GATES=security$' .claude/skills/pm/teams/deep-security.md
 
 # -- start refuses an unknown role (no brief anywhere) ------------------------
 if TEAM_RUNNER=background "$LAUNCH" start test-feature FEAT-1 no-such-role 2>/dev/null; then
@@ -516,13 +541,13 @@ fi
 check "disabled mandatory role creates no workspace" test ! -e .teamwork/mandatory-disabled
 sed_i '/^SCEPTICAL_ARCHITECT_CMD=null$/d' .claude/skills/pm/config/team.config.md
 
-# -- every preset must launch four distinct mandatory review-board agents ------
+# -- every preset retains a distinct on-demand security mapping ----------------
 cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/missing-security.md
 sed_i '/^PROTOCOL_SECURITY_REVIEWER=/d' .claude/skills/pm/teams/missing-security.md
 if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team missing-security mandatory-security FEAT-MANDATORY 2>&1)"; then
   echo "FAIL: preset without Senior Security Engineer mapping launched"; FAILURES=$((FAILURES+1))
-elif printf '%s' "$mandatory_out" | grep -q 'must define exactly one mandatory PROTOCOL_SECURITY_REVIEWER'; then
-  echo "ok: preset cannot omit mandatory Senior Security Engineer mapping"
+elif printf '%s' "$mandatory_out" | grep -q 'must define exactly one PROTOCOL_SECURITY_REVIEWER mapping for on-demand security review'; then
+  echo "ok: preset cannot omit its on-demand Senior Security Engineer mapping"
 else
   echo "FAIL: missing security mapping produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
 fi
@@ -543,9 +568,9 @@ cp .claude/skills/pm/teams/full-stack.md .claude/skills/pm/teams/duplicate-revie
 sed_i 's/^PROTOCOL_SECURITY_REVIEWER=.*/PROTOCOL_SECURITY_REVIEWER=team-lead/' \
   .claude/skills/pm/teams/duplicate-reviewer-identity.md
 if mandatory_out="$(SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team duplicate-reviewer-identity mandatory-distinct FEAT-MANDATORY 2>&1)"; then
-  echo "FAIL: preset reused one agent for two mandatory review seats"; FAILURES=$((FAILURES+1))
-elif printf '%s' "$mandatory_out" | grep -q 'must use distinct agents'; then
-  echo "ok: mandatory review-board seats require distinct agents"
+  echo "FAIL: preset reused a core reviewer as its security specialist"; FAILURES=$((FAILURES+1))
+elif printf '%s' "$mandatory_out" | grep -Eq 'optional security reviewer.*out of its startup roster|security reviewer.*distinct'; then
+  echo "ok: on-demand security specialist remains distinct from core reviewers"
 else
   echo "FAIL: duplicate review-board identity produced wrong error: $mandatory_out"; FAILURES=$((FAILURES+1))
 fi
@@ -566,7 +591,7 @@ sed_i 's|^TEAM_LEAD_CMD=.*|TEAM_LEAD_CMD="./lead-env-probe.sh {prompt_file}"|' .
 SKIP_PREFLIGHT=1 TEAM_RUNNER=background "$LAUNCH" team full-stack test-feature FEAT-2
 check "preset composes fallback-role prompt" test -f .teamwork/test-feature/prompts/principal-software-architect.md
 check "preset composes sceptical gate prompt" test -f .teamwork/test-feature/prompts/sceptical-architect.md
-check "preset composes security gate prompt" test -f .teamwork/test-feature/prompts/senior-security-engineer.md
+check "ordinary preset does not compose Security at startup" test ! -f .teamwork/test-feature/prompts/senior-security-engineer.md
 check "preset composes team-lead gate prompt" test -f .teamwork/test-feature/prompts/team-lead.md
 check "sceptical prompt contains blind-first protocol" grep -q "blind-first" .teamwork/test-feature/prompts/sceptical-architect.md
 check "preset brief resolved from teams/roles" grep -q "Role: principal-software-architect" .teamwork/test-feature/prompts/principal-software-architect.md
@@ -599,6 +624,8 @@ out="$("$LAUNCH" compose test-compose FEAT-3 backend)"
 check "compose prints an existing prompt path" test -f "$out"
 check "compose prompt contains role brief"     grep -q "Role: backend" "$out"
 check "compose prompt contains protocol"       grep -q "Orchestration — The Multi-Agent Protocol" "$out"
+check "compose ends with artifact delivery contract" \
+  test "$(tail -n 1 "$out")" = "A summary of your process without the closing artifact is a protocol violation."
 check "compose spawns nothing"                 test ! -f .teamwork/test-compose/pids/backend.pid
 out2="$("$LAUNCH" compose test-compose FEAT-3 senior-qa-engineer full-stack)"
 check "compose with preset includes team file" grep -q "Team: Full Stack" "$out2"

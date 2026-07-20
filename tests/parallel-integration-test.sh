@@ -454,7 +454,7 @@ check "late invalidation returns tracker task to queued rework" grep -q '^## 2 B
 check "superseded canonical transaction is retired" test ! -e "$tx2"
 
 # Rework proceeds from the preserved history: a new attempt adds a fix, receives
-# a new request/four-party approval after the finding, and integrates normally.
+# a new request with fresh core/declared-gate approval after the finding, and integrates normally.
 $LAUNCH worktree-remove feature-integration backend "$TID2" 1 >/dev/null
 wt2="$($LAUNCH worktree feature-integration backend "$TID2" 2)"
 .agent-squad/bin/task-packet.sh feature-integration "$FID" "$TID2" backend 2 "$wt2" "agent-task/feature-integration/$(python3 .agent-squad/bin/runtime-state.py key "$TID2")" >/dev/null

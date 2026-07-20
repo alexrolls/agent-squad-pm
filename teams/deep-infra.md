@@ -7,6 +7,7 @@ cost-efficient platform layer — not a product feature.
 
 ```
 ROSTER=team-lead principal-cloud-infrastructure-architect sceptical-architect senior-security-engineer senior-technical-product-manager senior-cloud-engineer senior-sre-engineer senior-qa-engineer integrator
+REQUIRED_REVIEW_GATES=security
 PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
 PROTOCOL_PRINCIPAL_ARCHITECT=principal-cloud-infrastructure-architect
@@ -40,8 +41,9 @@ both architects will approve the design. No exceptions.
 
 ## Required review board
 
-These four agents review the same bound package independently and may run in
-parallel:
+Deep infrastructure is the exception to the default-disabled security policy:
+`REQUIRED_REVIEW_GATES=security` makes the Security Engineer an always-on roster
+member and requires this four-party review for every bound package:
 
 1. Principal Architect — `[architecture-approval]`
 2. Sceptical Principal Architect — `[sceptical-architecture-approval]`
@@ -49,9 +51,10 @@ parallel:
 4. Team Lead — `[team-lead-approval]`
 
 The SRE may additionally provide an operability pass (plain comment or
-`[review-findings]`). Only after all four mandatory approvals exist may the
-`integrator` merge, commit, and mark the [task] `[Ready to deploy]` (mapped to
-`Ready for production`).
+`[review-findings]`). Security approval must precede the Team Lead's final
+approval. Only after all four required approvals exist may the `integrator`
+merge, commit, and mark the [task] `[Ready to deploy]` (mapped to `Ready for
+production`).
 
 ## Launch
 

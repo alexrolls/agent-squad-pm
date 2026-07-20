@@ -118,7 +118,7 @@ comment. The full workflow-role rules and required content live in
 | `[team-lead-approval]` | Mandatory independent quality/specification sign-off. |
 | `[architecture-approval]` | Principal-architect sign-off. |
 | `[sceptical-architecture-approval]` | Independent release-bound architecture sign-off. |
-| `[security-approval]` | Mandatory independent Senior Security Engineer sign-off. |
+| `[security-approval]` | Independent Senior Security Engineer sign-off required when `security` is an effective review gate. |
 | `[product-approval]` | Product owner scope/acceptance sign-off. |
 | `[product-pushback]` | Product owner scope gate closed. |
 | `[handoff]` | Team-lead reassignment summary for a fresh agent. |

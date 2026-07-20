@@ -38,20 +38,21 @@ usage() {
   die "usage: finalize-integrations.sh <team> <featureId> [transaction.json]
        finalize-integrations.sh --validate-only <team> <featureId> <transaction.json>
        finalize-integrations.sh --authorize-prepared <team> <featureId> <prepared.json>
-       finalize-integrations.sh --evidence <tasks.json> <taskId> <baseCommit> <headCommit> <packageSha256>"
+       finalize-integrations.sh --evidence <tasks.json> <taskId> <baseCommit> <headCommit> <packageSha256> [preset.env]"
 }
 
 # Keep approval eligibility identical in the integrator and broker. Every
 # approval is bound to the exact request, base, head, and review-package digest.
 approval_evidence() {
-  [ $# -eq 5 ] || usage
-  python3 "$SKILL_DIR/bin/review_evidence.py" validate \
-    "$1" "$2" "$3" "$4" "$5" "$SKILL_DIR/config/statuses.config.json"
+  [ $# -ge 5 ] && [ $# -le 6 ] || usage
+  local args=(validate "$1" "$2" "$3" "$4" "$5" "$SKILL_DIR/config/statuses.config.json")
+  if [ $# -eq 6 ] && [ -e "$6" ]; then args+=(--preset "$6"); fi
+  python3 "$SKILL_DIR/bin/review_evidence.py" "${args[@]}"
 }
 
 if [ "${1:-}" = "--evidence" ]; then
-  [ $# -eq 6 ] || usage
-  approval_evidence "$2" "$3" "$4" "$5" "$6"
+  [ $# -ge 6 ] && [ $# -le 7 ] || usage
+  approval_evidence "${@:2}"
   exit 0
 fi
 
@@ -255,15 +256,16 @@ PY
   [ ! -L "$snapshot" ] || die "authorization snapshot path is a symlink"
   "$SKILL_DIR/bin/tracker-ops.sh" export "$feature" "$snapshot" >/dev/null
   python3 - "$entry" "$snapshot" "$repo" "$workspace" "$team" "$feature" \
-    "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/bin/review_evidence.py" <<'PY'
+    "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/bin/review_evidence.py" "$preset_file" <<'PY'
 import hashlib, json, os, re, stat, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-entry_raw,snapshot_raw,repo_raw,workspace_raw,team,feature,board_raw,review_module_raw=sys.argv[1:]
+entry_raw,snapshot_raw,repo_raw,workspace_raw,team,feature,board_raw,review_module_raw,preset_raw=sys.argv[1:]
 entry,snapshot,repo,workspace=Path(entry_raw),Path(snapshot_raw),Path(repo_raw).resolve(),Path(workspace_raw).resolve()
 sys.dont_write_bytecode=True; sys.path.insert(0,str(Path(review_module_raw).resolve().parent))
-from review_evidence import EvidenceError, validate as validate_review_evidence
+from review_evidence import EvidenceError, SUPPORTING_GATE_MARKERS, request_binding, validate as validate_review_evidence
+from task_metadata import required_review_gates
 def fail(message): raise SystemExit("finalize-integrations: prepared authorization: "+message)
 def regular(path,label,maximum=8*1024*1024):
     try: mode=path.lstat().st_mode
@@ -311,6 +313,11 @@ def assert_unheld(task):
     if record is not None and record.get("state") in {"blocked","resume-review-pending","manual-takeover"}:
         fail("task %s is held (%s)"%(task,record.get("state")))
 regular(entry,"prepared transaction",1024*1024); regular(snapshot,"fresh tracker snapshot",8*1024*1024)
+preset=Path(preset_raw); preset_text=""
+if os.path.lexists(preset):
+    regular(preset,"team preset",1024*1024); preset_text=preset.read_text()
+try: preset_gates=required_review_gates(preset_text)
+except ValueError as exc: fail("invalid team preset review gates: %s"%exc)
 prepared_dir=(workspace/"integrations"/".prepared").resolve()
 if entry.resolve().parent != prepared_dir: fail("prepared transaction escapes its broker queue")
 try: data=json.loads(entry.read_text()); payload=json.loads(snapshot.read_text()); board=json.loads(Path(board_raw).read_text())
@@ -345,7 +352,8 @@ review_statuses={item.get("name") for item in board.get("tasks",{}).get("statuse
 if tracked.get("status") not in review_statuses: fail("task is no longer in review")
 try:
     evidence=validate_review_evidence(payload,data["taskId"],base=data["reviewBaseCommit"],head=data["taskBranchHead"],
-                                      package=data["reviewPackageSha256"],review_statuses=review_statuses)
+                                      package=data["reviewPackageSha256"],review_statuses=review_statuses,
+                                      required_gates=preset_gates)
 except EvidenceError as exc: fail("fresh review evidence rejected: %s"%exc)
 if evidence != data["approvalEvidenceDigest"]: fail("fresh approval evidence differs from prepared evidence")
 comments=tracked.get("comments") or []; marker_re=re.compile(r"^\s*\[([\w-]+)\]"); positions={}
@@ -359,13 +367,14 @@ def files(body,marker):
 raw=subprocess.run(["git","-c","core.hooksPath=/dev/null","-c","core.fsmonitor=false","diff","--name-only","-z",
                     data["reviewBaseCommit"]+".."+data["taskBranchHead"]],cwd=repo,capture_output=True,env=env,check=True).stdout
 actual={item.decode("utf-8","surrogateescape") for item in raw.split(b"\0") if item}
-for marker in (
+binding=request_binding(str(comments[positions["review-request"]].get("body") or ""))
+approval_markers=(
     "review-request",
     "team-lead-approval",
     "architecture-approval",
     "sceptical-architecture-approval",
-    "security-approval",
-):
+) + tuple(SUPPORTING_GATE_MARKERS[gate] for gate in binding["reviewGates"])
+for marker in approval_markers:
     if files(str(comments[positions[marker]].get("body") or ""),marker)!=actual: fail("[%s] Files evidence mismatch"%marker)
 snapshot_digest="sha256:"+hashlib.sha256(snapshot.read_bytes()).hexdigest()
 # This second read is intentionally adjacent to the authorization journal
@@ -606,7 +615,8 @@ repo, workspace = Path(repo_raw).resolve(), Path(workspace_raw).resolve()
 entry = Path(entry_raw)
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(review_module_raw).resolve().parent))
-from review_evidence import EvidenceError, validate as validate_review_evidence
+from review_evidence import EvidenceError, SUPPORTING_GATE_MARKERS, request_binding, validate as validate_review_evidence
+from task_metadata import required_review_gates
 GIT_ENV = {name: os.environ[name] for name in ("PATH", "TMPDIR", "LANG", "LC_ALL") if name in os.environ}
 GIT_ENV.setdefault("PATH", "/usr/bin:/bin")
 GIT_ENV.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
@@ -873,16 +883,17 @@ expected_txid = "integration-" + hashlib.sha256(tx_canonical).hexdigest()[:32]
 if data.get("transactionId") != expected_txid:
     fail("transaction id does not match immutable integration material")
 
-# Preset structure is authorization state, so validate the mandatory
-# independent gate even in --validate-only mode. A fresh tracker snapshot below
-# additionally binds the current approval signature to this concrete role.
+# Preset structure is authorization state, so validate the three core reviewers
+# plus independently mapped on-demand specialists even in --validate-only mode.
 preset = workspace / "preset.env"
 expected_signers = {
     "TEAM_LEAD": "team-lead",
     "PRINCIPAL_ARCHITECT": "principal-architect",
     "SCEPTICAL_ARCHITECT": "sceptical-architect",
     "SECURITY_REVIEWER": "senior-security-engineer",
+    "QA": "qa",
 }
+preset_text = ""
 try:
     preset_info = preset.lstat()
 except FileNotFoundError:
@@ -899,14 +910,13 @@ if preset_info is not None:
         "PRINCIPAL_ARCHITECT",
         "SCEPTICAL_ARCHITECT",
         "SECURITY_REVIEWER",
+        "QA",
     ):
         matches = re.findall(r"^PROTOCOL_%s=([^\r\n]+)$" % protocol_name, preset_text, re.M)
         if len(matches) > 1:
             fail("team preset contains duplicate PROTOCOL_%s" % protocol_name)
         if matches:
             expected_signers[protocol_name] = matches[0].strip()
-    if len(set(expected_signers.values())) != 4:
-        fail("team preset review board must use four distinct concrete agents")
     for protocol_name in (
         "TEAM_LEAD",
         "PRINCIPAL_ARCHITECT",
@@ -915,7 +925,24 @@ if preset_info is not None:
     ):
         signer = expected_signers.get(protocol_name)
         if not signer or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", signer):
-            fail("team preset must define one valid mandatory PROTOCOL_%s" % protocol_name)
+            qualifier = "core" if protocol_name != "SECURITY_REVIEWER" else "on-demand"
+            fail("team preset must define one valid %s PROTOCOL_%s" % (qualifier, protocol_name))
+    qa_signer = expected_signers.get("QA")
+    if qa_signer is not None and not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", qa_signer):
+        fail("team preset has an invalid PROTOCOL_QA")
+core_signers = [expected_signers[name] for name in (
+    "TEAM_LEAD", "PRINCIPAL_ARCHITECT", "SCEPTICAL_ARCHITECT"
+)]
+if len(set(core_signers)) != 3:
+    fail("team preset core review board must use three distinct concrete agents")
+if expected_signers["SECURITY_REVIEWER"] in set(core_signers):
+    fail("team preset security reviewer must be distinct from the core review board")
+try:
+    preset_gates = required_review_gates(preset_text)
+except ValueError as exc:
+    fail("invalid team preset review gates: %s" % exc)
+if "qa" in preset_gates and not expected_signers.get("QA"):
+    fail("team preset requires review gate qa but has no PROTOCOL_QA")
 
 if snapshot_raw:
     try:
@@ -945,16 +972,30 @@ if snapshot_raw:
     architecture = positions.get("architecture-approval", -1)
     sceptical = positions.get("sceptical-architecture-approval", -1)
     security = positions.get("security-approval", -1)
+    qa = positions.get("review-approval", -1)
     findings = positions.get("review-findings", -1)
+    if request >= 0:
+        try:
+            review_binding = request_binding(str(comments[request].get("body") or ""))
+        except EvidenceError as exc:
+            fail("fresh review request binding is invalid: %s" % exc)
+    else:
+        review_binding = {"reviewGates": []}
+    supporting_positions = {
+        "qa": qa,
+        "security": security,
+    }
+    required_support = [supporting_positions[gate] for gate in review_binding["reviewGates"]]
     if (
         request < 0
         or team_lead <= request
         or architecture <= request
         or sceptical <= request
-        or security <= request
+        or any(index <= request for index in required_support)
+        or any(team_lead <= index for index in required_support)
         or findings > request
     ):
-        fail("fresh tracker state is no longer independently four-party-approved")
+        fail("fresh tracker state lacks current core and declared supporting approvals")
     try:
         evidence_digest = validate_review_evidence(
             payload,
@@ -962,6 +1003,7 @@ if snapshot_raw:
             base=data["reviewBaseCommit"],
             head=data["taskBranchHead"],
             package=review_digest,
+            required_gates=preset_gates,
         )
     except EvidenceError as exc:
         fail("review approval binding failed: %s" % exc)
@@ -994,8 +1036,9 @@ if snapshot_raw:
         if not has_integration_event:
             fail("completed transaction lacks its broker-owned durable event")
 
-    # The protocol exposes Files: lists on the request and all four mandatory
-    # approvals. Bind every verdict to the exact reviewed Git file set.
+    # The protocol exposes Files: lists on the request, three core approvals,
+    # and each declared supporting approval. Bind every verdict to the exact
+    # reviewed Git file set.
     def file_list(body, marker):
         match = re.search(r"(?mi)^\s*Files:\s*([^\n]+)$", body)
         if not match:
@@ -1011,22 +1054,32 @@ if snapshot_raw:
     if actual_raw.returncode:
         fail("cannot calculate exact reviewed file set")
     actual_files = {item.decode("utf-8", "surrogateescape") for item in actual_raw.stdout.split(b"\0") if item}
-    for marker, index in (
+    approval_file_markers = (
         ("review-request", request),
         ("team-lead-approval", team_lead),
         ("architecture-approval", architecture),
         ("sceptical-architecture-approval", sceptical),
-        ("security-approval", security),
-    ):
+    ) + tuple(
+        (SUPPORTING_GATE_MARKERS[gate], supporting_positions[gate])
+        for gate in review_binding["reviewGates"]
+    )
+    for marker, index in approval_file_markers:
         if file_list(str(comments[index].get("body") or ""), marker) != actual_files:
             fail("[%s] Files: evidence does not equal the exact reviewed Git file set" % marker)
 
-    for protocol_name, marker_name, marker_index in (
+    signer_markers = (
         ("TEAM_LEAD", "team-lead-approval", team_lead),
         ("PRINCIPAL_ARCHITECT", "architecture-approval", architecture),
         ("SCEPTICAL_ARCHITECT", "sceptical-architecture-approval", sceptical),
-        ("SECURITY_REVIEWER", "security-approval", security),
-    ):
+    ) + tuple(
+        (
+            "QA" if gate == "qa" else "SECURITY_REVIEWER",
+            SUPPORTING_GATE_MARKERS[gate],
+            supporting_positions[gate],
+        )
+        for gate in review_binding["reviewGates"]
+    )
+    for protocol_name, marker_name, marker_index in signer_markers:
         expected_signer = expected_signers.get(protocol_name)
         if expected_signer is None:
             continue
@@ -1035,7 +1088,7 @@ if snapshot_raw:
             str(comments[marker_index].get("body") or "").strip(),
         )
         if not signer_match or signer_match.group(1) != expected_signer:
-            fail("current %s signer does not match mandatory protocol gate" % marker_name)
+            fail("current %s signer does not match its protocol role" % marker_name)
 
 worktree = Path(data["worktree"])
 if worktree.exists():

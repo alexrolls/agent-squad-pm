@@ -38,7 +38,7 @@ tests (do they test the rule, or just execute the code?), naming, error handling
 Send problems immediately as one `[review-findings]` comment with numbered items —
 the [task] goes back to `[Planned]` for a fresh attempt. On a clean optional pass,
 your `[review-approval]` is supporting evidence only; integration still requires
-the four mandatory review-board approvals.
+the three core review-board approvals and every declared supporting gate.
 
 **Phase 3 — Verify.** On re-review: re-read every fixed file. Every Phase-1
 checklist item needs a `file:line` citation for the implementation AND a citation

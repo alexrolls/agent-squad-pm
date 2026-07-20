@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Write one task's commit list, stat, and full diff to a reviewer handoff file.
 set -euo pipefail
+umask 077
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$SKILL_DIR/config/team.config.md"
@@ -50,6 +51,7 @@ worktree="$expected_worktree"
 base="$(git_unprivileged -C "$repo" merge-base "$team" "$branch")"
 head="$(git_unprivileged -C "$repo" rev-parse "$branch")"
 out="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "artifacts/$key/review-$(git_unprivileged -C "$repo" rev-parse --short "$base")..$(git_unprivileged -C "$repo" rev-parse --short "$head").diff")"
+bindings="${out%.diff}.bindings.json"
 mkdir -p "$(dirname "$out")"
 {
   echo "# Review package: $task"
@@ -66,4 +68,42 @@ mkdir -p "$(dirname "$out")"
   echo "## Diff"
   git_unprivileged -C "$repo" diff -U10 "$base..$head"
 } > "$out"
+python3 - "$out" "$bindings" "$base" "$head" <<'PY'
+import hashlib
+import json
+import os
+import secrets
+import sys
+from pathlib import Path
+
+package = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+base, head = sys.argv[3:]
+body = package.read_bytes()
+record = {
+    "schemaVersion": 1,
+    "reviewBaseCommit": base,
+    "taskBranchHead": head,
+    "reviewPackagePath": str(package),
+    "reviewPackageSha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+}
+temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}")
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(temporary, flags, 0o600)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        descriptor = -1
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, destination)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+PY
 echo "$out"
