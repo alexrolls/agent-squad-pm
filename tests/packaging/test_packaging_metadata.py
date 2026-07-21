@@ -123,7 +123,7 @@ class ProjectMetadataTests(unittest.TestCase):
     def test_public_package_metadata(self) -> None:
         project = self.config["project"]
         self.assertEqual(project["name"], "startup-factory")
-        self.assertEqual(project["version"], "0.1.3")
+        self.assertEqual(project["version"], "0.1.4")
         self.assertEqual(project["requires-python"], ">=3.10")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(project["license-files"], ["LICENSE"])
@@ -185,6 +185,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_github_release_commands_have_explicit_repository_context(self) -> None:
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("          GH_REPO: ${{ github.repository }}", workflow)
+
+    def test_draft_release_target_is_verified_before_the_tag_exists(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split(
+            "      - name: Reconcile a draft release, verify bytes, then publish",
+            1,
+        )[1]
+        edit_index = publish.index(
+            '          gh release edit "$RELEASE_TAG" --draft=false'
+        )
+        before_publish = publish[:edit_index]
+        after_publish = publish[edit_index:]
+
+        self.assertIn("          verify_release_target() {", before_publish)
+        self.assertIn("                --json targetCommitish", before_publish)
+        self.assertEqual(before_publish.count("          verify_release_target\n"), 2)
+        self.assertNotIn('test "$(resolve_tag_commit)"', before_publish)
+        self.assertIn('test "$(resolve_tag_commit)"', after_publish)
 
 
 class SdistCanonicalizationTests(unittest.TestCase):
@@ -256,7 +274,7 @@ class BuiltDistributionIdentityTests(unittest.TestCase):
             license_bytes = archive.read(license_names[0])
 
         self.assertEqual(metadata["Name"], "startup-factory")
-        self.assertEqual(metadata["Version"], "0.1.3")
+        self.assertEqual(metadata["Version"], "0.1.4")
         self.assertEqual(metadata["Requires-Python"], ">=3.10")
         self.assertEqual(metadata["License-Expression"], "MIT")
         self.assertEqual(metadata.get_all("License-File", []), ["LICENSE"])

@@ -338,6 +338,29 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha
           }
 
+          verify_release_target() {
+            local tag_commit release_target
+            if tag_commit="$(resolve_tag_commit 2>/dev/null)"; then
+              test "$tag_commit" = "$SOURCE_COMMIT" || {
+                echo "$RELEASE_TAG points to a different commit" >&2
+                exit 1
+              }
+              return
+            fi
+            # GitHub does not materialize a new tag until its draft release is
+            # published. Verify the immutable draft target instead of requiring
+            # that not-yet-created tag to resolve prematurely.
+            release_target="$(
+              gh release view "$RELEASE_TAG" \
+                --json targetCommitish \
+                --jq .targetCommitish
+            )"
+            test "$release_target" = "$SOURCE_COMMIT" || {
+              echo "$RELEASE_TAG draft targets a different commit" >&2
+              exit 1
+            }
+          }
+
           tag_exists=false
           if tag_commit="$(resolve_tag_commit 2>/dev/null)"; then
             tag_exists=true
@@ -367,7 +390,7 @@ jobs:
             gh release create "${create_args[@]}"
           fi
 
-          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
+          verify_release_target
 
           expected="$RUNNER_TEMP/expected-assets"
           existing="$RUNNER_TEMP/existing-assets"
@@ -392,5 +415,6 @@ jobs:
             cmp "release-assets/$name" "$downloaded/$name"
           done < "$expected"
 
-          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
+          verify_release_target
           gh release edit "$RELEASE_TAG" --draft=false
+          test "$(resolve_tag_commit)" = "$SOURCE_COMMIT"
