@@ -195,6 +195,14 @@ explicitly says `automation: disabled`. With no explicit preset,
 branch, integration worktree, and run id are durable. If the latest preset changes,
 the existing run pauses rather than being rerouted in place.
 
+Routing metadata is parsed deterministically before launch, but prose is not sent
+verbatim to an implementation worker. `task-packet.sh` applies the standard-library
+ticket-content security boundary described in `reference/guardrails.md`, redacts
+potential secrets, and renders all description/comment text as non-executable
+`TICKET-DATA`. The original tracker record remains unchanged for audit and revision
+comparison. Detection labels are warnings, never authorization and never a reason to
+execute an embedded example.
+
 The same routing check runs over an exhaustive authoritative feature export for
 every registered unfinished [feature] on every pass. Progressing from discovery
 into working/review status does not pause a run. An unreadable or empty export,

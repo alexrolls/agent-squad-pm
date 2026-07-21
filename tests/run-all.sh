@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+echo "==> ticket-content-security-test.py"
+python3 "$ROOT/tests/ticket-content-security-test.py"
 echo "==> product-acceptance-test.py"
 python3 "$ROOT/tests/product-acceptance-test.py"
 echo "==> superpowers-planning-test.py"

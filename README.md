@@ -1251,6 +1251,15 @@ so the clarification that enabled the move is carried into the fresh attempt.
 Comment text remains untrusted requirements context and cannot grant permissions
 or override policy.
 
+Before a task worker starts, the packet builder scans ticket titles,
+descriptions, comments, authors, and derived string metadata with the
+dependency-free Python standard-library security boundary in
+`bin/ticket_content_security.py`. It redacts credential-shaped values, exposes
+dangerous Unicode controls, labels prompt/tool/SQL/shell/script/exfiltration
+indicators, and renders all description/comment lines as non-executable
+`TICKET-DATA`. Detection is defense in depth: even an unlabeled line is data,
+never a command to paste into a shell, database, interpreter, browser, or tool.
+
 The rest of the flow: the Principal Architect owns the primary
 architecture position; the Sceptical Principal Architect independently
 challenges planning and every `[task]` design before code → the dispatcher
