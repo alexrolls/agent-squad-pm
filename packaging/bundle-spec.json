@@ -37,6 +37,7 @@
     "bin/dispatch.sh",
     "bin/launch-team.sh",
     "bin/superpowers-planning.py",
+    "bin/ticket_content_security.py",
     "bin/pm-agent.py",
     "bin/policy-check.py",
     "bin/release-feature.py",
@@ -58,6 +59,7 @@
     "reference/superpowers-planning.md",
     "roles/team-lead.md",
     "teams/_PLAYBOOK.md",
+    "tests/ticket-content-security-test.py",
     "tests/run-all.sh"
   ],
   "preservationPolicy": {
