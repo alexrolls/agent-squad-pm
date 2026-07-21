@@ -31,13 +31,14 @@ Finalizer = `integrator`, plus `principal-architect`, `sceptical-architect`, and
 | **Finalizer** | Runs final validation, writes the feature-branch integration commit, and moves [tasks] to `[Ready to deploy]`. The **single** role allowed to perform the `requiresCommit` move. |
 | **Principal Architect** | Primary architecture position: planning approval, per-[task] design gate, architecture review, and sole editor of upcoming [task] descriptions. Never writes code. |
 | **Sceptical Architect** | Mandatory in every cross-functional team. Independent blind-first challenge: planning/design peer review and release-bound architecture approval. Never writes code and cannot be disabled or omitted. |
-| **Senior Security Engineer** | Mandatory independent security reviewer: threat modeling, abuse-path analysis, focused verification, and `[security-approval]` or findings. Never writes the reviewed code. |
+| **Senior Security Engineer** | On-demand independent security reviewer: threat modeling, abuse-path analysis, focused verification, and `[security-approval]` or findings when `security` is an effective gate. Always rostered by Deep Infra and Deep Security. Never writes the reviewed code. |
 | **Team Lead** | Process authority and mandatory independent quality/specification reviewer. Never writes code or overrides another mandatory gate, the Finalizer/Integrator, CI, or unresolved Critical risk. |
 | **Release Executor** | Deterministic, credential-separated production transaction. It alone performs the terminal [feature] transition after independent production verification; it is not an LLM role. |
 
-Optional implementation/specialist roles may be omitted, but in team mode the
-Team Lead, Principal Architect, Sceptical Principal Architect, and Senior
-Security Engineer must remain four distinct concrete agents.
+Optional implementation/specialist roles may be omitted. In team mode the Team
+Lead, Principal Architect, and Sceptical Principal Architect remain three
+distinct rostered agents. A separately mapped Security Engineer remains
+launchable on demand and is rostered by default for Deep Infra and Deep Security.
 
 ---
 
@@ -64,7 +65,7 @@ Refinements:
   after the integration commit succeeds (on the default board: the integrator
   commits and records an immutable transaction; the dispatcher independently
   validates it and idempotently writes `[Review]` → `[Ready to deploy]` after
-  all four mandatory review-board approvals exist).
+  all three core approvals and every declared supporting approval exist).
 - **Routing:** when an item enters a status, the mover notifies the new owner's mailbox
   (`reference/orchestration.md` → *Status routing*). A `{"team": ...}` owner is reached
   via that team's lead, who dispatches internally.
@@ -90,7 +91,7 @@ Worked example — the default board:
 |---|---|---|
 | `[Planned]` | team-lead (Coordinator) | create [tasks]; sanction claims (`Planned → Active`); enter Blocked when necessary |
 | `[Active]` | implementer | `Active → Review` (with `[review-request]`); route a real block to the team-lead/PM authority |
-| `[Review]` | four-agent review board | `Review → Planned` (findings/rework); four approvals hand off to the integrator for `Review → Ready to deploy`; route a real block to the team-lead/PM authority |
+| `[Review]` | three-agent core board plus declared supporting reviewers | `Review → Planned` (findings/rework); core and declared-gate approvals hand off to the integrator for `Review → Ready to deploy`; route a real block to the team-lead/PM authority |
 | `[Blocked]` | human | Only the human may perform `Blocked → Planned / Active / Review`. Startup Factory stops/fences that task and cannot perform these moves. |
 | `[Ready to deploy]` | integrator | terminal — entered after a recorded integration commit |
 
@@ -140,7 +141,7 @@ single adapter, and swap tools without touching a single role.
 ## Running an actual team
 
 This file defines *ownership*. The full multi-agent mechanics — mailboxes,
-heartbeats, claiming, the two-person design gate, independent four-party review, the recovery ladder, task holds, launching
+heartbeats, claiming, the two-person design gate, independent core-and-supporting review, the recovery ladder, task holds, launching
 heterogeneous LLM agents — live in `reference/orchestration.md` with one brief per
 role in `roles/`. Configure the team in `config/team.config.md` and launch with
 `bin/launch-team.sh`.

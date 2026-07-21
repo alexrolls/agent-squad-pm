@@ -12,7 +12,8 @@ When automation is enabled and scheduled, the deterministic PM supervisor
 checks the board every three minutes by default, leaves anything labeled
 `human-work` to people, routes every other queued task by its explicit team
 preset (or your configured default), and drives it through architecture,
-implementation, a four-party `In Review` gate, optional specialist QA, and
+implementation, a three-reviewer core `In Review` gate, declared Security/QA
+specialist gates, and
 integration. It also observes Blocked work as a human-controlled safety lock:
 the matching task workers stop, while independent ToDo work continues. When
 your release policy, exact approval, and protected green CI proof allow it, a
@@ -257,9 +258,9 @@ authority.
   containing the complete current tracker comment history, a collision-safe
   branch, separate worktree, report path, event history, and authenticated
   publication capability.
-- **Review and integration integrity.** Four distinct reviewers decide against
-  the same exact package. No approval survives changed code, and only the
-  integrator writes the feature branch.
+- **Review and integration integrity.** Three distinct core reviewers plus any
+  risk-declared Security/QA gates decide against the same exact package. No
+  approval survives changed code, and only the integrator writes the feature branch.
 - **Human and production safety.** `[Blocked]` is a human-controlled task lock.
   Production requires protected CI evidence, policy-clean plans, exact external
   authority where configured, isolated credentials, target verification, and a
@@ -278,7 +279,7 @@ layer for a feature delivered by a Startup Factory team:
 |---|---|
 | `using-git-worktrees` | Per-attempt worktrees created and retired by `launch-team.sh` |
 | `subagent-driven-development` / `executing-plans` | Tracker-driven task packets and deterministic `dispatch.sh` scheduling |
-| `requesting-code-review` as the authoritative gate | Four-party exact-package Startup Factory review board |
+| `requesting-code-review` as the authoritative gate | Exact-package Startup Factory core board plus declared supporting gates |
 | `finishing-a-development-branch` | Serialized integrator plus protected release lifecycle |
 
 Do not run both execution systems on the same feature. Two schedulers cannot
@@ -433,7 +434,7 @@ Use as much of the system as your project needs:
 | Layer | What it gives you | Where |
 |---|---|---|
 | **1. PM port** | One AI agent creates/tracks/completes `[features]` and `[tasks]` in any configured tracker through one tool-agnostic workflow. | `SKILL.md`, `reference/`, `adapters/` |
-| **2. Governed squad** | A lead coordinates, two independent architects gate design, specialists implement, and four distinct agents—the Team Lead, both architects, and Senior Security Engineer—must approve the exact review package before the integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
+| **2. Governed squad** | A lead coordinates, two independent architects gate design, specialists implement, and three distinct core agents—the Team Lead and both architects—approve every exact review package. Security and QA join when declared by risk; the integrator alone writes the feature branch. | `reference/orchestration.md`, `roles/` |
 | **3. Task-driven runtime** | Event-driven dispatch, bounded parallel waves, model routing, exact review packages, durable handoffs, and recoverable integration. | `bin/dispatch.sh`, `bin/runtime-state.py`, `bin/integrate-task.sh` |
 | **4. Preset teams** | Six ready-made rosters for full-stack, backend, frontend, security, infrastructure, and LLM/data-science work, all resolved through the same team launcher. | `teams/`, `bin/launch-team.sh` |
 | **5. Portfolio automation** | One bounded cron/service pass observes generic queued/blocked statuses, bootstraps only queued feature runs, and reconciles comments, task holds, and team actions. | `bin/pm-agent.py`, `reference/automation.md` |
@@ -814,6 +815,12 @@ classification, or a bounded low-risk fast path for documentation, formatting,
 and structurally small test/config tasks. Missing overrides fall back to the
 role command.
 
+Use `review-gates: qa`, `review-gates: security`, or both in a [task]
+description when risk requires those independent passes. The dispatcher routes
+declared specialists before Team Lead review, and the integration evidence
+validator rejects missing, stale, reordered, or package-mismatched supporting
+approval. Deep Infra and Deep Security make `security` effective automatically.
+
 ### Harness mode — teammates as subagents, no CLI processes
 
 If your harness can spawn subagents and message them (e.g. Claude Code's Agent
@@ -1103,8 +1110,8 @@ your agent in the generic vocabulary:
 - *"Plan a feature: …"* → creates a `[feature]` + `[tasks]`
 - *"Start task ENG-142"* → generic `[Active]` / shipped `In Progress`, then implements
 - *"Send it to review"* → generic `[Review]` / shipped `In Review`, launching
-  the four mandatory independent reviewers
-- *"Finalize it"* → only after all four approvals, generic
+  the three core reviewers and any declared Security/QA gates
+- *"Finalize it"* → only after core and declared-gate approvals, generic
   `[Ready to deploy]` / shipped `Ready for production`
 - *"Switch the tracker to Linear"* → follows the adapter's setup
 
@@ -1185,6 +1192,7 @@ your agent in the generic vocabulary:
 | `start <team> <featureId> <role>…` | Launch specific roles (custom teams) |
 | `relaunch <team> <featureId> <role> [preset]` | Restart one crashed/wedged agent |
 | `compose <team> <featureId> <role> [preset]` | Write a role's startup prompt **without spawning** — for running teammates as subagents inside your own harness (see `reference/orchestration.md` → *Harness mode*) |
+| `compose-review <team> <featureId> <role> <taskId> [preset]` | From a freshly exported normalized `tasks.json`, write a lean one-package review prompt and exact binding-manifest pointer without spawning or granting reviewer authority |
 | `start-task <team> <featureId> <role> <taskId> [attempt] [preset]` | Generate a packet and launch one task-scoped worker in its worktree |
 | `compose-task <team> <featureId> <role> <taskId> [attempt] [preset]` | Generate a packet and lean startup prompt without spawning, for harness subagents |
 | `worktree <team> <role> <taskId> [attempt]` | Create an implementer's isolated task worktree |
@@ -1248,12 +1256,12 @@ architecture position; the Sceptical Principal Architect independently
 challenges planning and every `[task]` design before code → the dispatcher
 creates immutable task packets and isolated worktrees → specialists checkpoint
 their task branches and submit one exact review package → the task enters
-generic `[Review]`, mapped to `In Review`, and four distinct agents review it:
-Principal Architect, Sceptical Principal Architect, Senior Security Engineer,
-and Team Lead. Optional QA/reviewer specialists may add evidence but cannot
-replace any mandatory verdict. Any blocking quality, architecture, or security
+generic `[Review]`, mapped to `In Review`, and three distinct core agents review
+it: Principal Architect, Sceptical Principal Architect, and Team Lead. Security
+or QA specialists join when task risk declares their supporting gate; neither
+replaces a core verdict. Any blocking quality, architecture, or security
 finding returns the task to generic `[Planned]`, mapped to `ToDo`, for a fresh
-attempt through `In Progress`. Only all four current bound approvals let the
+attempt through `In Progress`. Only all current core and declared-gate approvals let the
 integrator validate and merge, then idempotently mark generic
 `[Ready to deploy]`, mapped to `Ready for production`. Deployment additionally
 requires exact current green CI; after verified production succeeds, the
@@ -1525,19 +1533,20 @@ those directories and rechecks their identity plus feature HEAD at apply.
 
 | Preset | Roster | Use when |
 |---|---|---|
-| `full-stack` | Team Lead · Principal Software Architect · Sceptical Architect · Senior Security Engineer · Senior Technical PM · Senior Full Stack Engineer · Senior QA | Features cutting through schema, API, and UI — the default |
-| `deep-backend` | Team Lead · Principal Backend Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Staff Engineer · Senior QA | Domain logic, data models, APIs, performance |
-| `deep-frontend` | Team Lead · Principal Frontend Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Frontend Engineer · Senior QA | UI architecture, client state, design systems, a11y |
+| `full-stack` | Team Lead · Principal Software Architect · Sceptical Architect · Senior Technical PM · Senior Full Stack Engineer · Senior QA | Features cutting through schema, API, and UI — the default |
+| `deep-backend` | Team Lead · Principal Backend Architect · Sceptical Architect · TPM · Senior Staff Engineer · Senior QA | Domain logic, data models, APIs, performance |
+| `deep-frontend` | Team Lead · Principal Frontend Architect · Sceptical Architect · TPM · Senior Frontend Engineer · Senior QA | UI architecture, client state, design systems, a11y |
 | `deep-security` | Team Lead · Principal Security Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Security Implementation Engineer · Senior Penetration Tester · Senior QA | Security features & hardening on your own codebase |
 | `deep-infra` | Team Lead · Principal Cloud & Infrastructure Architect · Sceptical Architect · Senior Security Engineer · TPM · Senior Cloud Engineer · Senior SRE · Senior QA | Cloud infra, IaC, delivery pipelines, reliability |
-| `deep-llm` | Team Lead · Principal LLM Architect · Sceptical Principal LLM Architect · Senior LLM Security Engineer · TPM · Senior LLM Engineer · Senior Staff Backend Engineer · Senior Full Stack Engineer · Senior QA | LLM systems, data science, RAG, evaluation, inference services, and LLM product UX |
+| `deep-llm` | Team Lead · Principal LLM Architect · Sceptical Principal LLM Architect · TPM · Senior LLM Engineer · Senior Staff Backend Engineer · Senior Full Stack Engineer · Senior QA | LLM systems, data science, RAG, evaluation, inference services, and LLM product UX |
 
-Every preset launches four distinct mandatory review-board agents: **Team
-Lead**, **Principal Architect**, **Sceptical Principal Architect**, and
-**Senior Security Engineer**. They independently review the same exact package;
-QA and reviewer roles are optional specialists, not substitutes. A standard
-integrator owns serialized feature-branch commits and recoverable tracker
-finalization only after all four approvals. Details in
+Every preset launches three distinct core review-board agents: **Team Lead**,
+**Principal Architect**, and **Sceptical Principal Architect**. They
+independently review the same exact package. Every preset retains a distinct
+Security mapping for on-demand gates; Deep Infra and Deep Security launch it by
+default and require it for every task. A standard integrator owns serialized
+feature-branch commits and recoverable tracker finalization only after core and
+declared supporting approvals. Details in
 [`teams/README.md`](teams/README.md).
 
 ---
@@ -1571,7 +1580,7 @@ flowchart LR
     State -->|Blocked| Hold -->|human returns to queued| Board
     Route -->|yes| Gates --> Work --> Review
     Review -->|blocking finding| Rework --> Work
-    Review -->|all four approve| Integrate --> CI
+    Review -->|core + declared gates approve| Integrate --> CI
     CI -->|green| Policy
     CI -->|red · pending · missing| Board
     Route -->|pause / escalate| Board
@@ -1682,11 +1691,13 @@ scriptable backend before deterministic dispatch/automation can use it.
   `extensions/tracker-backends/<YourTool>.py`, then set
   `PRODUCT_MANAGEMENT_TOOL=<YourTool>`. Do not edit the upstream-owned
   `bin/tracker-ops.sh`; see [`extensions/tracker-backends/README.md`](extensions/tracker-backends/README.md).
-- **New team:** copy any `teams/<preset>.md`, edit the charter, `ROSTER=` line, and
-  specialist roles. Include four distinct enabled mappings and roster entries
-  for `PROTOCOL_TEAM_LEAD`, `PROTOCOL_PRINCIPAL_ARCHITECT`,
-  `PROTOCOL_SCEPTICAL_ARCHITECT`, and `PROTOCOL_SECURITY_REVIEWER`, plus
-  `integrator`.
+- **New team:** copy any `teams/<preset>.md`, edit the charter, `ROSTER=` line,
+  and specialist roles. Include distinct enabled roster mappings for
+  `PROTOCOL_TEAM_LEAD`, `PROTOCOL_PRINCIPAL_ARCHITECT`, and
+  `PROTOCOL_SCEPTICAL_ARCHITECT`, plus `integrator`. Also map an independent,
+  launchable `PROTOCOL_SECURITY_REVIEWER` outside the default roster. Put it in
+  the roster and set `REQUIRED_REVIEW_GATES=security` only for a security- or
+  infrastructure-focused team whose every task requires security review.
 - **New role:** add `teams/roles/<kebab-name>.md` with the standard sections
   (identity, **Protocol mapping**, responsibilities, decision authority,
   deliverables, handoffs, "you never"). The launcher resolves any role that has a
@@ -1703,7 +1714,7 @@ exact protocol markers — never invent new ones.
 |---|---|
 | Agent says the tracker is unavailable | Re-check the adapter's *Access mechanisms* (MCP block or exported API-key env vars); the agent stops rather than fabricating — that's by design |
 | `launch-team.sh` can't find a role | The role needs a brief in `roles/` or `teams/roles/`, and its `<ROLE>_CMD` (or `TEAM_DEFAULT_CMD`) must be set |
-| A role won't launch in a preset | An optional role may have `<ROLE>_CMD=null`; remove the line to fall back to `TEAM_DEFAULT_CMD`. Team Lead, Principal Architect, Sceptical Principal Architect, and Senior Security Engineer are mandatory, distinct reviewers; a missing/duplicate mapping, absent roster entry, null command, or missing fallback rejects the whole team before launch. |
+| A role won't launch in a preset | An optional role may have `<ROLE>_CMD=null`; remove the line to fall back to `TEAM_DEFAULT_CMD`. Team Lead, Principal Architect, and Sceptical Principal Architect are mandatory, distinct rostered reviewers. Security must have a distinct launchable mapping but stays out of ordinary startup rosters; Deep Infra and Deep Security require it in the roster. Invalid mappings or missing commands reject launch. |
 | No `tmux` | Agents run as background processes automatically. With protected lifecycle state use `status`/`stop`; otherwise supervise them externally. Logs remain under `.teamwork/<team>/pids/` |
 | `status` says lifecycle supervision is disabled | Provision `BROKER_LIFECYCLE_ROOT` as documented in `config/team.config.md`; unmanaged manual mode deliberately refuses `stop` rather than trusting workspace PID text |
 | Team seems stuck | With protected lifecycle state configured, `bin/launch-team.sh status <team>` shows authoritative process state plus heartbeats; the lead applies the recovery ladder, and anything needing you is in `.teamwork/<team>/ESCALATIONS.md`. A `[Blocked]` task is intentionally human-held and never changed outbound by automation. |

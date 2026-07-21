@@ -54,6 +54,7 @@
     "reference/automation.md",
     "reference/deployment.md",
     "reference/guardrails.md",
+    "reference/manual-release-template.md",
     "reference/superpowers-planning.md",
     "roles/team-lead.md",
     "teams/_PLAYBOOK.md",

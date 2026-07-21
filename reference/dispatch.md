@@ -8,7 +8,7 @@ time. **Dispatch is a stateless read-and-act pass** executed by machinery:
 | Runtime | Loop owner | One pass = |
 |---|---|---|
 | CLI (tmux / background processes) | `bin/dispatch.sh <team> <featureId> --once` (or `--watch`) | fresh tracker export → establish/act on task holds → finalize integrations/process artifact outbox → refresh export/projection → claim/launch task instances and gate roles |
-| Harness (in-session subagents) | the team-lead orchestrator itself — its native event loop | same table, executed directly: subagent spawn = role launch, idle notifications = heartbeats |
+| Harness (in-session subagents) | the team-lead orchestrator itself — its native event loop | same table, executed directly: subagent spawn = role launch, idle notifications = heartbeats; use `compose-task` for one implementation [task] and `compose-review` for one exact-package verdict |
 
 `--watch` needs a persistent shell (tmux window or `nohup`) — **the human
 owns that process**, explicitly. Hiding this ownership is how a pipeline
@@ -27,8 +27,9 @@ heartbeat files, then acts top to bottom:
 | Queued/`[Active]`/`[Review]` [task] directly `blockedBy` a currently `[Blocked]` [task] | Route a graph-digest-bound dependency-impact review to the team-lead; enter `[Blocked]` only after an authenticated `blocked` verdict survives fresh graph validation. A partial/independent verdict gives only that exact graph a scheduling clearance. |
 | `[design-note]` with no later `[design-approved]`/`[design-pushback]` | Launch principal-architect with the **whole** pending-design queue |
 | `[design-note]` with no later `[sceptical-design-approved]`/`[sceptical-design-pushback]` | Launch sceptical-architect with the **whole** independent-design queue |
-| [Task](s) in `[Review]` missing `[team-lead-approval]`, `[architecture-approval]`, `[sceptical-architecture-approval]`, or `[security-approval]` since the last `[review-request]` | Launch Team Lead / Principal Architect / Sceptical Principal Architect / Senior Security Engineer with their **whole** review queues |
-| [Task](s) in `[Review]` holding all four mandatory approvals | Launch integrator with the merge queue in dependency order |
+| [Task](s) in `[Review]` missing `[team-lead-approval]`, `[architecture-approval]`, or `[sceptical-architecture-approval]` since the last `[review-request]` | Launch Team Lead / Principal Architect / Sceptical Principal Architect with their **whole** core-review queues |
+| [Task](s) in `[Review]` with effective `review-gates: qa` or `review-gates: security` but no current mapped supporting approval | Launch the preset's QA or Security role with its whole queue; hold Team Lead review until every declared supporting gate is current |
+| [Task](s) in `[Review]` holding all three core approvals and every declared supporting approval, with Team Lead newer than supporting gates | Launch integrator with the merge queue in dependency order |
 | Dispatchable `[Planned]` [tasks] (including review rework; not held, both design approvals current, every blocker terminal or carrying a fresh partial/independent clearance for its current Blocked graph, slot/resource-safe) | Atomically claim and launch one fresh task instance per ready-wave member |
 | Valid `product-acceptance-request.json` after all integrations | Launch the configured product-manager role with the exact feature-level acceptance request; use team-lead only when no product role is mapped |
 | `[Planned]` task missing metadata/gate, resource conflict, stale/artifact-less-idle teammate | Launch team-lead with the whole exception queue |
@@ -98,8 +99,9 @@ heartbeat files, then acts top to bottom:
 - **Preset rosters:** the script resolves nine status-owning protocol lanes,
   any optional specialists, and explicitly mapped specialist dispatch lanes
   such as Deep LLM's `track: llm` → `PROTOCOL_LLM`. An unmapped specialist
-  track safely falls back to `backend`. The four review-board mappings must
-  resolve to distinct concrete roles; the launch fails closed otherwise.
+  track safely falls back to `backend`. The three core review mappings must
+  resolve to distinct rostered roles, and the on-demand Security mapping must be
+  distinct from them; launch fails closed otherwise.
 - **Long features (harness):** past ~20 [tasks] the orchestrator should
   compress processed-event state between turns (its context is the loop
   state); the tracker remains the source of truth for anything dropped.

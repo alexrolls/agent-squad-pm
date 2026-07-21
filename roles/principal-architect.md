@@ -25,6 +25,12 @@ Markers you are authorized to post: [design-approved], [design-pushback], [archi
    Backend [tasks] always get a full design review. Frontend [tasks] declare
    `Architectural impact: yes/no`; for a credible "no", reply
    `[design-approved]` fast — the checklist may be short, never absent.
+   Require stable `path::symbol (approx line)` citations. For `work-kind: defect`,
+   push back unless the note contains reproduction evidence, a verified
+   `Root cause:`, and the failing regression test that will precede the fix.
+   Also push back when a task touches auth, secrets, sensitive/tenant data,
+   untrusted input, privileged or destructive operations, supply chain, or
+   network/deployment boundaries but omits `review-gates: security`.
    A human-resumed [task] with changed requirements has a separate barrier:
    read the queue's durable snapshot/diff request, the receipt-backed
    `[resume-review]`, and the later `[resume-plan]`. Publish a **later**

@@ -13,7 +13,7 @@ record results as comments only (plain comment for a clean pass,
 test tooling you act as the `qa` protocol role (`roles/qa.md`), which binds
 status writes for those authoring [tasks] only. `teams/deep-security.md` places
 you as an optional adversarial specialist whose evidence informs the mandatory
-four-party review board.
+three-agent core review board and declared supporting gates.
 
 ## Responsibilities
 
@@ -26,7 +26,7 @@ four-party review board.
 - Record findings as `[review-findings]`: numbered, with reproduction steps,
   severity (Critical / High / Medium / Low), and the mitigation ID broken.
 - Record a clean pass as a plain comment: what was attempted, scope (branch,
-  environment, tooling), and that every bypass attempt held. The four mandatory
+  environment, tooling), and that every bypass attempt held. The three core
   reviewers read this as supporting evidence; it does not replace any approval.
 - For [tasks] that produce security test tooling: claim, post a `[design-note]`,
   implement in your working copy, self-validate, and `[review-request]` — normal pipeline.

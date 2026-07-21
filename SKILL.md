@@ -21,7 +21,12 @@ skill's directory):
 - `reference/automation.md` + `config/automation.config.json` + `bin/pm-agent.py` — board-wide cron/service reconciliation and team routing
 - `reference/guardrails.md` + `config/guardrails.config.json` + `bin/policy-check.py` — immutable deny/approval/allow boundary
 - `reference/deployment.md` + `config/deployment.config.json` + `bin/release-feature.py` — recoverable provider-neutral production delivery
+- `reference/manual-release-template.md` — guarded operator runbook for deploy,
+  environment activation, probes, rollback, and monitoring when release hooks
+  are not yet fully automated
 - `roles/<role>.md` + `config/team.config.md` + `bin/launch-team.sh` — the agent team
+- `bin/launch-team.sh compose-task|compose-review` — lean harness prompts for one
+  implementation [task] or one exact review package
 - `bin/tracker-ops.sh` — ergonomic CLI for recurring tracker operations (scriptable mechanisms)
 - `extensions/tracker-backends/<Tool>.py` — project-owned primitive port for a custom tracker
 - `bin/update-installed-skill.sh` — install or refresh a legacy/source-managed bundle while preserving project config
@@ -158,7 +163,7 @@ each generic operation through the adapter's *Operations* table:
 | File a bug / follow-up found mid-work | 6 — File newly-discovered work |
 | Work is stuck / blocked / cannot proceed | 7 — Block a `[task]` |
 | (anything wrong / blocked / failed) | 8 — Andon cord: stop & report |
-| Run an agent team on a feature ("launch the team") | Team: keep the shipped `TEAM_MODE=true` default; gate roles use `start`/`compose`, task workers use `start-task`/`compose-task`, and `dispatch.sh` owns claims and bounded scheduling |
+| Run an agent team on a feature ("launch the team") | Team: keep the shipped `TEAM_MODE=true` default; persistent/batched gate roles use `start`/`compose`, one-package harness reviewers use `compose-review`, task workers use `start-task`/`compose-task`, and `dispatch.sh` owns claims and bounded scheduling |
 | Connect a new tool / switch tools | 9 — Connect / switch |
 | Design/plan everything up front, sign off all designs before coding | 10 — Pre-flight design pass |
 | Monitor queued and Blocked work; launch eligible queued tasks automatically | 11 — Portfolio automation; install the skill outside the target checkout, provision an external mode-0700 lifecycle root outside every agent mount, set its absolute project/config environment, `scanIntervalMinutes` (default 3), and `ignoredTaskLabels` (default `human-work`), then run `bin/pm-agent.py --once` with protected Python `-I -S -E -s` |
@@ -205,8 +210,9 @@ each generic operation through the adapter's *Operations* table:
   intended move is in its `transitions` list. If not, pull the andon cord instead of
   forcing the change.
 - **`[Ready to deploy]` means verified-done** — the current exact review request
-  has independent Team Lead, Principal Architect, Sceptical Principal
-  Architect, and Senior Security Engineer approvals; tests/build are green; and
+  has independent Team Lead, Principal Architect, and Sceptical Principal
+  Architect approvals plus every effective Security/QA supporting approval;
+  tests/build are green; and
   the work is merged to the feature branch. Git plus tracker completion is a durable,
   idempotent transaction recorded under `.teamwork/<team>/integrations/`; never
   pretend two systems are physically atomic.
@@ -233,22 +239,25 @@ each generic operation through the adapter's *Operations* table:
   feature HEAD, and integration-evidence digest; stale,
   ambiguous, missing, or later-pushed-back evidence waits and routes the product
   role. This workflow marker still grants no production authority by itself.
-- **Code review is package-bound and four-party.** Review requests bind the exact
-  merge-base, task-branch HEAD, and generated package digest. The Team Lead,
-  Principal Architect, Sceptical Principal Architect, and Senior Security
-  Engineer independently bind their approvals to that request. Every approval
+- **Code review is package-bound with three core reviewers plus declared gates.**
+  Review requests bind the exact merge-base, task-branch HEAD, generated package
+  digest, and effective `review-gates`. The Team Lead, Principal Architect, and
+  Sceptical Principal Architect independently bind their approvals to that
+  request. Security and QA bind supporting approvals only when declared by task
+  metadata or required by the preset. Every approval
   records its concrete `Reviewer-Role` and protected `Reviewer-Context`; the
   integrator rejects missing or repeated roles/contexts. A role label, model
   name, signature, or direct project-management comment is not a substitute for
   a protected per-instance context. Any finding
   requeues the [task] to `[Planned]`/`ToDo` for a fresh attempt; any branch
-  movement forces a new request and all four new approvals before integration.
-- **The four review-board agents are mandatory and distinct in team mode.**
-  Every cross-functional preset must map and roster exactly one Team Lead,
-  Principal Architect, Sceptical Principal Architect, and Senior Security
-  Engineer, each with a resolvable command and no shared concrete identity.
-  Launch, dispatch, publication, and integration fail closed if any mapping is
-  absent, duplicated, disabled, malformed, or conflated.
+  movement forces a new request and fresh core and declared-gate approvals.
+- **The core board is mandatory; Security is risk-triggered.** Every preset must
+  roster one distinct Team Lead, Principal Architect, and Sceptical Principal
+  Architect. It must also retain an independent, launchable Security Engineer
+  mapping. Security stays out of ordinary startup rosters and joins only when a
+  task declares `review-gates: security`; Deep Infra and Deep Security require
+  that gate and roster Security by default. Launch, dispatch, publication, and integration
+  fail closed on malformed, conflated, or missing required mappings and gates.
 - **Only green CI may deploy.** Enabled delivery requires a protected,
   digest-pinned `verifyCi` hook that proves every required check for the exact
   release commit succeeded, with no failed, pending, skipped, missing, stale,

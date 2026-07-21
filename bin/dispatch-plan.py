@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 from product_acceptance import ProductAcceptancePending, evaluate as evaluate_product_acceptance, validate_request
-from task_metadata import parse_task_metadata
+from task_metadata import effective_review_gates, parse_task_metadata, required_review_gates
 
 
 MARKER_RE = re.compile(r"^\s*\[([\w-]+)\]")
@@ -349,17 +349,18 @@ def main() -> None:
     protocol_sceptical_architect = "sceptical-architect"
     protocol_security_reviewer = "senior-security-engineer"
     protocol_product_manager = None
+    protocol_qa: str | None = "qa"
     specialist_dispatch_tracks: set[str] = set()
     try:
         preset_text = read_regular_at(workdir_fd, "preset.env", "team preset", 1024 * 1024)
     except FileNotFoundError:
         preset_text = None
     if preset_text is not None:
+        protocol_qa = None
         required_protocol_roles = {
             "TEAM_LEAD": "team-lead",
             "PRINCIPAL_ARCHITECT": "principal-architect",
             "SCEPTICAL_ARCHITECT": "sceptical-architect",
-            "SECURITY_REVIEWER": "senior-security-engineer",
         }
         resolved_protocol_roles: dict[str, str] = {}
         for key, fallback in required_protocol_roles.items():
@@ -376,14 +377,37 @@ def main() -> None:
             resolved_protocol_roles[key] = value or fallback
         if len(set(resolved_protocol_roles.values())) != len(required_protocol_roles):
             raise RuntimeError(
-                "team preset review board must use four distinct concrete agents"
+                "team preset core review board must use three distinct concrete agents"
             )
         protocol_team_lead = resolved_protocol_roles["TEAM_LEAD"]
         protocol_principal_architect = resolved_protocol_roles["PRINCIPAL_ARCHITECT"]
         protocol_sceptical_architect = resolved_protocol_roles["SCEPTICAL_ARCHITECT"]
-        protocol_security_reviewer = resolved_protocol_roles["SECURITY_REVIEWER"]
+        security_matches = re.findall(
+            r"^PROTOCOL_SECURITY_REVIEWER=([^\r\n]+)$", preset_text, re.M
+        )
+        if len(security_matches) != 1:
+            raise RuntimeError(
+                "team preset must define exactly one on-demand PROTOCOL_SECURITY_REVIEWER"
+            )
+        security_role = security_matches[0].strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", security_role):
+            raise RuntimeError("team preset has an invalid PROTOCOL_SECURITY_REVIEWER")
+        if security_role in set(resolved_protocol_roles.values()):
+            raise RuntimeError(
+                "team preset security reviewer must be distinct from the core review board"
+            )
+        protocol_security_reviewer = security_role
+        required_review_gates(preset_text)
         match = re.search(r"^PROTOCOL_PRODUCT_MANAGER=(.+)$", preset_text, re.M)
         protocol_product_manager = match.group(1) if match and match.group(1) != "null" else None
+        qa_matches = re.findall(r"^PROTOCOL_QA=([^\r\n]+)$", preset_text, re.M)
+        if len(qa_matches) > 1:
+            raise RuntimeError("team preset must not duplicate PROTOCOL_QA")
+        if qa_matches:
+            qa_role = qa_matches[0].strip()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", qa_role):
+                raise RuntimeError("team preset has an invalid PROTOCOL_QA")
+            protocol_qa = qa_role
         llm_matches = re.findall(r"^PROTOCOL_LLM=([^\r\n]+)$", preset_text, re.M)
         if len(llm_matches) > 1:
             raise RuntimeError("team preset must not duplicate PROTOCOL_LLM")
@@ -474,7 +498,7 @@ def main() -> None:
         )
     ]
     team_lead_review_queue, architecture_queue, sceptical_architecture_queue = [], [], []
-    security_queue, merge_queue, anomalies = [], [], []
+    security_queue, qa_queue, merge_queue, anomalies = [], [], [], []
 
     def approval_signer(task: dict, index: int) -> str | None:
         body = str((task.get("comments") or [])[index].get("body") or "")
@@ -502,8 +526,63 @@ def main() -> None:
         architecture_approval = last(task, "architecture-approval")
         sceptical_approval = last(task, "sceptical-architecture-approval")
         security_approval = last(task, "security-approval")
+        gates = effective_review_gates(metadata(task), preset_text or "")
+        security_required = "security" in gates
+        qa_required = "qa" in gates
+        qa_approval = last(task, "review-approval")
+        qa_current = not qa_required
+        if qa_required:
+            if protocol_qa is None:
+                raise RuntimeError(
+                    f"task {task_id} requires review-gates: qa but the team preset has no PROTOCOL_QA"
+                )
+            if qa_approval > request:
+                qa_signer = approval_signer(task, qa_approval)
+                if qa_signer == protocol_qa:
+                    qa_current = True
+                else:
+                    anomalies.append(task_id)
+                    print(
+                        "dispatch: warning - %s [review-approval] signed by '%s', expected required gate '%s'"
+                        % (task_id, qa_signer, protocol_qa),
+                        file=sys.stderr,
+                    )
+            if not qa_current:
+                qa_queue.append(task_id)
+        security_current = not security_required
+        if security_required:
+            if security_approval > request:
+                security_signer = approval_signer(task, security_approval)
+                if security_signer == protocol_security_reviewer:
+                    security_current = True
+                else:
+                    anomalies.append(task_id)
+                    print(
+                        "dispatch: warning - %s [security-approval] signed by '%s', expected required gate '%s'"
+                        % (task_id, security_signer, protocol_security_reviewer),
+                        file=sys.stderr,
+                    )
+            if not security_current:
+                security_queue.append(task_id)
+        supporting_approvals = [
+            index
+            for required, current, index in (
+                (qa_required, qa_current, qa_approval),
+                (security_required, security_current, security_approval),
+            )
+            if required and current
+        ]
+        supporting_current = qa_current and security_current
+        team_lead_current = (
+            team_lead_approval > request
+            and supporting_current
+            and all(team_lead_approval > index for index in supporting_approvals)
+        )
         approvals = {
-            "team-lead-approval": (team_lead_approval, protocol_team_lead),
+            "team-lead-approval": (
+                team_lead_approval if team_lead_current else -1,
+                protocol_team_lead,
+            ),
             "architecture-approval": (
                 architecture_approval,
                 protocol_principal_architect,
@@ -512,16 +591,15 @@ def main() -> None:
                 sceptical_approval,
                 protocol_sceptical_architect,
             ),
-            "security-approval": (security_approval, protocol_security_reviewer),
         }
-        if all(index > request for index, _ in approvals.values()):
+        if supporting_current and all(index > request for index, _ in approvals.values()):
             invalid = False
             for marker_name, (index, expected_signer) in approvals.items():
                 signer = approval_signer(task, index)
                 if signer != expected_signer:
                     anomalies.append(task_id)
                     print(
-                        "dispatch: warning - %s [%s] signed by '%s', expected mandatory gate '%s'"
+                        "dispatch: warning - %s [%s] signed by '%s', expected core gate '%s'"
                         % (task_id, marker_name, signer, expected_signer),
                         file=sys.stderr,
                     )
@@ -531,14 +609,12 @@ def main() -> None:
                 continue
             merge_queue.append(task_id)
         else:
-            if team_lead_approval <= request:
+            if not team_lead_current and supporting_current:
                 team_lead_review_queue.append(task_id)
             if architecture_approval <= request:
                 architecture_queue.append(task_id)
             if sceptical_approval <= request:
                 sceptical_architecture_queue.append(task_id)
-            if security_approval <= request:
-                security_queue.append(task_id)
 
     # The release executor creates this exact request only after recomputing the
     # closed integration chain.  Tracker containers are not uniformly
@@ -617,6 +693,14 @@ def main() -> None:
             % ", ".join(security_queue),
             "|".join(security_queue),
         )
+    if qa_queue:
+        emit(
+            "launch",
+            protocol_qa or "qa",
+            "Dispatch queue - required specialist QA reviews: %s. Drain every item and exit."
+            % ", ".join(qa_queue),
+            "|".join(qa_queue),
+        )
     if team_lead_review_queue:
         emit(
             "launch",
@@ -629,7 +713,7 @@ def main() -> None:
         emit(
             "launch",
             "integrator",
-            "Dispatch queue - independently four-party-approved, integrate in dependency order: %s."
+            "Dispatch queue - all mandatory and declared supporting review gates approved; integrate in dependency order: %s."
             % ", ".join(merge_queue),
             "|".join(merge_queue),
         )

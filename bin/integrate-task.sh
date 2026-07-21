@@ -52,6 +52,7 @@ PY
 repo="$(git_unprivileged rev-parse --show-toplevel)"
 root="$(read_key TEAMWORK_ROOT)"; root="${root:-.teamwork}"
 workspace="$(python3 "$SKILL_DIR/bin/teamwork-path.py" workspace --repo "$repo" --root "$root" --team "$team")"
+preset_file="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative preset.env)"
 key="$(python3 "$SKILL_DIR/bin/runtime-state.py" key "$task")"
 execution="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "executions/$key.json")"
 transaction="$(python3 "$SKILL_DIR/bin/teamwork-path.py" child --repo "$repo" --workspace "$workspace" --relative "integrations/$key.json")"
@@ -397,7 +398,7 @@ PY
   [ -f "$tasks_snapshot" ] && [ ! -L "$tasks_snapshot" ] \
     || die "missing safe tracker snapshot; dispatcher must export current approvals first"
   approval_evidence_digest="$("$SKILL_DIR/bin/finalize-integrations.sh" --evidence \
-    "$tasks_snapshot" "$task" "$review_base_commit" "$task_branch_head" "$review_package_digest")"
+    "$tasks_snapshot" "$task" "$review_base_commit" "$task_branch_head" "$review_package_digest" "$preset_file")"
   [ -z "$(git_unprivileged -C "$repo" status --porcelain -uall)" ] || die "feature-branch checkout is dirty"
 
   assert_task_not_held

@@ -77,7 +77,7 @@ the `backend` implementer protocol role (`roles/backend.md`).
 - **Receives:** scope-approved tasks; approved architecture/evaluation contract;
   backend serving constraints; QA and security findings.
 - **Hands to:** Backend and Full Stack (stable behavioural contract); QA (exact
-  candidate and frozen eval inputs for independent verification); the four-party
+  candidate and frozen eval inputs for independent verification); the core and declared-gate
   review board (complete evidence); Integrator only through approvals.
 
 ## You never

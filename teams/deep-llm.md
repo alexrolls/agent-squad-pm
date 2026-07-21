@@ -7,7 +7,8 @@ preset when success depends on measured model behaviour rather than ordinary
 deterministic application logic alone.
 
 ```
-ROSTER=team-lead principal-llm-architect sceptical-principal-llm-architect senior-llm-security-engineer senior-technical-product-manager senior-llm-engineer senior-staff-backend-engineer senior-llm-full-stack-engineer senior-llm-qa-engineer integrator
+ROSTER=team-lead principal-llm-architect sceptical-principal-llm-architect senior-technical-product-manager senior-llm-engineer senior-staff-backend-engineer senior-llm-full-stack-engineer senior-llm-qa-engineer integrator
+REQUIRED_REVIEW_GATES=null
 REVIEW_MODE=parallel
 PROTOCOL_TEAM_LEAD=team-lead
 PROTOCOL_PRODUCT_MANAGER=senior-technical-product-manager
@@ -28,7 +29,7 @@ PROTOCOL_FRONTEND=senior-llm-full-stack-engineer
 | Team Lead — **process and final quality gate** | `roles/team-lead.md` | `team-lead` | Runs the team and independently authors `[team-lead-approval]` |
 | Principal LLM Architect | `teams/roles/principal-llm-architect.md` | `principal-architect` | Primary architecture position across models, data, evaluation, serving, and product integration |
 | Sceptical Principal LLM Architect — **independent gate** | `teams/roles/sceptical-principal-llm-architect.md` | `sceptical-architect` | Blind-first falsification of model, data, evaluation, cost, and complexity claims |
-| Senior LLM Security Engineer — **security gate** | `teams/roles/senior-llm-security-engineer.md` | `security-reviewer` | Independent prompt-injection, data-exposure, tool-abuse, and model-supply-chain review |
+| Senior LLM Security Engineer — **on-demand (not in startup roster)** | `teams/roles/senior-llm-security-engineer.md` | `security-reviewer` | Joins declared prompt-injection, data-exposure, tool-abuse, or model-supply-chain work |
 | Senior Technical Product Manager | `teams/roles/senior-technical-product-manager.md` | no status writes | Scope, user outcome, acceptance criteria, and acceptable failure boundaries |
 | Senior LLM Engineer | `teams/roles/senior-llm-engineer.md` | `llm` dispatch lane; backend implementer mechanics | Applied modeling, data science, prompts, retrieval, fine-tuning, tools, and experiment evidence |
 | Senior Staff Backend Engineer | `teams/roles/senior-staff-backend-engineer.md` | `backend` | Inference gateway, data/RAG pipelines, persistence, reliability, observability, and cost controls |
@@ -105,24 +106,31 @@ without evidence.
 The Senior QA Engineer performs an independent specialist verification pass on
 every `track: llm` [task] and every [task] that changes prompts, model/provider
 configuration, retrieval/reranking, evaluation data, tool schemas, citations,
-or structured-output parsing. A clean pass is `[review-approval]`; problems are
-`[review-findings]`. This evidence does not replace any mandatory review-board
-approval, but the Team Lead may not grant `[team-lead-approval]` until the
-required QA pass is clean and current for the exact review package.
+or structured-output parsing. Each applicable [task] must declare
+`review-gates: qa`; both architects push back when that metadata is missing. A
+clean pass is `[review-approval]`; problems are `[review-findings]`. This
+evidence does not replace any mandatory review-board approval. Even under
+`REVIEW_MODE=parallel`, the dispatcher routes QA first, then accepts a newer
+`[team-lead-approval]`; the integrator independently enforces both bindings.
 
 ## Required review board
 
-These four agents review the same immutable package independently and in
-parallel:
+Three core agents review every immutable package. The architects may run in
+parallel with declared supporting gates; Team Lead runs after those gates are
+current:
 
 1. Principal Architect — `[architecture-approval]`
 2. Sceptical Principal Architect — `[sceptical-architecture-approval]`
-3. Senior LLM Security Engineer — `[security-approval]`
-4. Team Lead — `[team-lead-approval]`
+3. Team Lead — `[team-lead-approval]`
 
-Only after the required QA evidence and all four mandatory approvals exist may
-the `integrator` merge, commit, and mark the [task] `[Ready to deploy]` (mapped
-to `Ready for production`).
+The Senior LLM Security Engineer is disabled at startup. Planning adds
+`review-gates: security` for prompt/tool injection, cross-tenant or sensitive
+data flow, privileged tool use, model/artifact supply chain, unsafe output
+execution, or another credible threat. Either architect pushes back when such
+risk exists but the gate is absent. The dispatcher launches the specialist on
+demand, and `[security-approval]` must precede Team Lead. The integrator
+requires the three core approvals, required QA where declared, and every other
+declared supporting gate.
 
 ## Launch
 

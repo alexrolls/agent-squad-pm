@@ -37,7 +37,9 @@ runtime is not Claude Code, begin directly with the native workflow.
    Put implementation checkpoints as `[subtasks]` (checklist bullets) in the description.
    In team mode add scheduler metadata on separate lines:
    `track: backend|frontend|qa`, `parallel-safe: true|false`, `files: <comma-list>`,
-   `resources: <contracts/migrations/shared-state>`, and optional
+   optional `resources: <contracts/migrations/shared-state>` (omit the line when
+   there is no shared resource), `work-kind: defect|change|research|operations`,
+   optional `review-gates: qa|security|qa,security`, and optional
    `model-profile: fast|standard|strong`. Unknown or unsafe tasks serialize.
 5. **Confirm** the created `featureId` and `taskId`s back to the user.
 
@@ -59,7 +61,10 @@ runtime is not Claude Code, begin directly with the native workflow.
 4. If this is the feature's first `[Active]` task, the [feature] moves `[Planned]` →
    `[Active]` (do this only if the adapter tracks feature status explicitly).
 5. **Team mode only (`TEAM_MODE=true`): pass the design gate.** Post a `[design-note]`
-   comment (approach, contract/data-model changes, affected components) and exit;
+   comment (approach, contract/data-model changes, affected components), citing
+   code as stable `path::symbol (approx line)`, and exit. A `work-kind: defect`
+   note first records reproduction evidence, `Root cause:`, and the failing
+   regression test to write before the fix. Then
    the dispatcher/harness relaunches you when both architects' design approvals
    arrive — see `reference/orchestration.md`. Single-agent mode
    skips this step.
@@ -95,8 +100,9 @@ Reality rarely matches the plan. When you must deviate from what the [task] desc
 2. Submit `[review-request]` through `bin/submit-artifact.sh`; the durable outbox
    posts the comment and moves the [task] to `[Review]` idempotently.
 3. Single-agent: you now switch hats and review, or hand to the user. Team mode:
-   route the exact package to the Team Lead, Principal Architect, Sceptical
-   Principal Architect, and Senior Security Engineer.
+   route the exact package to the Team Lead, Principal Architect, and Sceptical
+   Principal Architect, plus mapped QA/Security roles named by the effective
+   review gates.
 
 If review finds problems: **move the [task] back to `[Planned]`** (mapped to
 `ToDo`) and let the dispatcher create a fresh implementation attempt. That
@@ -110,8 +116,9 @@ is forbidden to author them.
 
 ## Scenario 5 — Finalize a [task]
 
-Only after all four mandatory reviewers approve the exact package and the work
-is verified (tests/build green, change actually does what the [task] asked):
+Only after all three core reviewers and every declared supporting reviewer
+approve the exact package and the work is verified (tests/build green, change
+actually does what the [task] asked):
 
 1. Confirm the [task] is in `[Review]`. If not, andon cord.
 2. The terminal status carries `requiresCommit: true`. The integrator runs
@@ -238,7 +245,9 @@ challenge, per-[task] verdicts, product scope sign-off, or tracker comments.
    (`reference/orchestration.md` → *Contract registry*, team mode) is part of
    **writing** the note — when notes are produced by parallel planners, the
    registry is the only shared surface between them, so a note that defers
-   registration defeats the pass.
+   registration defeats the pass. Resolve citations by stable symbol/heading
+   before approximate line number. For `work-kind: defect`, reproduce first and
+   require a verified `Root cause:` plus a regression-test-first plan.
 2. **Cross-[task] consistency and independent challenge first.** In team mode the
    principal-architect checks the full set and registry while the sceptical-
    architect independently tests assumptions, cross-task risks, and simpler

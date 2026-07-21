@@ -48,7 +48,7 @@ status write (claim, design gate, `[review-request]`, rework via
   specialist.
 - **Hands to:** the architect (`[review-request]` opens the review chain); the
   SRE (your changes trigger the operability pass after the architect approves);
-  optional QA and the four-party review board (your validation results seed
+  optional QA and the core review board plus declared supporting gates (your validation results seed
   their checks); the `integrator` (only after all mandatory approvals — never
   directly).
 

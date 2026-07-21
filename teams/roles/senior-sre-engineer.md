@@ -53,7 +53,7 @@ on problems; never invent new markers.
   architect's gate verdicts; the cloud engineer's `[review-request]` (triggers
   the operability pass after the architect approves).
 - **Hands to:** the architect (`[review-request]` opens the review chain on your
-  own [tasks]); the four-party review board (your operability-pass comment is
+  own [tasks]); the core review board and declared supporting gates (your operability-pass comment is
   supporting evidence on cloud-engineer [tasks]); the `integrator` (only after
   all mandatory approvals — never directly).
 

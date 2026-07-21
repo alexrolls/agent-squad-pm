@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 
 
 METADATA_RE = re.compile(
-    r"^\s*(track|parallel-safe|files|resources|model-profile)\s*:\s*(.+?)\s*$",
+    r"^\s*(track|parallel-safe|files|resources|model-profile|work-kind|review-gates)\s*:\s*(.+?)\s*$",
     re.I,
 )
 FRONTEND_RE = re.compile(r"\b(frontend|client|browser|component|css|ui)\b", re.I)
@@ -19,6 +19,38 @@ OBVIOUS_FAST_RE = re.compile(
 STRUCTURAL_FAST_RE = re.compile(r"\b(rename|copy|config(?:uration)?|constants?|test-only|tests? only)\b", re.I)
 DOC_SUFFIXES = {".adoc", ".md", ".mdx", ".rst", ".txt"}
 DOC_NAMES = {"changelog", "contributing", "license", "readme"}
+SUPPORTED_REVIEW_GATES = ("qa", "security")
+
+
+def normalize_review_gates(values: list[str] | tuple[str, ...]) -> list[str]:
+    normalized = [str(item).strip().lower() for item in values if str(item).strip()]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("review gates must not contain duplicates")
+    unsupported = sorted(set(normalized) - set(SUPPORTED_REVIEW_GATES))
+    if unsupported:
+        raise ValueError(
+            "review-gates supports only qa and security; got: "
+            + ", ".join(unsupported)
+        )
+    return [gate for gate in SUPPORTED_REVIEW_GATES if gate in normalized]
+
+
+def required_review_gates(preset_text: object = "") -> list[str]:
+    matches = re.findall(
+        r"^REQUIRED_REVIEW_GATES=([^\r\n]+)$", str(preset_text or ""), re.M
+    )
+    if len(matches) > 1:
+        raise ValueError("team preset must not duplicate REQUIRED_REVIEW_GATES")
+    if not matches or matches[0].strip().lower() == "null":
+        return []
+    return normalize_review_gates(tuple(matches[0].split(",")))
+
+
+def effective_review_gates(metadata: dict, preset_text: object = "") -> list[str]:
+    combined = set(metadata.get("reviewGates") or ()) | set(
+        required_review_gates(preset_text)
+    )
+    return [gate for gate in SUPPORTED_REVIEW_GATES if gate in combined]
 
 
 def parse_task_metadata(description: object, title: object = "") -> dict:
@@ -29,6 +61,8 @@ def parse_task_metadata(description: object, title: object = "") -> dict:
         "resources": [],
         "track": None,
         "modelProfile": None,
+        "workKind": None,
+        "reviewGates": [],
     }
     aliases = {
         "track": "track",
@@ -36,6 +70,8 @@ def parse_task_metadata(description: object, title: object = "") -> dict:
         "files": "files",
         "resources": "resources",
         "model-profile": "modelProfile",
+        "work-kind": "workKind",
+        "review-gates": "reviewGates",
     }
     for line in text.splitlines():
         match = METADATA_RE.match(line)
@@ -45,8 +81,16 @@ def parse_task_metadata(description: object, title: object = "") -> dict:
         value = match.group(2).strip()
         if key == "parallelSafe":
             result[key] = value.lower() in {"true", "yes", "1"}
-        elif key in {"files", "resources"}:
+        elif key in {"files", "resources", "reviewGates"}:
             result[key] = [item.strip() for item in value.split(",") if item.strip()]
+            if key == "reviewGates":
+                result[key] = normalize_review_gates(tuple(result[key]))
+        elif key == "workKind":
+            result[key] = value.lower()
+            if result[key] not in {"defect", "change", "research", "operations"}:
+                raise ValueError(
+                    "work-kind must be defect, change, research, or operations"
+                )
         else:
             result[key] = value.lower()
     if not result["track"]:

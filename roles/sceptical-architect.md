@@ -41,6 +41,12 @@ the current need. Change your position when better evidence arrives.
    unnecessary complexity, irreversible choices, hidden coupling, and missing
    evidence. Approval must list assumptions and any binding risk controls. Code
    starts only after both independent design approvals and no later pushback.
+   For `work-kind: defect`, treat a missing verified root cause, reproduction,
+   regression-test-first plan, or stable `path::symbol` citation as automatic
+   pushback grounds.
+   Independently challenge a missing `review-gates: security` whenever the task
+   presents a credible authority, data, input, supply-chain, deployment, or
+   destructive-operation threat.
 3. **Release-bound architecture review — every [task] in `[Review]`.** Review the
    exact package independently of the Principal Architect, Team Lead, and Senior
    Security Engineer. Check

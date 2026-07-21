@@ -337,8 +337,8 @@ if ignored.intersection(label.strip().casefold() for label in labels):
 
 protocol = {}
 if os.path.lexists(preset):
-    if os.path.islink(preset) or not os.path.isfile(preset):
-        fail("team preset must be a non-symlink regular file")
+    if os.path.islink(preset) or not os.path.isfile(preset) or os.path.getsize(preset) > 1024 * 1024:
+        fail("team preset must be a bounded non-symlink regular file")
     for line in open(preset):
         match = re.match(r"PROTOCOL_([A-Z_]+)=(.+)$", line.strip())
         if match:
@@ -347,7 +347,8 @@ if os.path.lexists(preset):
                 fail("team preset contains duplicate PROTOCOL_%s" % name)
             protocol[name] = concrete
 else:
-    # Direct/manual teams still use four distinct mandatory concrete roles.
+    # Direct/manual teams use three always-on core reviewers and retain an
+    # independently mapped security specialist for declared security gates.
     protocol.update({
         "TEAM_LEAD": "team-lead",
         "PRINCIPAL_ARCHITECT": "principal-architect",
@@ -358,7 +359,6 @@ required_review_board = (
     "TEAM_LEAD",
     "PRINCIPAL_ARCHITECT",
     "SCEPTICAL_ARCHITECT",
-    "SECURITY_REVIEWER",
 )
 review_board_roles = []
 for protocol_name in required_review_board:
@@ -367,7 +367,12 @@ for protocol_name in required_review_board:
         fail("team preset must define one valid mandatory PROTOCOL_%s" % protocol_name)
     review_board_roles.append(concrete)
 if len(set(review_board_roles)) != len(review_board_roles):
-    fail("team preset review board must use four distinct concrete agents")
+    fail("team preset core review board must use three distinct concrete agents")
+security_reviewer = protocol.get("SECURITY_REVIEWER")
+if not security_reviewer or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", security_reviewer):
+    fail("team preset must define one valid on-demand PROTOCOL_SECURITY_REVIEWER")
+if security_reviewer in set(review_board_roles):
+    fail("team preset security reviewer must be distinct from the core review board")
 marker_spec = (board.get("markers") or {}).get(data["marker"])
 verified_capability = None
 if data.get("producerCapability") is not None:
@@ -660,7 +665,7 @@ PY
 
 prepare_publish_body() {
   local entry="$1" marker="$2" task="$3" delivery="$4" staged_body="$5"
-  local candidate package binding base head package_digest reviewer_context
+  local candidate package binding base head package_digest reviewer_context review_gates
   candidate="$staged/$delivery.candidate.$$.md"
   rm -f -- "$candidate"
   case "$marker" in
@@ -679,7 +684,30 @@ PY
       read -r base head package_digest <<EOF
 $binding
 EOF
-      "$SKILL_DIR/bin/review_evidence.py" bind-request "$staged_body" "$base" "$head" "$package_digest" "$candidate" || return 1
+      review_gates="$(python3 - "$current_snapshot" "$task" "$SKILL_DIR/bin" "$preset_file" <<'PY'
+import json, os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[3])
+from task_metadata import effective_review_gates, parse_task_metadata
+snapshot = json.load(open(sys.argv[1]))
+task = next((item for item in snapshot.get("tasks") or [] if str(item.get("taskId")) == sys.argv[2]), None)
+if task is None:
+    raise SystemExit("process-outbox: review task disappeared from the authoritative snapshot")
+preset = sys.argv[4]
+preset_text = ""
+if os.path.lexists(preset):
+    if os.path.islink(preset) or not os.path.isfile(preset) or os.path.getsize(preset) > 1024 * 1024:
+        raise SystemExit("process-outbox: team preset must be a bounded non-symlink regular file")
+    preset_text = open(preset).read()
+print(",".join(effective_review_gates(
+    parse_task_metadata(task.get("description"), task.get("title")),
+    preset_text,
+)))
+PY
+)" || return 1
+      "$SKILL_DIR/bin/review_evidence.py" bind-request \
+        "$staged_body" "$base" "$head" "$package_digest" "$candidate" \
+        --review-gates "$review_gates" || return 1
       if ! binding="$(python3 - "$base" "$head" "$package_digest" <<'PY'
 import json,sys
 print(json.dumps({'kind':'review-request','base':sys.argv[1],'head':sys.argv[2],'package':sys.argv[3]}, separators=(',',':')))

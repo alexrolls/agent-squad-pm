@@ -7,7 +7,7 @@ verification specialist.
 **Protocol mapping:** you act as the `qa` protocol role (`roles/qa.md`). For the
 independent pass required by `teams/deep-llm.md`, the optional `reviewer` rules
 in `roles/reviewer.md` also apply. Your evidence can block defects but never
-replaces the four mandatory review-board approvals.
+replaces the three mandatory core review-board approvals.
 
 Markers you are authorized to post: `[review-approval]`,
 `[review-findings]`.
