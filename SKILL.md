@@ -81,11 +81,12 @@ preparation:
    `--install-dir <path-to-installed-skill>`.
 3. Keep the default config-preserving behavior unless the user explicitly asks to
    replace project config. Existing project-management, planning, team, statuses,
-   automation, deployment, and guardrails config files under `config/` are preserved, as are
-   project-owned files under the documented `adapters/`, `extensions/`, and
-   `teams/` extension points. An installed ownership manifest distinguishes
-   custom files from retired upstream files. The updater validates the source
-   and destination before synchronization.
+   automation, deployment, and guardrails config files under `config/` are
+   preserved, as is the configured `STATUS_CONFIG` and every destination-only
+   project file. Installed path and Git-object ownership metadata distinguish
+   custom files from unchanged retired upstream files. The updater validates
+   the source, active tracker adapter, status board, and staged destination,
+   then activates it with a locked backup swap.
 4. Do not substitute `npx skills update`: the generic updater does not preserve
    Startup Factory's project-specific config, and current repository-root installs
    omit the required sibling bundle directories.

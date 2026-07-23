@@ -706,18 +706,31 @@ bash .agents/skills/startup-factory/bin/update-installed-skill.sh
 ```
 
 It requires `git` and `rsync`, accepts `--remote-url` and `--ref`, and defaults
-to `main`; prefer a reviewed tag or exact commit. The release CLI instead binds
-its embedded bundle version and source commit to the Python package version.
+to `main`; prefer a reviewed tag or exact commit. The compatibility updater
+builds and validates a sibling staging tree under an installation lock, then
+uses a backup swap so a failed copy cannot partially replace the live skill.
+Before activation it verifies that the selected tracker adapter and configured
+`STATUS_CONFIG` both exist in the staged result. Existing canonical config,
+the configured custom status board, and destination-only project files are
+preserved by default. Path plus Git-object ownership metadata lets a later
+update delete a retired upstream file only when its installed bytes still
+match the previously installed source; legacy path-only metadata is migrated
+conservatively.
+
+The release CLI additionally binds its embedded bundle version and source
+commit to the Python package version.
 The shell updater intentionally refuses any installation containing
 `.startup-factory-install.json` or `.startup-factory-bundle.json`: synchronizing
 a mutable Git checkout over a release-managed copy would destroy verifiable
 provenance. Update those copies only through `uvx`, `pipx`, or another isolated
 runner for the versioned `startup-factory` package.
 
-Before synchronizing, the installer verifies the fetched bundle and refuses
-filesystem root, the home directory, a Git repository root, symlink targets,
-and unrelated non-empty directories. `--dry-run` never creates a missing
-destination.
+Before synchronizing, the compatibility updater verifies the fetched bundle
+and refuses filesystem root, the home directory, a Git repository root,
+internal symlinks or non-regular paths, and unrelated non-empty directories.
+When invoked from a source checkout, it selects an existing `.agents` or
+`.claude` installation only when unambiguous. `--dry-run` never creates a
+missing destination or lock.
 
 ### Release provenance
 

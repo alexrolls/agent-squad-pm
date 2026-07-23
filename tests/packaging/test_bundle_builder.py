@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER_PATH = ROOT / "packaging" / "build_bundle.py"
+REPOSITORY_SPEC_PATH = ROOT / "packaging" / "bundle-spec.json"
 MODULE_SPEC = importlib.util.spec_from_file_location("startup_factory_bundle_builder", BUILDER_PATH)
 if MODULE_SPEC is None or MODULE_SPEC.loader is None:
     raise RuntimeError(f"cannot load {BUILDER_PATH}")
@@ -76,6 +77,18 @@ class BundleBuilderTest(unittest.TestCase):
         self.git(repo, "add", "-A")
         self.git(repo, "commit", "-q", "-m", message)
         return self.git(repo, "rev-parse", "HEAD")
+
+    def test_repository_spec_requires_every_shipped_tracker_adapter(self) -> None:
+        spec = json.loads(REPOSITORY_SPEC_PATH.read_text(encoding="utf-8"))
+        required = set(spec["requiredPaths"])
+        self.assertTrue(
+            {
+                "adapters/GitHubIssues.md",
+                "adapters/Jira.md",
+                "adapters/Linear.md",
+                "adapters/Markdown.md",
+            }.issubset(required)
+        )
 
     def make_repo(self, name: str) -> tuple[Path, str]:
         repo = self.temp / name
