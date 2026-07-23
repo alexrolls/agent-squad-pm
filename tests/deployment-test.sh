@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RELEASE="$ROOT/bin/release-feature.py"
+DEFAULT_STATUS_FIXTURE="$ROOT/tests/fixtures/statuses.default-profile.json"
+DEFAULT_PM_FIXTURE="$ROOT/tests/fixtures/project-management.markdown.config.md"
 TMP_PARENT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 TMP="$(mktemp -d "${TMP_PARENT%/}/startup-factory-deployment.XXXXXX")"
 cleanup() {
@@ -15,6 +16,14 @@ cleanup() {
 }
 trap cleanup EXIT
 FAILURES=0
+
+RUNTIME_SKILL="$TMP/default-profile-skill"
+mkdir -p "$RUNTIME_SKILL"
+cp -R "$ROOT/bin" "$ROOT/config" "$ROOT/reference" "$ROOT/roles" "$ROOT/teams" \
+  "$RUNTIME_SKILL/"
+cp "$DEFAULT_STATUS_FIXTURE" "$RUNTIME_SKILL/config/statuses.config.json"
+cp "$DEFAULT_PM_FIXTURE" "$RUNTIME_SKILL/config/project-management.config.md"
+RELEASE="$RUNTIME_SKILL/bin/release-feature.py"
 
 check() {
   local desc="$1"; shift
@@ -175,7 +184,7 @@ chmod 600 "$CREDENTIALS"
 CONFIG="$TMP/deployment.json"
 STATE_ROOT="$TMP/release-state"
 mkdir -m 700 "$STATE_ROOT"
-python3 - "$CONFIG" "$FAKE" "$CREDENTIALS" "$STATE_ROOT" "$ROOT" <<'PY'
+python3 - "$CONFIG" "$FAKE" "$CREDENTIALS" "$STATE_ROOT" "$RUNTIME_SKILL" <<'PY'
 import hashlib,json,pathlib,sys
 path,hook,credentials,state_root,root=sys.argv[1:]
 def digest(path):
@@ -279,19 +288,19 @@ files: app.txt
 EOF
   local fid="$repo/.workspace/task-manager/feat/feature.md"
   local tid="$fid#1" key branch wt
-  key="$(python3 "$ROOT/bin/runtime-state.py" key "$tid")"
+  key="$(python3 "$RUNTIME_SKILL/bin/runtime-state.py" key "$tid")"
   branch="agent-task/$team/$key"
   wt="$(cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/launch-team.sh" worktree "$team" backend "$tid" 1 | tail -1)"
+    "$RUNTIME_SKILL/bin/launch-team.sh" worktree "$team" backend "$tid" 1 | tail -1)"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/task-packet.sh" "$team" "$fid" "$tid" backend 1 "$wt" "$branch" >/dev/null)
+    "$RUNTIME_SKILL/bin/task-packet.sh" "$team" "$fid" "$tid" backend 1 "$wt" "$branch" >/dev/null)
   printf 'release fixture integrated\n' > "$wt/app.txt"
   git -C "$wt" add app.txt
   git -C "$wt" commit -qm 'task checkpoint'
   local package base head package_digest snapshot request_template request_body
   local team_lead_template team_lead_body architecture_template architecture_body
   local sceptical_template sceptical_body security_template security_body
-  package="$(cd "$repo" && "$ROOT/bin/review-package.sh" "$team" "$tid")"
+  package="$(cd "$repo" && "$RUNTIME_SKILL/bin/review-package.sh" "$team" "$tid")"
   base="$(sed -n 's/^Base: //p' "$package")"
   head="$(sed -n 's/^Head: //p' "$package")"
   package_digest="$(python3 - "$package" <<'PY'
@@ -311,56 +320,56 @@ PY
   security_template="$TMP/$key-security-template.md"
   security_body="$TMP/$key-security.md"
   printf '[review-request] round: 2\nFiles: app.txt\n\n— backend\n' > "$request_template"
-  python3 "$ROOT/bin/review_evidence.py" bind-request \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-request \
     "$request_template" "$base" "$head" "$package_digest" "$request_body"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$request_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$request_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
   printf '[team-lead-approval] round: 2\nFiles: app.txt\n\n— team-lead\n' > "$team_lead_template"
   printf '[architecture-approval] round: 2\nFiles: app.txt\n\n— principal-architect\n' > "$architecture_template"
   printf '[sceptical-architecture-approval] round: 2\nFiles: app.txt\n\n— sceptical-architect\n' > "$sceptical_template"
   printf '[security-approval] round: 2\nFiles: app.txt\n\n— senior-security-engineer\n' > "$security_template"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$team_lead_template" "$snapshot" "$tid" "$team_lead_body" \
     team-lead "gate:team-lead:$key"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$architecture_template" "$snapshot" "$tid" "$architecture_body" \
     principal-architect "gate:principal-architect:$key"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$sceptical_template" "$snapshot" "$tid" "$sceptical_body" \
     sceptical-architect "gate:sceptical-architect:$key"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$security_template" "$snapshot" "$tid" "$security_body" \
     senior-security-engineer "gate:senior-security-engineer:$key"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$architecture_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$architecture_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$sceptical_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$sceptical_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$security_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$security_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
+    "$RUNTIME_SKILL/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/finalize-integrations.sh" --authorize-prepared "$team" "$fid" \
+    "$RUNTIME_SKILL/bin/finalize-integrations.sh" --authorize-prepared "$team" "$fid" \
     "$repo/.teamwork/$team/integrations/.prepared/$key.json" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
+    "$RUNTIME_SKILL/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/finalize-integrations.sh" "$team" "$fid" >/dev/null)
+    "$RUNTIME_SKILL/bin/finalize-integrations.sh" "$team" "$fid" >/dev/null)
 }
 
 integrate_generation_two() {
   local repo="$1" prior_team="$2" team="$3"
   local fid="$repo/.workspace/task-manager/feat/feature.md"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    STARTUP_FACTORY_PM_SUPERVISOR=1 "$ROOT/bin/tracker-ops.sh" feature-reopen "$fid" Planned >/dev/null)
+    STARTUP_FACTORY_PM_SUPERVISOR=1 "$RUNTIME_SKILL/bin/tracker-ops.sh" feature-reopen "$fid" Planned >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" feature-state "$fid" Active >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" feature-state "$fid" Active >/dev/null)
   git -C "$repo" switch -q -c "$team" "$prior_team"
   cat >> "$fid" <<'EOF'
 
@@ -390,16 +399,16 @@ EOF
   local request_template request_body team_lead_template team_lead_body
   local architecture_template architecture_body sceptical_template sceptical_body
   local security_template security_body
-  key="$(python3 "$ROOT/bin/runtime-state.py" key "$tid")"
+  key="$(python3 "$RUNTIME_SKILL/bin/runtime-state.py" key "$tid")"
   branch="agent-task/$team/$key"
   wt="$(cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/launch-team.sh" worktree "$team" backend "$tid" 1 | tail -1)"
+    "$RUNTIME_SKILL/bin/launch-team.sh" worktree "$team" backend "$tid" 1 | tail -1)"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/task-packet.sh" "$team" "$fid" "$tid" backend 1 "$wt" "$branch" >/dev/null)
+    "$RUNTIME_SKILL/bin/task-packet.sh" "$team" "$fid" "$tid" backend 1 "$wt" "$branch" >/dev/null)
   printf 'generation two\n' > "$wt/generation-2.txt"
   git -C "$wt" add generation-2.txt
   git -C "$wt" commit -qm 'generation two checkpoint'
-  package="$(cd "$repo" && "$ROOT/bin/review-package.sh" "$team" "$tid")"
+  package="$(cd "$repo" && "$RUNTIME_SKILL/bin/review-package.sh" "$team" "$tid")"
   base="$(sed -n 's/^Base: //p' "$package")"
   head="$(sed -n 's/^Head: //p' "$package")"
   package_digest="$(python3 - "$package" <<'PY'
@@ -419,47 +428,47 @@ PY
   security_template="$TMP/$key-generation-security-template.md"
   security_body="$TMP/$key-generation-security.md"
   printf '[review-request] round: 2\nFiles: generation-2.txt\n\n— backend\n' > "$request_template"
-  python3 "$ROOT/bin/review_evidence.py" bind-request \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-request \
     "$request_template" "$base" "$head" "$package_digest" "$request_body"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$request_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$request_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
   printf '[team-lead-approval] round: 2\nFiles: generation-2.txt\n\n— team-lead\n' > "$team_lead_template"
   printf '[architecture-approval] round: 2\nFiles: generation-2.txt\n\n— principal-architect\n' > "$architecture_template"
   printf '[sceptical-architecture-approval] round: 2\nFiles: generation-2.txt\n\n— sceptical-architect\n' > "$sceptical_template"
   printf '[security-approval] round: 2\nFiles: generation-2.txt\n\n— senior-security-engineer\n' > "$security_template"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$team_lead_template" "$snapshot" "$tid" "$team_lead_body" \
     team-lead "gate:team-lead:$key"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$architecture_template" "$snapshot" "$tid" "$architecture_body" \
     principal-architect "gate:principal-architect:$key"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$sceptical_template" "$snapshot" "$tid" "$sceptical_body" \
     sceptical-architect "gate:sceptical-architect:$key"
-  python3 "$ROOT/bin/review_evidence.py" bind-approval \
+  python3 "$RUNTIME_SKILL/bin/review_evidence.py" bind-approval \
     "$security_template" "$snapshot" "$tid" "$security_body" \
     senior-security-engineer "gate:senior-security-engineer:$key"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$team_lead_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$architecture_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$architecture_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$sceptical_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$sceptical_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$tid" "$security_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$tid" "$security_body" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" export "$fid" "$snapshot" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
+    "$RUNTIME_SKILL/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/finalize-integrations.sh" --authorize-prepared "$team" "$fid" \
+    "$RUNTIME_SKILL/bin/finalize-integrations.sh" --authorize-prepared "$team" "$fid" \
     "$repo/.teamwork/$team/integrations/.prepared/$key.json" >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
+    "$RUNTIME_SKILL/bin/integrate-task.sh" "$team" "$fid" "$tid" backend 1 >/dev/null)
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/finalize-integrations.sh" "$team" "$fid" >/dev/null)
+    "$RUNTIME_SKILL/bin/finalize-integrations.sh" "$team" "$fid" >/dev/null)
 }
 
 prime_product_approval() {
@@ -487,7 +496,7 @@ print(request['anchorTaskId'])
 PY
 )"
   (cd "$repo" && env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$repo" \
-    "$ROOT/bin/tracker-ops.sh" comment "$anchor" "$approval_body" >/dev/null)
+    "$RUNTIME_SKILL/bin/tracker-ops.sh" comment "$anchor" "$approval_body" >/dev/null)
 }
 
 SUCCESS_REPO="$TMP/success"
@@ -586,9 +595,9 @@ GEN2_TEAM="factory-success-g2"
 mv "$SUCCESS_REPO/untracked-only.txt" "$TMP/success-untracked-only.txt"
 integrate_generation_two "$SUCCESS_REPO" "$SUCCESS_TEAM" "$GEN2_TEAM"
 check "generation two keeps prior integration evidence untouched" \
-  test -f "$SUCCESS_REPO/.teamwork/$SUCCESS_TEAM/integrations/$(python3 "$ROOT/bin/runtime-state.py" key "$SUCCESS_FID#1").json"
+  test -f "$SUCCESS_REPO/.teamwork/$SUCCESS_TEAM/integrations/$(python3 "$RUNTIME_SKILL/bin/runtime-state.py" key "$SUCCESS_FID#1").json"
 check "generation two uses a fresh integration workspace" \
-  test ! -e "$SUCCESS_REPO/.teamwork/$GEN2_TEAM/integrations/$(python3 "$ROOT/bin/runtime-state.py" key "$SUCCESS_FID#1").json"
+  test ! -e "$SUCCESS_REPO/.teamwork/$GEN2_TEAM/integrations/$(python3 "$RUNTIME_SKILL/bin/runtime-state.py" key "$SUCCESS_FID#1").json"
 printf 'not-applied\n' > "$SUCCESS_STATE"
 prime_product_approval "$SUCCESS_REPO" "$GEN2_TEAM" "$CONFIG" "$SUCCESS_STATE" "$SUCCESS_LOG"
 env TRACKER_ADAPTER=Markdown TRACKER_PROJECT_ROOT="$SUCCESS_REPO" \

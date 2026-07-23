@@ -9,6 +9,7 @@ else
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_STATUS_FIXTURE="$SKILL_DIR/tests/fixtures/statuses.default-profile.json"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
@@ -50,7 +51,8 @@ git checkout -q -b test-feature
 mkdir -p .claude/skills/pm
 cp -R "$SKILL_DIR/roles" "$SKILL_DIR/reference" "$SKILL_DIR/bin" "$SKILL_DIR/teams" .claude/skills/pm/
 mkdir -p .claude/skills/pm/config
-cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/planning.config.md" .claude/skills/pm/config/
+cp "$DEFAULT_STATUS_FIXTURE" .claude/skills/pm/config/statuses.config.json
+cp "$SKILL_DIR/config/planning.config.md" .claude/skills/pm/config/
 cat > .claude/skills/pm/config/team.config.md <<'EOF'
 ```
 TEAM_LEAD_CMD="true"
@@ -646,8 +648,10 @@ else
   echo "ok: unknown preset refused"
 fi
 
-# -- validate-board: shipped config passes --------------------------------------
-check "validate-board accepts shipped config" "$LAUNCH" validate-board
+# -- validate-board: canonical fixture and installed config pass ----------------
+check "validate-board accepts canonical default profile" "$LAUNCH" validate-board
+check "installed status config remains structurally valid" \
+  "$SKILL_DIR/bin/launch-team.sh" validate-board "$SKILL_DIR/config/statuses.config.json"
 
 # -- validate-board: prompt composition includes the board ----------------------
 check "prompt contains board config" grep -q '"Ready to deploy"' .teamwork/test-feature/prompts/backend.md
@@ -679,7 +683,7 @@ GOODTASKS='"tasks":{"statuses":[{"name":"A","initial":true,"owner":{"role":"team
 bad "markers with unknown role refused"  "unknown role" "{$MINF,$GOODTASKS,\"markers\":{\"review-approval\":{\"authorizedRoles\":[\"nobody-such\"]}}}"
 bad "markers with empty list refused"    "non-empty list" "{$MINF,$GOODTASKS,\"markers\":{\"review-approval\":{\"authorizedRoles\":[]}}}"
 bad "markers non-object refused"         "must be a non-empty object" "{$MINF,$GOODTASKS,\"markers\":[]}"
-check "shipped config still passes with markers" "$LAUNCH" validate-board
+check "canonical default profile still passes with markers" "$LAUNCH" validate-board
 check "integrator prompt carries the markers table" grep -q '"authorizedRoles"' .teamwork/test-feature/prompts/integrator.md
 
 # -- config guard: MAX_ACTIVE_IMPLEMENTERS requires EXECUTION=parallel ---------

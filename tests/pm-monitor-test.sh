@@ -8,6 +8,7 @@ else
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_STATUS_FIXTURE="$ROOT/tests/fixtures/statuses.default-profile.json"
 MONITOR_IMPL="$ROOT/bin/pm-agent.py"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
@@ -28,7 +29,7 @@ TEST_SKILL="$TMP/skill"
 PM_LIFECYCLE_ROOT="$TMP/protected-lifecycle"
 mkdir -m 700 "$PM_LIFECYCLE_ROOT"
 mkdir -p "$TEST_SKILL/config" "$TEST_SKILL/teams"
-cp "$ROOT/config/statuses.config.json" "$TEST_SKILL/config/statuses.config.json"
+cp "$DEFAULT_STATUS_FIXTURE" "$TEST_SKILL/config/statuses.config.json"
 cp "$ROOT"/teams/*.md "$TEST_SKILL/teams/"
 cat > "$TEST_SKILL/config/team.config.md" <<'EOF'
 TEAMWORK_ROOT=.teamwork

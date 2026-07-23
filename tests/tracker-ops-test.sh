@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_STATUS_FIXTURE="$SKILL_DIR/tests/fixtures/statuses.default-profile.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -27,7 +28,7 @@ CUSTOM_SKILL="$TMP/custom-skill"
 mkdir -p "$CUSTOM_SKILL/bin" "$CUSTOM_SKILL/config" "$CUSTOM_SKILL/extensions/tracker-backends"
 cp "$SKILL_DIR/bin/tracker-ops.sh" "$CUSTOM_SKILL/bin/"
 cp "$SKILL_DIR/bin/ticket_content_security.py" "$CUSTOM_SKILL/bin/"
-cp "$SKILL_DIR/config/statuses.config.json" "$CUSTOM_SKILL/config/"
+cp "$DEFAULT_STATUS_FIXTURE" "$CUSTOM_SKILL/config/statuses.config.json"
 cat > "$CUSTOM_SKILL/config/project-management.config.md" <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Acme
@@ -132,7 +133,7 @@ cd "$TMP"
 mkdir -p skill/config skill/bin
 cp "$SKILL_DIR/bin/tracker-ops.sh" skill/bin/
 cp "$SKILL_DIR/bin/ticket_content_security.py" skill/bin/
-cp "$SKILL_DIR/config/statuses.config.json" skill/config/
+cp "$DEFAULT_STATUS_FIXTURE" skill/config/statuses.config.json
 cat > skill/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown

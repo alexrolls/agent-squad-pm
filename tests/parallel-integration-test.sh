@@ -9,6 +9,7 @@ else
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_STATUS_FIXTURE="$SKILL_DIR/tests/fixtures/statuses.default-profile.json"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
 check() { local desc="$1"; shift
@@ -68,7 +69,8 @@ export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$LIFECYCLE_ROOT"
 git config user.email test@example.com; git config user.name Test
 mkdir -p .agent-squad/{bin,config,roles} .workspace/task-manager
 cp "$SKILL_DIR"/bin/*.sh "$SKILL_DIR"/bin/*.py .agent-squad/bin/
-cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" .agent-squad/config/
+cp "$DEFAULT_STATUS_FIXTURE" .agent-squad/config/statuses.config.json
+cp "$SKILL_DIR/config/automation.config.json" .agent-squad/config/
 cp "$SKILL_DIR/roles/backend.md" .agent-squad/roles/
 cat > .gitignore <<'EOF'
 .teamwork/

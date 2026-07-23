@@ -547,7 +547,9 @@ that works identically on every tracker. When you're ready for a real tracker or
 a full team, keep reading.
 
 > **Sanity-check the runtime** (no LLM calls, no cost): from the installed
-> skill directory, `bash tests/run-all.sh` should finish with
+> skill directory, run `bash tests/run-all.sh --smoke` for a fast core check or
+> `bash tests/run-all.sh` for the full offline suite. The runner executes every
+> selected test, reports all failures together, and finishes with
 > `ALL TESTS PASS`.
 
 ---
@@ -703,21 +705,42 @@ updater from their installed bundle:
 ```bash
 bash .agents/skills/startup-factory/bin/update-installed-skill.sh --dry-run
 bash .agents/skills/startup-factory/bin/update-installed-skill.sh
+bash .agents/skills/startup-factory/tests/run-all.sh --smoke
 ```
 
-It requires `git` and `rsync`, accepts `--remote-url` and `--ref`, and defaults
-to `main`; prefer a reviewed tag or exact commit. The release CLI instead binds
-its embedded bundle version and source commit to the Python package version.
+It requires `git`, `rsync`, and `python3`, accepts `--remote-url` and `--ref`,
+and defaults to `main`; prefer a reviewed tag or exact commit. The compatibility updater
+builds and validates a sibling staging tree under an installation lock, then
+uses a backup swap so a failed copy cannot partially replace the live skill.
+Before activation it verifies that the selected tracker adapter and configured
+`STATUS_CONFIG` both exist in the staged result. It also parses the retained
+board and checks its status names, transitions, initial/terminal states, and
+mappings for the selected project-management tool, returning a specific error
+before mutation if they are incompatible. Existing canonical config, the
+configured custom status board, and destination-only project files are preserved
+by default. Path plus Git-object ownership metadata lets a later update delete a
+retired upstream file only when its installed bytes still match the previously
+installed source; legacy path-only metadata is migrated conservatively.
+
+Each successful source-managed update records the exact fetched commit in
+`.startup-factory-source-install.json`. The console reports the planned or
+applied filesystem-entry count; when the install directory is Git-ignored it
+also explains why `git status` and `git diff` cannot display those changes.
+
+The release CLI additionally binds its embedded bundle version and source
+commit to the Python package version.
 The shell updater intentionally refuses any installation containing
 `.startup-factory-install.json` or `.startup-factory-bundle.json`: synchronizing
 a mutable Git checkout over a release-managed copy would destroy verifiable
 provenance. Update those copies only through `uvx`, `pipx`, or another isolated
 runner for the versioned `startup-factory` package.
 
-Before synchronizing, the installer verifies the fetched bundle and refuses
-filesystem root, the home directory, a Git repository root, symlink targets,
-and unrelated non-empty directories. `--dry-run` never creates a missing
-destination.
+Before synchronizing, the compatibility updater verifies the fetched bundle
+and refuses filesystem root, the home directory, a Git repository root,
+internal symlinks or non-regular paths, and unrelated non-empty directories.
+When invoked from a source checkout, it selects an existing `.agents` or
+`.claude` installation only when unambiguous. `--dry-run` never creates a
+missing destination or lock.
 
 ### Release provenance
 
@@ -1735,7 +1758,7 @@ exact protocol markers — never invent new ones.
 | Release says it is awaiting CI | Inspect the protected `verifyCi` result for the exact release commit. Failed, pending, skipped, missing, stale, mismatched, or unverifiable required checks block every apply; fix CI and rerun the release transaction—never bypass or replace this proof with a tracker comment. |
 | Release says it is awaiting authorization | In `approval-required` mode, have the protected `verifyApproval` system authorize the exact manifest before its expiry; a board comment is intentionally insufficient |
 | Release is fenced after an uncertain apply, detached-worker loss (exit 125), post-launch authority change, or target mismatch | Inspect the protected transaction and target `status` evidence. Repair the provider hook/target state and let the transaction reconcile; never blindly re-run apply or delete the fence |
-| Want to verify the plumbing | `bash tests/run-all.sh` → `ALL TESTS PASS` (stub agents + local files; no LLM, no cost) |
+| Want to verify the plumbing | `bash tests/run-all.sh --smoke` for a fast core check; `bash tests/run-all.sh` for the full offline suite (stub agents + local files; no LLM, no cost) |
 
 ---
 

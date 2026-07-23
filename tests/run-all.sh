@@ -2,27 +2,126 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-echo "==> ticket-content-security-test.py"
-python3 "$ROOT/tests/ticket-content-security-test.py"
-echo "==> product-acceptance-test.py"
-python3 "$ROOT/tests/product-acceptance-test.py"
-echo "==> superpowers-planning-test.py"
-python3 "$ROOT/tests/superpowers-planning-test.py"
-echo "==> review-evidence-test.py"
-python3 "$ROOT/tests/review-evidence-test.py"
-echo "==> release-lifecycle-test.py"
-python3 "$ROOT/tests/release-lifecycle-test.py"
-echo "==> tracker-adapter-pagination-test.py"
-python3 "$ROOT/tests/tracker-adapter-pagination-test.py"
-echo "==> task-hold-test.py"
-python3 "$ROOT/tests/task-hold-test.py"
-echo "==> custom-tracker-release-snapshot-test.py"
-python3 "$ROOT/tests/custom-tracker-release-snapshot-test.py"
-for test in update-installed-skill-test.sh tracker-ops-test.sh task-routing-test.sh task-runtime-test.sh parallel-integration-test.sh dispatch-test.sh launcher-test.sh safety-policy-test.sh pm-monitor-test.sh deployment-test.sh; do
-  [ -f "$ROOT/tests/$test" ] || continue
+MODE=full
+case "${1:-}" in
+  "")
+    ;;
+  --full)
+    ;;
+  --smoke)
+    MODE=smoke
+    ;;
+  -h|--help)
+    cat <<'EOF'
+Usage: tests/run-all.sh [--full|--smoke]
+
+Run the full offline test suite by default. Use --smoke for a fast verification
+of core security, planning, routing, acceptance, and updater behavior.
+EOF
+    exit 0
+    ;;
+  *)
+    echo "run-all.sh: unknown option: $1" >&2
+    echo "Usage: tests/run-all.sh [--full|--smoke]" >&2
+    exit 2
+    ;;
+esac
+[ "$#" -le 1 ] || {
+  echo "run-all.sh: expected at most one option" >&2
+  echo "Usage: tests/run-all.sh [--full|--smoke]" >&2
+  exit 2
+}
+
+FULL_PYTHON_TESTS=(
+  ticket-content-security-test.py
+  product-acceptance-test.py
+  superpowers-planning-test.py
+  review-evidence-test.py
+  release-lifecycle-test.py
+  tracker-adapter-pagination-test.py
+  task-hold-test.py
+  custom-tracker-release-snapshot-test.py
+)
+FULL_SHELL_TESTS=(
+  update-installed-skill-test.sh
+  tracker-ops-test.sh
+  task-routing-test.sh
+  task-runtime-test.sh
+  parallel-integration-test.sh
+  dispatch-test.sh
+  launcher-test.sh
+  safety-policy-test.sh
+  pm-monitor-test.sh
+  deployment-test.sh
+)
+SMOKE_PYTHON_TESTS=(
+  ticket-content-security-test.py
+  product-acceptance-test.py
+  superpowers-planning-test.py
+  review-evidence-test.py
+  tracker-adapter-pagination-test.py
+  task-hold-test.py
+)
+SMOKE_SHELL_TESTS=(
+  update-installed-skill-test.sh
+  tracker-ops-test.sh
+  task-routing-test.sh
+  safety-policy-test.sh
+)
+
+if [ "$MODE" = smoke ]; then
+  PYTHON_TESTS=("${SMOKE_PYTHON_TESTS[@]}")
+  SHELL_TESTS=("${SMOKE_SHELL_TESTS[@]}")
+else
+  PYTHON_TESTS=("${FULL_PYTHON_TESTS[@]}")
+  SHELL_TESTS=("${FULL_SHELL_TESTS[@]}")
+fi
+
+FAILURES=()
+run_test() {
+  local runner="$1"
+  local test="$2"
+  local status
+
   echo "==> $test"
-  TEAM_RUNNER=background bash "$ROOT/tests/$test"
+  if [ ! -f "$ROOT/tests/$test" ]; then
+    echo "FAIL: $test is missing"
+    FAILURES+=("$test (missing)")
+    return
+  fi
+
+  if [ "$runner" = python ]; then
+    if python3 "$ROOT/tests/$test"; then
+      return
+    else
+      status=$?
+    fi
+  else
+    if TEAM_RUNNER=background bash "$ROOT/tests/$test"; then
+      return
+    else
+      status=$?
+    fi
+  fi
+
+  echo "FAIL: $test exited with status $status"
+  FAILURES+=("$test (exit $status)")
+}
+
+echo "Running $MODE test suite"
+for test in "${PYTHON_TESTS[@]}"; do
+  run_test python "$test"
+done
+for test in "${SHELL_TESTS[@]}"; do
+  run_test shell "$test"
 done
 
 echo "---"
+if [ "${#FAILURES[@]}" -ne 0 ]; then
+  echo "${#FAILURES[@]} TEST(S) FAILED:"
+  for failure in "${FAILURES[@]}"; do
+    echo "  - $failure"
+  done
+  exit 1
+fi
 echo "ALL TESTS PASS"
