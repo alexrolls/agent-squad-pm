@@ -9,6 +9,7 @@ else
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_STATUS_FIXTURE="$SKILL_DIR/tests/fixtures/statuses.default-profile.json"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
 check() { local desc="$1"; shift
@@ -38,8 +39,9 @@ python3 "$SKILL_DIR/bin/process-lifecycle.py" init --root "$PROTECTED_FORGERY_RO
 export STARTUP_FACTORY_LIFECYCLE_STATE_ROOT="$LIFECYCLE_ROOT"
 mkdir -p .agent-squad/{bin,config,roles,reference} feat
 cp "$SKILL_DIR"/bin/*.sh "$SKILL_DIR"/bin/*.py .agent-squad/bin/
-cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" \
-  "$SKILL_DIR/config/planning.config.md" .agent-squad/config/
+cp "$DEFAULT_STATUS_FIXTURE" .agent-squad/config/statuses.config.json
+cp "$SKILL_DIR/config/automation.config.json" "$SKILL_DIR/config/planning.config.md" \
+  .agent-squad/config/
 cp "$SKILL_DIR/roles/backend.md" "$SKILL_DIR/roles/reviewer.md" \
   "$SKILL_DIR/roles/sceptical-architect.md" "$SKILL_DIR/roles/team-lead.md" \
   "$SKILL_DIR/roles/senior-security-engineer.md" .agent-squad/roles/

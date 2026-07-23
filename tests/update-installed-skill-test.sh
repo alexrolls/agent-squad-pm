@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+DEFAULT_STATUS_FIXTURE="$ROOT/tests/fixtures/statuses.default-profile.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
@@ -78,9 +79,32 @@ CONFIG_FILES=(
   deployment.config.json
   guardrails.config.json
 )
+
+write_status_fixture() {
+  local destination="$1"
+  local fixture_version="$2"
+  python3 - "$DEFAULT_STATUS_FIXTURE" "$destination" "$fixture_version" <<'PY'
+import json
+import sys
+
+source, destination, fixture_version = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    board = json.load(handle)
+for group_name in ("features", "tasks"):
+    for status in board[group_name]["statuses"]:
+        status["tool"]["BuiltIn"] = "fixture:%s:%s" % (
+            fixture_version, status["name"])
+board["fixtureVersion"] = fixture_version
+with open(destination, "w", encoding="utf-8") as handle:
+    json.dump(board, handle, indent=2)
+    handle.write("\n")
+PY
+}
+
 for name in "${CONFIG_FILES[@]}"; do
   printf 'upstream-v1:%s\n' "$name" > "$UPSTREAM/config/$name"
 done
+write_status_fixture "$UPSTREAM/config/statuses.config.json" v1
 printf '%s\n' \
   'PRODUCT_MANAGEMENT_TOOL=BuiltIn' \
   'STATUS_CONFIG=config/statuses.config.json' \
@@ -89,6 +113,7 @@ printf '%s\n' \
 
 git -C "$UPSTREAM" add .
 git -C "$UPSTREAM" commit -qm fixture-v1
+V1_COMMIT="$(git -C "$UPSTREAM" rev-parse HEAD)"
 
 FRESH_PREVIEW="$TARGET/.agents/skills/preview-startup-factory"
 env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
@@ -151,6 +176,18 @@ for tool in Linear Jira GitHubIssues Markdown; do
       "$TOOL_INSTALL/config/project-management.config.md"
 done
 
+IGNORED_INSTALL="$TARGET/.agents/skills/ignored-startup-factory"
+printf '/.agents/skills/ignored-startup-factory/\n' >> "$TARGET/.git/info/exclude"
+env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
+  bash "$ROOT/bin/update-installed-skill.sh" --install-dir "$IGNORED_INSTALL" \
+    > "$TMP/ignored-install.out"
+check "gitignored installation reports why Git status cannot show changes" \
+  grep -q 'is ignored; status and diff cannot show updater changes' "$TMP/ignored-install.out"
+check "gitignored installation still records source provenance" \
+  grep -Fqx \
+    "{\"schemaVersion\":1,\"name\":\"startup-factory\",\"sourceCommit\":\"$V1_COMMIT\"}" \
+    "$IGNORED_INSTALL/.startup-factory-source-install.json"
+
 INSTALL="$TARGET/.agents/skills/startup-factory"
 mkdir -p \
   "$INSTALL/adapters" \
@@ -170,6 +207,8 @@ printf 'custom-command\n' > "$INSTALL/teams/commands/acme-command.md"
 for name in project-management.config.md planning.config.md team.config.md statuses.config.json deployment.config.json guardrails.config.json; do
   printf 'project-owned:%s\n' "$name" > "$INSTALL/config/$name"
 done
+write_status_fixture "$INSTALL/config/statuses.config.json" project
+cp "$INSTALL/config/statuses.config.json" "$TMP/status-board-before-initial.json"
 printf '%s\n' \
   'PRODUCT_MANAGEMENT_TOOL=BuiltIn' \
   'STATUS_CONFIG=config/statuses.config.json' \
@@ -186,6 +225,12 @@ check "newly introduced automation config is installed" \
   cmp -s "$UPSTREAM/config/automation.config.json" "$INSTALL/config/automation.config.json"
 check "installed ownership manifest is created" test -f "$INSTALL/.startup-factory-owned-files"
 check "installed ownership hashes are created" test -f "$INSTALL/.startup-factory-owned-hashes"
+check "source-managed provenance records the resolved commit" \
+  grep -Fqx \
+    "{\"schemaVersion\":1,\"name\":\"startup-factory\",\"sourceCommit\":\"$V1_COMMIT\"}" \
+    "$INSTALL/.startup-factory-source-install.json"
+check "generated source provenance is not treated as an upstream-owned file" \
+  sh -c "! grep -Fqx '.startup-factory-source-install.json' '$INSTALL/.startup-factory-owned-files'"
 check "custom adapter survives synchronization" grep -qx 'custom-adapter' "$INSTALL/adapters/Acme.md"
 check "custom tracker backend survives synchronization" grep -qx 'custom-backend' "$INSTALL/extensions/tracker-backends/Acme.py"
 check "custom team survives synchronization" grep -qx 'custom-team' "$INSTALL/teams/acme.md"
@@ -193,11 +238,17 @@ check "custom team role survives synchronization" grep -qx 'custom-role' "$INSTA
 check "custom team command survives synchronization" grep -qx 'custom-command' "$INSTALL/teams/commands/acme-command.md"
 
 for name in project-management.config.md planning.config.md team.config.md statuses.config.json deployment.config.json guardrails.config.json; do
-  check "existing $name is preserved" \
-    grep -qx "project-owned:$name" "$INSTALL/config/$name"
+  if [ "$name" = "statuses.config.json" ]; then
+    check "existing $name is preserved" \
+      cmp -s "$TMP/status-board-before-initial.json" "$INSTALL/config/$name"
+  else
+    check "existing $name is preserved" \
+      grep -qx "project-owned:$name" "$INSTALL/config/$name"
+  fi
 done
 
-printf 'custom-board\n' > "$INSTALL/config/jira-statuses.config.json"
+write_status_fixture "$INSTALL/config/jira-statuses.config.json" custom
+cp "$INSTALL/config/jira-statuses.config.json" "$TMP/custom-board-before.json"
 sed 's#STATUS_CONFIG=config/statuses.config.json#STATUS_CONFIG=config/jira-statuses.config.json#' \
   "$INSTALL/config/project-management.config.md" > "$TMP/project-management.config.md"
 mv "$TMP/project-management.config.md" "$INSTALL/config/project-management.config.md"
@@ -206,7 +257,7 @@ printf 'adapters/Acme.md\n' >> "$INSTALL/.startup-factory-owned-files"
 env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
   bash "$INSTALL/bin/update-installed-skill.sh" > "$TMP/conservative-update.out"
 check "configured custom STATUS_CONFIG survives synchronization" \
-  grep -qx 'custom-board' "$INSTALL/config/jira-statuses.config.json"
+  cmp -s "$TMP/custom-board-before.json" "$INSTALL/config/jira-statuses.config.json"
 check "extension names containing rsync pattern characters survive" \
   grep -qx 'pattern-adapter' "$INSTALL/adapters/[special].md"
 check "an ownership path without a verified hash cannot delete a project file" \
@@ -265,6 +316,7 @@ rm "$UPSTREAM/adapters/Retired.md"
 for name in "${CONFIG_FILES[@]}"; do
   printf 'upstream-v2:%s\n' "$name" > "$UPSTREAM/config/$name"
 done
+write_status_fixture "$UPSTREAM/config/statuses.config.json" v2
 printf '%s\n' \
   'PRODUCT_MANAGEMENT_TOOL=BuiltIn' \
   'STATUS_CONFIG=config/statuses.config.json' \
@@ -277,11 +329,15 @@ V2_COMMIT="$(git -C "$UPSTREAM" rev-parse HEAD)"
 before_configs="$TMP/before-configs"
 mkdir -p "$before_configs"
 cp "$INSTALL"/config/* "$before_configs"/
+cp "$INSTALL/.startup-factory-source-install.json" "$TMP/provenance-before-dry-run.json"
 env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
   bash "$INSTALL/bin/update-installed-skill.sh" --dry-run > "$TMP/dry-run.out"
 
 check "dry-run reports a new runtime file" grep -q 'runtime-v2.txt' "$TMP/dry-run.out"
+check "dry-run reports a planned change count" grep -Eq 'Planned filesystem changes: [1-9][0-9]*' "$TMP/dry-run.out"
 check "dry-run does not install the new runtime file" test ! -e "$INSTALL/runtime-v2.txt"
+check "dry-run leaves source provenance byte-identical" \
+  cmp -s "$TMP/provenance-before-dry-run.json" "$INSTALL/.startup-factory-source-install.json"
 for name in "${CONFIG_FILES[@]}"; do
   check "dry-run leaves $name byte-identical" \
     cmp -s "$before_configs/$name" "$INSTALL/config/$name"
@@ -292,10 +348,35 @@ env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
 check "real update installs the new runtime file" test -f "$INSTALL/runtime-v2.txt"
 check "upstream-owned adapter is updated" grep -qx 'upstream-adapter-v2' "$INSTALL/adapters/BuiltIn.md"
 check "retired upstream adapter is deleted" test ! -e "$INSTALL/adapters/Retired.md"
+check "real update reports its filesystem change count" \
+  grep -Eq 'Applied filesystem changes: [1-9][0-9]*' "$TMP/update.out"
+check "real update refreshes deterministic source provenance" \
+  grep -Fqx \
+    "{\"schemaVersion\":1,\"name\":\"startup-factory\",\"sourceCommit\":\"$V2_COMMIT\"}" \
+    "$INSTALL/.startup-factory-source-install.json"
 for name in "${CONFIG_FILES[@]}"; do
   check "real update still preserves $name" \
     cmp -s "$before_configs/$name" "$INSTALL/config/$name"
 done
+
+INVALID_BOARD_INSTALL="$TARGET/.agents/skills/invalid-board-startup-factory"
+cp -R "$INSTALL" "$INVALID_BOARD_INSTALL"
+printf 'not-json\n' > "$INVALID_BOARD_INSTALL/config/jira-statuses.config.json"
+cp "$INVALID_BOARD_INSTALL/runtime-v2.txt" "$TMP/runtime-before-invalid-board"
+if env STARTUP_FACTORY_REMOTE_URL="$UPSTREAM" STARTUP_FACTORY_REF=main \
+    bash "$INVALID_BOARD_INSTALL/bin/update-installed-skill.sh" \
+      > "$TMP/invalid-board.out" 2>&1; then
+  echo "FAIL: update accepted an invalid configured status board"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'staged STATUS_CONFIG is incompatible: cannot load JSON:' \
+      "$TMP/invalid-board.out" && \
+    cmp -s "$TMP/runtime-before-invalid-board" "$INVALID_BOARD_INSTALL/runtime-v2.txt" && \
+    grep -qx 'not-json' "$INVALID_BOARD_INSTALL/config/jira-statuses.config.json"; then
+  echo "ok: invalid configured status board is rejected readably before mutation"
+else
+  echo "FAIL: invalid configured status board produced the wrong result"
+  FAILURES=$((FAILURES + 1))
+fi
 
 cp "$UPSTREAM/adapters/BuiltIn.md" "$TMP/BuiltIn.md"
 rm "$UPSTREAM/adapters/BuiltIn.md"

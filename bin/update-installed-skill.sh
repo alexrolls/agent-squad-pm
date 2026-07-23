@@ -9,6 +9,7 @@ OWNERSHIP_MANIFEST_NAME=".startup-factory-owned-files"
 OWNERSHIP_HASHES_NAME=".startup-factory-owned-hashes"
 RELEASE_BUNDLE_MANIFEST_NAME=".startup-factory-bundle.json"
 RELEASE_PROVENANCE_NAME=".startup-factory-install.json"
+SOURCE_PROVENANCE_NAME=".startup-factory-source-install.json"
 
 install_dir=""
 overwrite_config=false
@@ -17,6 +18,8 @@ tmp=""
 stage_dir=""
 backup_dir=""
 lock_dir=""
+change_plan=""
+change_count=0
 lock_acquired=false
 old_install_moved=false
 new_install_placed=false
@@ -64,6 +67,7 @@ intentionally refused because this compatibility updater cannot retain their
 canonical bundle provenance. From a standalone source checkout, an existing
 .agents or .claude installation is selected when unambiguous; otherwise the
 fallback target is .claude/skills/startup-factory.
+Requires git, rsync, and python3.
 
 Options:
   --install-dir PATH     Update this skill directory instead of auto-detecting.
@@ -336,7 +340,7 @@ collect_preserved_paths() {
   while IFS= read -r -d '' local_file; do
     relative_file="${local_file#"$install_dir"/}"
     case "$relative_file" in
-      "$OWNERSHIP_MANIFEST_NAME"|"$OWNERSHIP_HASHES_NAME") continue ;;
+      "$OWNERSHIP_MANIFEST_NAME"|"$OWNERSHIP_HASHES_NAME"|"$SOURCE_PROVENANCE_NAME") continue ;;
     esac
     is_safe_relative_path "$relative_file" || die "existing installation contains an unsafe path"
     if grep -Fqx -- "$relative_file" "$preserved_paths"; then
@@ -380,7 +384,7 @@ copy_preserved_path() {
 }
 
 validate_staged_runtime() {
-  local staged_pm_config selected_tool selected_adapter staged_status_path
+  local staged_pm_config selected_tool selected_adapter staged_status_path validation_error
   staged_pm_config="$stage_dir/config/project-management.config.md"
   [ -f "$staged_pm_config" ] && [ ! -L "$staged_pm_config" ] || \
     die "staged project-management config is missing or invalid"
@@ -398,6 +402,67 @@ validate_staged_runtime() {
     die "staged STATUS_CONFIG is not a safe skill-relative path: $staged_status_path"
   [ -f "$stage_dir/$staged_status_path" ] && [ ! -L "$stage_dir/$staged_status_path" ] || \
     die "staged STATUS_CONFIG is missing or invalid: $staged_status_path"
+
+  if ! validation_error="$(python3 - "$stage_dir/$staged_status_path" "$selected_tool" 2>&1 <<'PY'
+import json
+import sys
+
+path, selected_tool = sys.argv[1:]
+
+try:
+    with open(path, encoding="utf-8") as handle:
+        board = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise SystemExit("cannot load JSON: %s" % exc)
+
+if not isinstance(board, dict):
+    raise SystemExit("root must be an object")
+
+for entity in ("features", "tasks"):
+    group = board.get(entity)
+    statuses = group.get("statuses") if isinstance(group, dict) else None
+    if not isinstance(statuses, list) or not statuses:
+        raise SystemExit("%s.statuses must be a non-empty list" % entity)
+
+    names = []
+    for index, status in enumerate(statuses):
+        context = "%s.statuses[%d]" % (entity, index)
+        if not isinstance(status, dict):
+            raise SystemExit("%s must be an object" % context)
+        name = status.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise SystemExit("%s.name must be a non-empty string" % context)
+        if name in names:
+            raise SystemExit("%s contains duplicate status name %r" % (entity, name))
+        names.append(name)
+        mapping = status.get("tool")
+        selected_mapping = mapping.get(selected_tool) if isinstance(mapping, dict) else None
+        if not isinstance(selected_mapping, str) or not selected_mapping.strip():
+            raise SystemExit("%s status %r has no non-empty %s mapping"
+                             % (entity, name, selected_tool))
+        transitions = status.get("transitions")
+        if not isinstance(transitions, list) or any(
+                not isinstance(target, str) or not target for target in transitions):
+            raise SystemExit("%s status %r transitions must be a list of status names"
+                             % (entity, name))
+
+    initial = [status["name"] for status in statuses if status.get("initial") is True]
+    if len(initial) != 1:
+        raise SystemExit("%s must define exactly one initial status (found %d)"
+                         % (entity, len(initial)))
+    terminal = [status["name"] for status in statuses if status.get("terminal") is True]
+    if not terminal:
+        raise SystemExit("%s must define at least one terminal status" % entity)
+    known = set(names)
+    for status in statuses:
+        unknown = [target for target in status["transitions"] if target not in known]
+        if unknown:
+            raise SystemExit("%s status %r references unknown transition(s): %s"
+                             % (entity, status["name"], ", ".join(unknown)))
+PY
+  )"; then
+    die "staged STATUS_CONFIG is incompatible: $validation_error"
+  fi
 }
 
 build_stage() {
@@ -410,10 +475,25 @@ build_stage() {
 
   cp "$new_ownership_manifest" "$stage_dir/$OWNERSHIP_MANIFEST_NAME"
   cp "$new_ownership_hashes" "$stage_dir/$OWNERSHIP_HASHES_NAME"
+  printf '{"schemaVersion":1,"name":"startup-factory","sourceCommit":"%s"}\n' \
+    "$resolved_commit" > "$stage_dir/$SOURCE_PROVENANCE_NAME"
   chmod 0644 \
     "$stage_dir/$OWNERSHIP_MANIFEST_NAME" \
-    "$stage_dir/$OWNERSHIP_HASHES_NAME"
+    "$stage_dir/$OWNERSHIP_HASHES_NAME" \
+    "$stage_dir/$SOURCE_PROVENANCE_NAME"
   validate_staged_runtime
+}
+
+create_change_plan() {
+  local comparison_target="$install_dir"
+  if [ ! -d "$comparison_target" ]; then
+    comparison_target="$tmp/empty-destination"
+    mkdir -p "$comparison_target"
+  fi
+  change_plan="$tmp/change-plan"
+  rsync -a --checksum --delete --dry-run --itemize-changes \
+    "$stage_dir"/ "$comparison_target"/ > "$change_plan"
+  change_count="$(awk 'NF { count++ } END { print count + 0 }' "$change_plan")"
 }
 
 snapshot_existing_target() {
@@ -487,6 +567,7 @@ done
 
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v rsync >/dev/null 2>&1 || die "rsync is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
 case "$REMOTE_URL" in -*) die "remote URL must not begin with '-'" ;; esac
 case "$REMOTE_REF" in -*) die "remote ref must not begin with '-'" ;; esac
 
@@ -560,6 +641,12 @@ git -C "$checkout" fetch --quiet --depth 1 origin "$REMOTE_REF" || \
   die "unable to fetch ref '$REMOTE_REF' from $REMOTE_URL"
 git -C "$checkout" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
 resolved_commit="$(git -C "$checkout" rev-parse HEAD)"
+case "$resolved_commit" in
+  ""|*[!0-9a-f]*) die "fetched ref resolved to an invalid commit id" ;;
+esac
+if [ "${#resolved_commit}" -ne 40 ] && [ "${#resolved_commit}" -ne 64 ]; then
+  die "fetched ref resolved to an invalid commit id"
+fi
 
 if [ ! -f "$checkout/SKILL.md" ] || [ -L "$checkout/SKILL.md" ] || \
     ! grep -Eq '^name:[[:space:]]*startup-factory[[:space:]]*$' "$checkout/SKILL.md"; then
@@ -569,7 +656,8 @@ for forbidden_metadata in \
   "$OWNERSHIP_MANIFEST_NAME" \
   "$OWNERSHIP_HASHES_NAME" \
   "$RELEASE_BUNDLE_MANIFEST_NAME" \
-  "$RELEASE_PROVENANCE_NAME"
+  "$RELEASE_PROVENANCE_NAME" \
+  "$SOURCE_PROVENANCE_NAME"
 do
   [ ! -e "$checkout/$forbidden_metadata" ] && [ ! -L "$checkout/$forbidden_metadata" ] || \
     die "fetched bundle contains reserved installation metadata: $forbidden_metadata"
@@ -649,15 +737,11 @@ if $dry_run; then
   stage_dir="$tmp/stage"
   mkdir -p "$stage_dir"
   build_stage
-
-  comparison_target="$install_dir"
-  if [ ! -d "$install_dir" ]; then
-    comparison_target="$tmp/empty-destination"
-    mkdir -p "$comparison_target"
-  fi
-  rsync -a --checksum --delete --dry-run --itemize-changes "$stage_dir"/ "$comparison_target"/
+  create_change_plan
+  cat "$change_plan"
   echo "Previewed Startup Factory changes for: $install_dir"
   echo "Resolved source commit: $resolved_commit"
+  echo "Planned filesystem changes: $change_count"
   echo "Dry run complete; no destination files were written."
 else
   mkdir -p "$install_parent"
@@ -676,6 +760,7 @@ else
   snapshot_existing_target "$tmp/target-after-stage"
   cmp -s "$tmp/target-before-stage" "$tmp/target-after-stage" || \
     die "installation changed while the update was staged; retry"
+  create_change_plan
 
   backup_dir="$(mktemp -d "$install_parent/.$install_name.backup.XXXXXX")"
   rmdir "$backup_dir"
@@ -706,6 +791,7 @@ else
 
   echo "Updated Startup Factory skill at: $install_dir"
   echo "Resolved source commit: $resolved_commit"
+  echo "Applied filesystem changes: $change_count"
   if ! $overwrite_config; then
     echo "Preserved existing project configuration and project-owned files."
   fi
@@ -719,13 +805,18 @@ if [ -n "$target_repo" ]; then
     *) rel_path="$install_dir" ;;
   esac
 
-  echo
-  echo "Git status for $rel_path:"
-  git -C "$target_repo" status --short -- "$rel_path" || true
-
-  if ! $dry_run; then
+  if git -C "$target_repo" check-ignore -q -- "$rel_path"; then
     echo
-    echo "Diff stat for $rel_path:"
-    git -C "$target_repo" diff --stat -- "$rel_path" || true
+    echo "Git reporting: $rel_path is ignored; status and diff cannot show updater changes."
+  else
+    echo
+    echo "Git status for $rel_path:"
+    git -C "$target_repo" status --short -- "$rel_path" || true
+
+    if ! $dry_run; then
+      echo
+      echo "Diff stat for $rel_path:"
+      git -C "$target_repo" diff --stat -- "$rel_path" || true
+    fi
   fi
 fi

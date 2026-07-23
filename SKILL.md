@@ -73,20 +73,25 @@ preparation:
    standalone Startup Factory source checkout. Common project paths are:
 
    ```bash
+   bash .agents/skills/startup-factory/bin/update-installed-skill.sh --dry-run
    bash .agents/skills/startup-factory/bin/update-installed-skill.sh
+   bash .claude/skills/startup-factory/bin/update-installed-skill.sh --dry-run
    bash .claude/skills/startup-factory/bin/update-installed-skill.sh
    ```
 
    If this skill is installed somewhere else, run the same script with
-   `--install-dir <path-to-installed-skill>`.
+   `--install-dir <path-to-installed-skill>`. After applying the update, run
+   `bash <path-to-installed-skill>/tests/run-all.sh --smoke`.
 3. Keep the default config-preserving behavior unless the user explicitly asks to
    replace project config. Existing project-management, planning, team, statuses,
    automation, deployment, and guardrails config files under `config/` are
    preserved, as is the configured `STATUS_CONFIG` and every destination-only
    project file. Installed path and Git-object ownership metadata distinguish
    custom files from unchanged retired upstream files. The updater validates
-   the source, active tracker adapter, status board, and staged destination,
-   then activates it with a locked backup swap.
+   the source, active tracker adapter, retained status-board structure and
+   selected-tool mappings, and staged destination, then activates it with a
+   locked backup swap. It records the resolved source commit in
+   `.startup-factory-source-install.json`.
 4. Do not substitute `npx skills update`: the generic updater does not preserve
    Startup Factory's project-specific config, and current repository-root installs
    omit the required sibling bundle directories.

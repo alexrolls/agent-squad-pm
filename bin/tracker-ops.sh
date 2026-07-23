@@ -1087,6 +1087,33 @@ class GitHubIssues:
         m = re.search(r'(status:[\w-]+)', value)
         return closed, (m.group(1) if m else None)
 
+    @classmethod
+    def resolve_closed_status(cls, statuses, value_for, status_labels):
+        """Resolve one closed mapping without conflating distinct terminal states."""
+        if len(status_labels) > 1:
+            return None
+        observed = status_labels[0] if status_labels else None
+        candidates = []
+        for status in statuses:
+            closed, wanted = cls.parse_tool_value(value_for(status))
+            if closed:
+                candidates.append((status['name'], wanted))
+
+        exact = [name for name, wanted in candidates
+                 if observed is not None and wanted == observed]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+
+        # A board with one closed state remains unambiguous even when older
+        # records predate terminal status labels. With multiple closed states,
+        # exactly one unlabeled mapping is the only safe generic fallback.
+        if len(candidates) == 1:
+            return candidates[0][0]
+        fallback = [name for name, wanted in candidates if wanted is None]
+        return fallback[0] if len(fallback) == 1 else None
+
     def current_status_label(self, task_id):
         labels = json.loads(self.gh('issue', 'view', str(task_id), '--json', 'labels'))['labels']
         return next((l['name'] for l in labels if l['name'].startswith('status:')), None)
@@ -1094,6 +1121,14 @@ class GitHubIssues:
     def set_state(self, task_id, status):
         closed, label = self.parse_tool_value(tool_value(status))
         if closed:
+            old = self.current_status_label(task_id)
+            if old != label:
+                args = ['issue', 'edit', str(task_id)]
+                if label:
+                    args += ['--add-label', label]
+                if old:
+                    args += ['--remove-label', old]
+                self.gh(*args)
             self.gh('issue', 'close', str(task_id))
             return
         if not label:
@@ -1109,10 +1144,15 @@ class GitHubIssues:
 
     def current_status(self, task_id):
         issue = json.loads(self.gh('issue', 'view', str(task_id), '--json', 'state,labels'))
-        label = next((item['name'] for item in issue['labels'] if item['name'].startswith('status:')), None)
+        status_labels = [item['name'] for item in issue['labels']
+                         if item['name'].startswith('status:')]
+        if issue['state'] == 'CLOSED':
+            return self.resolve_closed_status(
+                TASK_STATUSES, tool_value, status_labels)
+        label = status_labels[0] if len(status_labels) == 1 else None
         for status in TASK_STATUSES:
             closed, wanted = self.parse_tool_value(tool_value(status))
-            if (closed and issue['state'] == 'CLOSED') or (not closed and wanted == label):
+            if not closed and wanted == label:
                 return status['name']
         return None
 
@@ -1246,18 +1286,29 @@ class GitHubIssues:
         if state == 'OPEN' and len(status_labels) != 1:
             die("GitHub open issue %s must have exactly one status:* label — andon" %
                 issue['number'])
+        if len(status_labels) > 1:
+            die("GitHub issue %s must not have multiple status:* labels — andon" %
+                issue['number'])
         label = status_labels[0] if status_labels else None
+        if state == 'CLOSED':
+            match = self.resolve_closed_status(
+                TASK_STATUSES, tool_value, status_labels)
+            raw = 'closed' + ((' + label %s' % label) if label else '')
+            if match is None:
+                die("GitHub issue %s status '%s' has no unique generic mapping — andon" %
+                    (issue['number'], raw))
+            return match, raw
+
         matches = []
         for status in TASK_STATUSES:
             closed, wanted = self.parse_tool_value(tool_value(status))
-            if (closed and state == 'CLOSED') or (not closed and wanted and wanted == label):
+            if not closed and wanted and wanted == label:
                 matches.append(status['name'])
         if len(matches) != 1:
-            raw = 'closed' if state == 'CLOSED' else 'open + label %s' % (label or '?')
+            raw = 'open + label %s' % (label or '?')
             die("GitHub issue %s status '%s' has %d generic mappings — andon" %
                 (issue['number'], raw, len(matches)))
-        raw = 'closed' if state == 'CLOSED' else 'open + label %s' % label
-        return matches[0], raw
+        return matches[0], 'open + label %s' % label
 
     def issue_comments(self, task_id):
         repo = self.repo_name()
@@ -1352,7 +1403,8 @@ class GitHubIssues:
     def current_feature_status(self, feature_id):
         _repo, milestone = self.milestone(feature_id)
         if milestone.get('state') == 'closed':
-            return next((s['name'] for s in FEATURE_STATUSES if 'closed' in feature_tool_value(s)), None)
+            return self.resolve_closed_status(
+                FEATURE_STATUSES, feature_tool_value, [])
         tasks = self.export(feature_id)
         initial = next(s['name'] for s in TASK_STATUSES if s.get('initial'))
         if any(task.get('status') != initial for task in tasks):

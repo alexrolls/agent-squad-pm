@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_STATUS_FIXTURE = ROOT / "tests" / "fixtures" / "statuses.default-profile.json"
 
 
 def load_definitions(adapter, extra_config=""):
@@ -24,7 +25,7 @@ def load_definitions(adapter, extra_config=""):
     skill = Path(temp.name)
     (skill / "config").mkdir()
     (skill / "bin").mkdir()
-    shutil.copy(ROOT / "config" / "statuses.config.json",
+    shutil.copy(DEFAULT_STATUS_FIXTURE,
                 skill / "config" / "statuses.config.json")
     shutil.copy(ROOT / "bin" / "ticket_content_security.py",
                 skill / "bin" / "ticket_content_security.py")
@@ -396,6 +397,10 @@ class JiraPaginationTest(unittest.TestCase):
 
 class GitHubPaginationTest(unittest.TestCase):
     @staticmethod
+    def mapped_status(name, mapping):
+        return {"name": name, "tool": {"GitHubIssues": mapping}}
+
+    @staticmethod
     def issue(number, status="status:todo", milestone=None, state="open"):
         return {
             "number": number,
@@ -512,6 +517,81 @@ class GitHubPaginationTest(unittest.TestCase):
         self.assertEqual([301, 302],
                          [comment["id"] for comment in items[0]["comments"]])
         self.assertEqual(["2"], items[0]["blockedBy"])
+
+    def test_closed_task_status_uses_label_then_single_unlabeled_fallback(self):
+        self.ns["TASK_STATUSES"] = [
+            self.mapped_status("Queued", "open + label status:queued"),
+            self.mapped_status("Delivered", "closed + label status:delivered"),
+            self.mapped_status("Withdrawn", "closed"),
+        ]
+        labeled = {"number": 21, "state": "closed"}
+        self.assertEqual(
+            ("Delivered", "closed + label status:delivered"),
+            self.github.generic_issue_status(labeled, ["status:delivered"]))
+        self.assertEqual(
+            ("Withdrawn", "closed"),
+            self.github.generic_issue_status(labeled, []))
+
+        self.github.gh = lambda *_args, **_kwargs: json.dumps({
+            "state": "CLOSED",
+            "labels": [{"name": "status:delivered"}],
+        })
+        self.assertEqual("Delivered", self.github.current_status(21))
+
+        self.ns["TASK_STATUSES"] = [
+            self.mapped_status("Delivered", "closed + label status:delivered"),
+            self.mapped_status("Withdrawn", "closed + label status:withdrawn"),
+        ]
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit):
+                self.github.generic_issue_status(labeled, [])
+        self.assertIn("no unique generic mapping", stderr.getvalue())
+
+    def test_closed_task_status_writes_discriminating_label(self):
+        statuses = [
+            self.mapped_status("Delivered", "closed + label status:delivered"),
+            self.mapped_status("Withdrawn", "closed + label status:withdrawn"),
+        ]
+        self.ns["TASK_STATUSES"] = statuses
+        calls = []
+
+        def gh(*args, **_kwargs):
+            calls.append(args)
+            if args[:4] == ("issue", "view", "21", "--json"):
+                return json.dumps({"labels": [{"name": "status:review"}]})
+            return ""
+
+        self.github.gh = gh
+        self.github.set_state(21, statuses[0])
+        self.assertEqual(
+            [
+                ("issue", "view", "21", "--json", "labels"),
+                ("issue", "edit", "21", "--add-label", "status:delivered",
+                 "--remove-label", "status:review"),
+                ("issue", "close", "21"),
+            ],
+            calls)
+
+    def test_closed_feature_status_uses_only_unambiguous_fallback(self):
+        self.github.milestone = lambda _feature_id: (
+            "owner/repo", {"number": 7, "state": "closed"})
+
+        self.ns["FEATURE_STATUSES"] = [
+            self.mapped_status("Released", "milestone closed + label status:released"),
+        ]
+        self.assertEqual("Released", self.github.current_feature_status(7))
+
+        self.ns["FEATURE_STATUSES"] = [
+            self.mapped_status("Released", "milestone closed + label status:released"),
+            self.mapped_status("Stopped", "milestone closed"),
+        ]
+        self.assertEqual("Stopped", self.github.current_feature_status(7))
+
+        self.ns["FEATURE_STATUSES"] = [
+            self.mapped_status("Released", "milestone closed + label status:released"),
+            self.mapped_status("Stopped", "milestone closed + label status:stopped"),
+        ]
+        self.assertIsNone(self.github.current_feature_status(7))
 
     def test_progress_upsert_finds_marker_on_later_page(self):
         calls = []

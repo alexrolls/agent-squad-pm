@@ -9,6 +9,7 @@ else
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_STATUS_FIXTURE="$SKILL_DIR/tests/fixtures/statuses.default-profile.json"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 FAILURES=0
 check() { local desc="$1"; shift
@@ -23,7 +24,8 @@ mkdir -m 700 "$LIFECYCLE_ROOT"
 mkdir -p .claude/skills/pm
 cp -R "$SKILL_DIR/roles" "$SKILL_DIR/reference" "$SKILL_DIR/bin" "$SKILL_DIR/teams" .claude/skills/pm/
 mkdir -p .claude/skills/pm/config
-cp "$SKILL_DIR/config/statuses.config.json" "$SKILL_DIR/config/automation.config.json" .claude/skills/pm/config/
+cp "$DEFAULT_STATUS_FIXTURE" .claude/skills/pm/config/statuses.config.json
+cp "$SKILL_DIR/config/automation.config.json" .claude/skills/pm/config/
 cat > .claude/skills/pm/config/project-management.config.md <<'EOF'
 ```
 PRODUCT_MANAGEMENT_TOOL=Markdown
